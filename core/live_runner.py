@@ -48,169 +48,7 @@ if not logger.handlers:
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
 
-class USMarketCalendar:
-    """
-    [ ? (NYSE / NASDAQ) ??? ? ??????
-    - ????Daylight Saving Time) ?  (3??? ???~ 11?? ???
-    - ???? ?:
-      * ????(EDT): ?? 22:30 ~ ? 05:00
-      * ????(EST): ?? 23:30 ~ ? 06:00
-    - (???? ?????
-    - ?  ?? ?? ? ??
-    """
-    @staticmethod
-    def get_market_status(now_dt: Optional[datetime] = None) -> Dict[str, Any]:
-        if now_dt is None:
-            now_dt = datetime.now()
-
-        ny_tz = ZoneInfo("America/New_York")
-        kst_tz = ZoneInfo("Asia/Seoul")
-        
-        if now_dt is None:
-            now_local = datetime.now().astimezone()
-            now_ny = now_local.astimezone(ny_tz)
-            now_kst = now_local.astimezone(kst_tz)
-        elif now_dt.tzinfo is None:
-            now_kst = now_dt.replace(tzinfo=kst_tz)
-            now_ny = now_kst.astimezone(ny_tz)
-        else:
-            now_ny = now_dt.astimezone(ny_tz)
-            now_kst = now_dt.astimezone(kst_tz)
-        weekday_ny = now_ny.weekday()  # 0: Mon, ..., 4: Fri, 5: Sat, 6: Sun
-        ny_time = now_ny.time()
-
-        is_weekend = (weekday_ny >= 5)
-        
-        market_open_time = dtime(9, 30)
-        trading_cutoff_time = dtime(15, 30)
-        eod_liquidation_time = dtime(15, 50)
-        market_close_time = dtime(16, 0)
-
-        is_regular_hours = (not is_weekend) and (market_open_time <= ny_time < market_close_time)
-        is_phase2_allowed = False
-        is_trading_allowed = (not is_weekend) and (market_open_time <= ny_time < trading_cutoff_time)
-        is_entry_allowed = is_trading_allowed
-        is_eod_liquidation_window = (not is_weekend) and (eod_liquidation_time <= ny_time < market_close_time)
-
-        if is_regular_hours:
-            next_open_kst = None
-            time_until_open_str = "   "
-        else:
-            target_ny_date = now_ny.date()
-            if is_weekend:
-                days_ahead = (7 - weekday_ny)
-                target_ny_date += timedelta(days=days_ahead)
-            else:
-                if ny_time >= market_close_time:
-                    if weekday_ny == 4:
-                        target_ny_date += timedelta(days=3)
-                    else:
-                        target_ny_date += timedelta(days=1)
-            
-            next_open_ny = datetime.combine(target_ny_date, market_open_time, tzinfo=ny_tz)
-            next_open_kst = next_open_ny.astimezone(kst_tz)
-            delta = next_open_kst - now_kst
-            hours, remainder = divmod(int(delta.total_seconds()), 3600)
-            mins, secs = divmod(remainder, 60)
-            time_until_open_str = f"{hours}hours {mins}mins"
-
-        if is_weekend:
-            day_name_kr = "Weekend"
-            session_name = "WEEKEND_CLOSED"
-            status_desc = f"? ?   ? ({day_name_kr}?)"
-        elif not is_regular_hours:
-            if ny_time < market_open_time:
-                session_name = "PRE_MARKET_WAITING"
-                status_desc = "????? ??? ??"
-            else:
-                session_name = "AFTER_MARKET_CLOSED"
-                status_desc = "? ??? (???"
-        else:
-            if is_eod_liquidation_window:
-                session_name = "EOD_LIQUIDATION"
-                status_desc = "???? 10??? 0% ?? ? ??????"
-            elif is_trading_allowed:
-                session_name = "REGULAR_MARKET_OPEN"
-                status_desc = "? ? ???Phase 1 ???  ?(15m Model C)"
-            elif is_phase2_allowed:
-                session_name = "POWER_HOUR_SNIPER"
-                status_desc = "??? ???Phase 2 ? ? ??  ?(5m Sniper)"
-            else:
-                session_name = "REGULAR_MARKET_NO_ENTRY"
-                status_desc = "???? ??(?  ,  ?????"
-
-        is_dst = bool(now_ny.dst())
-
-        return {
-            "is_open": is_regular_hours,
-            "is_entry_allowed": is_entry_allowed,
-            "is_trading_allowed": is_trading_allowed,
-            "is_phase2_allowed": is_phase2_allowed,
-            "is_weekend": is_weekend,
-            "is_eod_liquidation_window": is_eod_liquidation_window,
-            "session_name": session_name,
-            "status_desc": status_desc,
-            "now_kst_str": now_kst.strftime("%Y-%m-%d %H:%M:%S KST"),
-            "now_ny_str": now_ny.strftime("%Y-%m-%d %H:%M:%S %Z"),
-            "is_dst": is_dst,
-            "dst_text": "EDT" if is_dst else "EST",
-            "next_open_kst_str": next_open_kst.strftime("%Y-%m-%d (%a) %H:%M KST") if next_open_kst else "Open",
-            "time_until_open_str": time_until_open_str
-        }
-
-    @staticmethod
-    def verify_time_synchronization() -> Dict[str, Any]:
-        """
-        [?  ??? ??1? ? ???? ????? ??
-        1. OS  ? ??? ???(ZoneInfo America/New_York) ??? ?
-        2. ????EDT: -13h ?) ?????EST: -14h ?) ? ? ??
-        3.  ??4?  ?(09:30~14:30 Phase 1 vs 14:30~15:30 Phase 2 vs 15:30 ??vs 15:50 EOD ?)
-        """
-        ny_tz = ZoneInfo("America/New_York")
-        kst_tz = ZoneInfo("Asia/Seoul")
-        now_local = datetime.now().astimezone()
-        now_ny = now_local.astimezone(ny_tz)
-        now_kst = now_local.astimezone(kst_tz)
-
-        # KST? NYT ???
-        delta_hours = round((now_kst.utcoffset().total_seconds() - now_ny.utcoffset().total_seconds()) / 3600.0, 1)
-        is_dst = bool(now_ny.dst())
-        expected_diff = 13.0 if is_dst else 14.0
-        time_sync_ok = (delta_hours == expected_diff)
-
-        #  ??4?  ?( ? ?????? ? ? ????
-        test_weekday = now_ny.date() - timedelta(days=now_ny.weekday())
-        test_p1 = datetime.combine(test_weekday, dtime(11, 0), tzinfo=ny_tz)
-        test_p2 = datetime.combine(test_weekday, dtime(15, 0), tzinfo=ny_tz)
-        test_cd = datetime.combine(test_weekday, dtime(15, 40), tzinfo=ny_tz)
-        test_eod = datetime.combine(test_weekday, dtime(15, 55), tzinfo=ny_tz)
-
-        s_p1 = USMarketCalendar.get_market_status(test_p1)
-        s_p2 = USMarketCalendar.get_market_status(test_p2)
-        s_cd = USMarketCalendar.get_market_status(test_cd)
-        s_eod = USMarketCalendar.get_market_status(test_eod)
-
-        switching_ok = (
-            s_p1["is_entry_allowed"] and not s_p1["is_eod_liquidation_window"] and
-            s_eod["is_eod_liquidation_window"] and not s_eod["is_entry_allowed"]
-        )
-
-        all_ok = bool(time_sync_ok and switching_ok)
-
-        return {
-            "all_ok": all_ok,
-            "time_sync_ok": time_sync_ok,
-            "switching_ok": switching_ok,
-            "delta_hours": delta_hours,
-            "expected_diff": expected_diff,
-            "is_dst": is_dst,
-            "dst_text": "????EDT, 13? ?)" if is_dst else "????EST, 14? ?)",
-            "now_kst_str": now_kst.strftime("%Y-%m-%d %H:%M:%S KST"),
-            "now_ny_str": now_ny.strftime("%Y-%m-%d %H:%M:%S %Z"),
-            "checklist_items": [
-            ]
-        }
-
+from core.market_calendar import USMarketCalendar
 
 class KiwoomLiveRunner:
     """
@@ -267,9 +105,7 @@ class KiwoomLiveRunner:
         # ??[? ? ?: Daily Circuit Breaker 3-Out Veto]
         self.daily_stoploss_count: int = 0
         self.daily_circuit_breaker_triggered: bool = False
-        self._daily_cb_file = DATA_DIR / "daily_circuit_breaker_state.json"
-        self._load_daily_cb_state()
-
+        
         # ??[ ? ?15?? ???  ??
         self._last_veto_time: float = 0.0
         self._last_veto_state: bool = False
@@ -315,65 +151,6 @@ class KiwoomLiveRunner:
     def _get_current_ny_date(self) -> str:
         ny_tz = ZoneInfo("America/New_York")
         return datetime.now().astimezone().astimezone(ny_tz).strftime("%Y-%m-%d")
-
-    def _load_daily_cb_state(self):
-        today_ny = self._get_current_ny_date()
-        if self._daily_cb_file.exists():
-            try:
-                with open(self._daily_cb_file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                if data.get("date") == today_ny:
-                    self.daily_stoploss_count = int(data.get("stoploss_count", 0))
-                    self.daily_circuit_breaker_triggered = bool(data.get("circuit_breaker_triggered", False))
-                    logger.info(f"??[? ? ? ] ?: {today_ny} | ? ?: {self.daily_stoploss_count}/3??|  ?: {self.daily_circuit_breaker_triggered}")
-                    return
-            except Exception as e:
-                logger.debug(f"? ? ?  ?: {e}")
-        self.daily_stoploss_count = 0
-        self.daily_circuit_breaker_triggered = False
-
-    def _save_daily_cb_state(self):
-        today_ny = self._get_current_ny_date()
-        data = {
-            "date": today_ny,
-            "stoploss_count": self.daily_stoploss_count,
-            "circuit_breaker_triggered": self.daily_circuit_breaker_triggered,
-            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        }
-        try:
-            with open(self._daily_cb_file, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            logger.warning(f"? ? ? ????: {e}")
-
-    def _reset_daily_circuit_breaker(self):
-        self.daily_stoploss_count = 0
-        self.daily_circuit_breaker_triggered = False
-        self._save_daily_cb_state()
-        logger.info("? [? ? ? ?? ???(09:30 NYT): daily_stoploss_count = 0, ?   ?")
-
-    def _record_stoploss(self):
-        """
-#         - '-2.0% ?? ?  ??daily_stoploss_count 1 ? (?/?????)
-        """
-        self.daily_stoploss_count += 1
-        logger.warning(f"? [? ?????] ? ?: {self.daily_stoploss_count}/3??")
-        system_logger.log("RISK", "CircuitBreaker", f"? ? -2.0% ?? ({self.daily_stoploss_count}/3??")
-
-        if self.daily_stoploss_count >= 3:
-            self.daily_circuit_breaker_triggered = True
-            logger.error(f"? [? ? ? ] ? ? 3???(3-Out) ??? ?  ? ")
-            system_logger.log("RISK", "CircuitBreaker", "? ? ? ? : ? ????(3-Out Veto)")
-
-            msg = f"""🚨 **일일 3-Out 서킷 브레이커 발동**\n- 금일 손절 횟수: {self.daily_stoploss_count}/3\n- 조치: 신규 매수 전면 차단 (VETO)\n- 현금: 100% 보존"""
-
-            msg = "Circuit Breaker Triggered"
-            try:
-                self.dispatcher.send_telegram_message(msg)
-            except Exception as te:
-                logger.warning(f"? ? ?  ?: {te}")
-
-        self._save_daily_cb_state()
 
     def _on_websocket_execution(self, exec_data: Dict[str, Any]):
         """
@@ -1055,8 +832,6 @@ class KiwoomLiveRunner:
 
                     sell_msg = f"""{mode_title} 100% 매도 청산 완료\n🚨 **브로커:** `{self.broker.broker_name} {self.broker.mode_str}`\n💡 **사유:** `{reason_desc}`\n📊 **종목/수량:** `{symbol} {quantity:,}주`\n💰 **체결가:** `${latest_px:.2f}` (최종 수익률: {final_pnl_pct:+.2f}%)\n🛡️ **사후 관리:** `100% 현금화 완료 (AI MoE 새 진입 대기)`"""
                     self.dispatcher.send_telegram_message(sell_msg)
-                    if is_stoploss:
-                        self._record_stoploss()
                     return True
 
                 if s_ord_no:
@@ -1090,7 +865,6 @@ class KiwoomLiveRunner:
 
                 if self._last_market_session != current_session:
                     if current_session == "REGULAR_MARKET_OPEN":
-                        self._reset_daily_circuit_breaker()
                         self.ws_streamer.reset_session_ticks()
                         
                         system_logger.log("TRADE", "MarketSession", f"??? ?? ? ? ({mkt['now_kst_str']})")
@@ -1157,7 +931,7 @@ class KiwoomLiveRunner:
                             self.dispatcher.send_telegram_message(briefing_msg)
                             system_logger.log("INFO", "AI", f"15???? ? (?: {conf:.1f}%)")
                             
-                            if is_appr and not active_pos and not self.daily_circuit_breaker_triggered:
+                            if is_appr and not active_pos :
                                 if direction in ["LONG_TQQQ", "SHORT_SQQQ"]:
                                     winner_sym = "TQQQ" if direction == "LONG_TQQQ" else "SQQQ"
                                     cur_px = live_prices.get(winner_sym, 0.0)
