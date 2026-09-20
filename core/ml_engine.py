@@ -1,4 +1,5 @@
 from config import GBDT_CONFIDENCE_THRESHOLD
+import config
 import warnings
 import numpy as np
 import pandas as pd
@@ -46,6 +47,12 @@ class MLFeatureEngine:
                         self.feature_names = getattr(obj.gbdt_engine, "feature_names", [])
                         self.top_10_features = getattr(obj.gbdt_engine, "top_10_features", [])
                         self.top_3_features = getattr(obj.gbdt_engine, "top_3_features", [])
+                        break
+                    elif type(obj).__name__ == "LGBMClassifier":
+                        self.model = obj
+                        self.feature_names = getattr(obj, "feature_name_", [])
+                        self.top_10_features = []
+                        self.top_3_features = []
                         break
                 except Exception:
                     pass
@@ -199,12 +206,13 @@ class MLFeatureEngine:
             from core.data_lake import MarketDataLake
             lake = MarketDataLake()
             
-            # SOXX (대추세 60분봉)
-            soxx_live = live_prices.get("SOXX", 0.0) if live_prices else 0.0
+            # 대추세 60분봉 (config.MACRO_TREND_SYMBOL 기준)
+            macro_sym = config.MACRO_TREND_SYMBOL
+            soxx_live = live_prices.get(macro_sym, 0.0) if live_prices else 0.0
             if soxx_live > 0:
-                soxx_60m = lake.get_candles_with_live_tick("SOXX", "60m", live_price=soxx_live)
+                soxx_60m = lake.get_candles_with_live_tick(macro_sym, "60m", live_price=soxx_live)
             else:
-                soxx_60m = lake.load_candles("SOXX", "60m")
+                soxx_60m = lake.load_candles(macro_sym, "60m")
             if not soxx_60m.empty:
                 soxx_60m['ema20'] = soxx_60m['Close'].ewm(span=20, adjust=False).mean()
                 soxx_60m['ema60'] = soxx_60m['Close'].ewm(span=60, adjust=False).mean()
@@ -518,3 +526,17 @@ class MLFeatureEngine:
             return -1, conf, f"GBDT 3-Class SQQQ 숏 파형 포착 (P_Short={p_short*100:.1f}%, Conf={conf*100:.1f}%)"
 
         return 0, conf, "GBDT 관망/중립 상태"
+
+    def predict_signal_full(self, df_candle_15m: pd.DataFrame) -> Tuple[int, float, str, Dict[str, float]]:
+        sig, conf, reason = self.predict_signal(df_candle_15m)
+        df_feat = self.extract_features(df_candle_15m)
+        if df_feat.empty:
+            return sig, conf, reason, {"LONG": 0.33, "SHORT": 0.33, "NONE": 0.34}
+        df_feat = self.add_confidence_columns(df_feat)
+        last_row = df_feat.iloc[-1]
+        probs = {
+            "LONG": float(last_row.get("Prob_Long", 0.33)),
+            "SHORT": float(last_row.get("Prob_Short", 0.33)),
+            "NONE": float(last_row.get("Prob_Neutral", 0.34))
+        }
+        return sig, conf, reason, probs

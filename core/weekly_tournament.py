@@ -373,6 +373,8 @@ class WeeklyTournament:
                     (dir_gbdt == "LONG_TQQQ" and dir_cross == "SHORT_SQQQ") or
                     (dir_gbdt == "SHORT_SQQQ" and dir_cross == "LONG_TQQQ")
                 )
+                if not getattr(config, "USE_CROSS_ASSET_VETO", True):
+                    is_cross_veto = False
 
                 if not is_gbdt_trigger or is_cross_veto:
                     b_idx += 1
@@ -393,6 +395,9 @@ class WeeklyTournament:
                         is_60m_trend_ok = (soxx_c >= soxx_ema20 * 0.998) and (tqqq_c >= tqqq_ema20 * 0.998)
                     else:
                         is_60m_trend_ok = (soxx_c <= soxx_ema20 * 1.002)
+
+                if not getattr(config, "USE_60M_TREND_FILTER", True):
+                    is_60m_trend_ok = True
 
                 if not is_60m_trend_ok:
                     b_idx += 1

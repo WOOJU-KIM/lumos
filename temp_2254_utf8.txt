@@ -1,0 +1,2 @@
+﻿{"id": 1789653283167, "timestamp": "22:54:43", "datetime": "2026-09-17 22:54:43", "level": "TRADE", "source": "OrderChasing", "message": "??[ 2??? ?? SOXL 10?@ $30.03 (???1/1)", "meta": {}}
+{"id": 1789653287241, "timestamp": "22:54:47", "datetime": "2026-09-17 22:54:47", "level": "TRADE", "source": "OrderChasing", "message": "? [  ?] SOXL ? ? (??100%  ??AI ???????)", "meta": {}}

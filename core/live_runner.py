@@ -1080,7 +1080,7 @@ class KiwoomLiveRunner:
     _execute_sell_with_chase = _execute_sell_with_10s_chase
 
     def _market_execution_loop(self):
-        print("?? [?  ?????  ? ? (: 15?...")
+        logger.info("?? [?  ?????  ? ? (: 15?...")
         system_logger.log("INFO", "LiveRunner", "???  ??????")
         
         while True:
@@ -1118,7 +1118,7 @@ class KiwoomLiveRunner:
                                 with open(eod_date_file, "w", encoding="utf-8") as f:
                                     json.dump({"eod_date": today_str, "completed_at": time.strftime("%Y-%m-%d %H:%M:%S")}, f)
                             except Exception as e:
-                                print(f"[EOD Pipeline Error] {e}")
+                                logger.info(f"[EOD Pipeline Error] {e}")
 
                     self._last_market_session = current_session
 
@@ -1134,18 +1134,10 @@ class KiwoomLiveRunner:
                     if (is_target_minute or force_first_run) and (now_t - self._last_briefing_time) >= 60:
                         self._last_briefing_time = now_t
                         
-                        try:
-                            self.data_lake.sync_live_intraday_candles(["TQQQ", "SQQQ", "SOXX", "NVDA", "QQQ", "VIXY", "IEF"])
+                        try:                            # 2) 전 종목 Intraday 캔들 동기화
+                            self.data_lake.sync_live_intraday_candles(config.ALL_SYMBOLS)
                             df_15m = self.data_lake.load_candles("TQQQ", "15m")
-                            live_prices = {
-                                "TQQQ": self.ws_streamer.get_latest_price("TQQQ", 0.0),
-                                "SQQQ": self.ws_streamer.get_latest_price("SQQQ", 0.0),
-                                "SOXX": self.ws_streamer.get_latest_price("SOXX", 0.0),
-                                "QQQ": self.ws_streamer.get_latest_price("QQQ", 0.0),
-                                "NVDA": self.ws_streamer.get_latest_price("NVDA", 0.0),
-                                "VIXY": self.ws_streamer.get_latest_price("VIXY", 0.0),
-                                "IEF": self.ws_streamer.get_latest_price("IEF", 0.0),
-                            }
+                            live_prices = {sym: self.ws_streamer.get_latest_price(sym, 0.0) for sym in config.ALL_SYMBOLS}
                             
                             moe_res = self.moe_orchestrator.evaluate_dual_filter_signal(df_candle_15m=df_15m, live_prices=live_prices)
                             self._last_moe_res = moe_res
@@ -1236,37 +1228,37 @@ class KiwoomLiveRunner:
         """
         1???? ? ??????  ????? ??? ??
         """
-        print("=" * 75)
+        logger.info("=" * 75)
         # 0. ? [?  ??? ??1?  ? ???&  ??? ?
-        print("\n" + "=" * 75)
-        print("?  [?  ??? ??  ? ???&  ??? ?  ?")
-        print("=" * 75)
+        logger.info("\n" + "=" * 75)
+        logger.info("?  [?  ??? ??  ? ???&  ??? ?  ?")
+        logger.info("=" * 75)
         sync_res = USMarketCalendar.verify_time_synchronization()
         for chk_item in sync_res["checklist_items"]:
-            print(f"   ??{chk_item}")
+            logger.info(f"   ??{chk_item}")
         if not sync_res["all_ok"]:
             err_msg = "? [??? ????  ???? ??????? ??? ??!"
             logger.critical(err_msg)
             raise RuntimeError(err_msg)
-        print(f"   ??? ? ????100% ??? ({sync_res['dst_text']})")
-        print("=" * 75)
+        logger.info(f"   ??? ? ????100% ??? ({sync_res['dst_text']})")
+        logger.info("=" * 75)
 
         # 1.  ? ? ?
         mkt_status = USMarketCalendar.get_market_status()
         self._last_market_session = mkt_status["session_name"]
 
-        print(f"\n[1/3] ?  ? ? ??:")
-        print(f"   ??? ?: {mkt_status['status_desc']}")
-        print(f"   ??? ?: {mkt_status['now_kst_str']}")
-        print(f"   ??? ?: {mkt_status['now_ny_str']} ({mkt_status['dst_text']})")
-        print(f"   ??? : {mkt_status['next_open_kst_str']} (?? ?: {mkt_status['time_until_open_str']})")
+        logger.info(f"\n[1/3] ?  ? ? ??:")
+        logger.info(f"   ??? ?: {mkt_status['status_desc']}")
+        logger.info(f"   ??? ?: {mkt_status['now_kst_str']}")
+        logger.info(f"   ??? ?: {mkt_status['now_ny_str']} ({mkt_status['dst_text']})")
+        logger.info(f"   ??? : {mkt_status['next_open_kst_str']} (?? ?: {mkt_status['time_until_open_str']})")
 
         # 2. ? ?? ? ??
-        print(f"\n[2/3] {self.broker.broker_name} {self.broker.mode_str}  ?? ? ? ??:")
+        logger.info(f"\n[2/3] {self.broker.broker_name} {self.broker.mode_str}  ?? ? ? ??:")
         conn_res = self.broker.test_connection()
-        print(f"   ??OAuth2 ?: {'???  ?' if conn_res['ok'] else '?? ?'}")
-        print(f"   ??? : {self.broker.account_no}-{self.broker.account_type}")
-        print(f"   ?????: ${conn_res['usd_order_available']:,.2f} USD")
+        logger.info(f"   ??OAuth2 ?: {'???  ?' if conn_res['ok'] else '?? ?'}")
+        logger.info(f"   ??? : {self.broker.account_no}-{self.broker.account_type}")
+        logger.info(f"   ?????: ${conn_res['usd_order_available']:,.2f} USD")
 
         # 3. ?  ? ??????
         ai_engine_desc = "`Phase 1: 15 GBDT Model (62% ? ??/ ????Veto ?? / GBDT Feature ?)`"
@@ -1291,7 +1283,7 @@ class KiwoomLiveRunner:
         
         # 4. ????WebSocket) ??? ??
         self.ws_streamer.start()
-        print(f"??[{self.broker.broker_name} ??WebSocket ? ???] 10ms ??????? ?")
+        logger.info(f"??[{self.broker.broker_name} ??WebSocket ? ???] 10ms ??????? ?")
 
         # 5. ????   ?????
         trd_thread = threading.Thread(target=self._market_execution_loop, daemon=True)

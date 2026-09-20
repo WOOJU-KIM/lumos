@@ -63,6 +63,9 @@ def validate_env():
 
 # 1. 진입 판단 데이터 (Entry Logic)
 GBDT_CONFIDENCE_THRESHOLD = 0.60  # 하이브리드 MoE 진입 최소 확신도 (60%)
+USE_CROSS_ASSET_VETO = False      # 크로스에셋 Veto 방패 사용 여부
+USE_60M_TREND_FILTER = False      # 60분봉 추세 필터 사용 여부
+MACRO_TREND_SYMBOL = "QQQ"        # GBDT 대추세 및 60분봉 추세 방패 기준 종목
 QQQ_EMA_PERIOD = 20              # QQQ 추세 필터 이평선 기간
 RSI_PERIOD = 14                   # RSI 기본 계산 기간
 RSI_OVERBOUGHT_THRESHOLD = 100    # RSI 과매수 진입 금지 기준 (V3 적용으로 족쇄 해제)
@@ -100,3 +103,8 @@ QTY_CALC_BUFFER = 0.05            # 수량 계산 시 가격 버퍼 (cur_px + 0.
 
 # 5. 백테스트 (Backtest)
 BACKTEST_FEE_SLIPPAGE = 0.0020    # 백테스트 가짜수익 방어 최소 수수료 (0.20%)
+
+# 6. 종목 심볼 설정 (Symbols Configuration)
+TRADE_SYMBOLS = ["TQQQ", "SQQQ"]
+CROSS_ASSET_SYMBOLS = ["NVDA", "QQQ", "SOXX", "VIXY", "IEF"]
+ALL_SYMBOLS = TRADE_SYMBOLS + CROSS_ASSET_SYMBOLS

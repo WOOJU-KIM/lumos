@@ -257,10 +257,10 @@ class AgenticTelegramBrain:
 
 6. 운용 퀀트 모델 및 매매 헌법 (Hard Rules):
    - 운용 모델: 하이브리드 MoE V3
-   - 매수 진입 절대 룰: GBDT 확신도 62% 이상 + 추세 필터(Screen 1) + 거시경제 차단(Veto) 미발동
-   - 청산 절대 룰: Max TP +3.5% / ATR Trailing Stop (손절 max 2~3.2%) / 15:50 NYT 전량 시장가 청산
+   - 매수 진입 절대 룰: GBDT 확신도 {GBDT_CONFIDENCE_THRESHOLD*100:.0f}% 이상 + 추세 필터(Screen 1) + 거시경제 차단(Veto) 미발동
+   - 청산 절대 룰: Max TP +{config.MAX_TP_PCT*100:.1f}% / {config.TRAILING_TRIGGER_PCT*100:.1f}% 도달 시 발동, -{config.TRAILING_DROP_PCT*100:.1f}% 하락 시 추격 익절 / 15:50 NYT 전량 시장가 청산
    - 리스크 관리: 99% 비중 진입 원칙. 3-Out 서킷브레이커는 영구 폐지.
-   - 미체결 스마트 주문: 3초 타임아웃 자동 취소 후 즉시 100% 현금 보존 및 다음 A급 타점(GBDT >= 60%) 재탐색"""
+   - 미체결 스마트 주문: 3초 타임아웃 자동 취소 후 즉시 100% 현금 보존 및 다음 A급 타점(GBDT >= {GBDT_CONFIDENCE_THRESHOLD*100:.0f}%) 재탐색"""
         return context
 
     def _call_gemini_with_fallback(self, prompt: str) -> Optional[str]:

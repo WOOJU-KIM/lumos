@@ -1,3 +1,4 @@
+import config
 from config import GBDT_CONFIDENCE_THRESHOLD
 import os
 import sys
@@ -63,6 +64,9 @@ class MoEMetaOrchestrator:
 
     def _try_load_default_models(self):
         """디스크에 직렬화된 최신 챔피언 모델 자동 로드"""
+        if getattr(self.gbdt_engine, "model", None) is not None:
+            return
+
         import __main__
         if not hasattr(__main__, "MoEMetaOrchestrator"):
             __main__.MoEMetaOrchestrator = MoEMetaOrchestrator
@@ -260,9 +264,10 @@ class MoEMetaOrchestrator:
         # 3. [GBDT 3-Class 파형 스나이퍼 모델 신호 및 확신도 계산]
         dir_gbdt = "NONE"
         conf_gbdt = 0.50
+        gbdt_probs = {"LONG": 0.33, "SHORT": 0.33, "NONE": 0.34}
         try:
             live_tqqq_15m = _get_live_df("TQQQ", current_time_str) if "live_prices" in locals() else df_candle_15m
-            gbdt_sig, gbdt_conf, _ = self.gbdt_engine.predict_signal(live_tqqq_15m, live_prices=live_prices)
+            gbdt_sig, gbdt_conf, _, gbdt_probs = self.gbdt_engine.predict_signal_full(live_tqqq_15m)
             conf_gbdt = gbdt_conf
             if gbdt_sig == 1:
                 dir_gbdt = "LONG_TQQQ"
@@ -275,6 +280,11 @@ class MoEMetaOrchestrator:
             (dir_gbdt == "LONG_TQQQ" and dir_cross == "SHORT_SQQQ") or
             (dir_gbdt == "SHORT_SQQQ" and dir_cross == "LONG_TQQQ")
         )
+
+        if not getattr(config, "USE_CROSS_ASSET_VETO", True):
+            is_cross_veto = False
+
+
 
         # 4. [MoE 의사결정 집행]
         cross_hurdle = getattr(self, "cross_asset_threshold", GBDT_CONFIDENCE_THRESHOLD)
@@ -317,25 +327,28 @@ class MoEMetaOrchestrator:
                 direction = "NONE"
                 final_conf = max(conf_cross, conf_gbdt)
 
-        # 5. [3중 스크린 검증] - SOXX 60분봉 추세 및 5m 눌림목
+        # 5. [3중 스크린 검증] - QQQ 60분봉 추세
         is_60m_trend_ok = True
         try:
-            soxx_live = live_prices.get("SOXX", 0.0) if live_prices else 0.0
-            if soxx_live > 0:
-                soxx_60m = self.data_lake.get_candles_with_live_tick("SOXX", "60m", live_price=soxx_live)
+            qqq_live = live_prices.get("QQQ", 0.0) if live_prices else 0.0
+            if qqq_live > 0:
+                qqq_60m = self.data_lake.get_candles_with_live_tick("QQQ", "60m", live_price=qqq_live)
             else:
-                soxx_60m = self.data_lake.load_candles("SOXX", "60m")
+                qqq_60m = self.data_lake.load_candles("QQQ", "60m")
                 
-            if not soxx_60m.empty and len(soxx_60m) >= 20:
-                s_c = soxx_60m['Close'] if 'Close' in soxx_60m else soxx_60m['close']
-                soxx_c = s_c.iloc[-1]
-                soxx_ema = s_c.ewm(span=20, adjust=False).mean().iloc[-1]
+            if not qqq_60m.empty and len(qqq_60m) >= 20:
+                s_c = qqq_60m['Close'] if 'Close' in qqq_60m else qqq_60m['close']
+                qqq_c = s_c.iloc[-1]
+                qqq_ema = s_c.ewm(span=config.QQQ_EMA_PERIOD, adjust=False).mean().iloc[-1]
                 if direction == "LONG_TQQQ":
-                    is_60m_trend_ok = (soxx_c >= soxx_ema * 0.998)
+                    is_60m_trend_ok = (qqq_c >= qqq_ema * 0.998)
                 elif direction == "SHORT_SQQQ":
-                    is_60m_trend_ok = (soxx_c <= soxx_ema * 1.002)
+                    is_60m_trend_ok = (qqq_c <= qqq_ema * 1.002)
         except Exception:
             pass
+
+        if not getattr(config, "USE_60M_TREND_FILTER", True):
+            is_60m_trend_ok = True
 
         df_feat = getattr(self, "gbdt_engine", self).extract_features(df_candle_15m, live_prices=live_prices) if hasattr(self, "gbdt_engine") else df_candle_15m
         last_row = df_feat.iloc[-1] if not df_feat.empty else {}
@@ -343,9 +356,9 @@ class MoEMetaOrchestrator:
         dip_ok = True
         try:
             rsi_5m = float(last_row.get("RSI_14", 50.0))
-            if direction == "LONG_TQQQ" and rsi_5m > 68.0:
+            if direction == "LONG_TQQQ" and rsi_5m > config.RSI_OVERBOUGHT_THRESHOLD:
                 dip_ok = False
-            elif direction == "SHORT_SQQQ" and rsi_5m < 32.0:
+            elif direction == "SHORT_SQQQ" and rsi_5m < config.RSI_OVERSOLD_THRESHOLD:
                 dip_ok = False
         except Exception:
             pass
@@ -381,6 +394,7 @@ class MoEMetaOrchestrator:
             "is_60m_trend_ok": bool(is_60m_trend_ok),
             "dip_ok": bool(dip_ok),
             "all_gating_confidences": all_confidences,
+            "gbdt_probs": gbdt_probs,
             "features": feat_dict,
             "timestamp": current_time_str or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }

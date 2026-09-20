@@ -1,0 +1,7 @@
+{"id": 1789653270043, "timestamp": "22:54:30", "datetime": "2026-09-17 22:54:30", "level": "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+{"id": 1789653272457, "timestamp": "22:54:32", "datetime": "2026-09-17 22:54:32", "level": "INFO", "source": "SystemCore", "message": "🚀 Lumos v10.2 자율 트레이딩 통합 시스템 코어 초기화 완료", "meta": {}}
+{"id": 1789653272458, "timestamp": "22:54:32", "datetime": "2026-09-17 22:54:32", "level": "KIWOOM", "source": "KiwoomBroker", "message": "🏛 키움 OpenAPI (VIRTUAL 모의투자) 인증 토큰 발급 및 계좌 잔고 동기화 완료", "meta": {}}
+{"id": 1789653272459, "timestamp": "22:54:32", "datetime": "2026-09-17 22:54:32", "level": "MOE", "source": "MoEOrchestrator", "message": "🧠 Track 6: MoE AI 메타 오케스트레이터 게이팅 네트워크 활성화 (승률 80.0% / PF 3.12)", "meta": {}}
+{"id": 1789653272459, "timestamp": "22:54:32", "datetime": "2026-09-17 22:54:32", "level": "INFO", "source": "MarketGuard", "message": "🛡 장 마감 90분 전 신규 진입 차단 가드 (No-Entry Cutoff: 14:30 NYT) 활성화", "meta": {}}
+{"id": 1789653272459, "timestamp": "22:54:32", "datetime": "2026-09-17 22:54:32", "level": "INFO", "source": "LiveRunner", "message": "⏳ 뉴욕 정규장 개장(22:30 KST) 대기 중 - 15초 주기 실시간 관제 루프 가동 중", "meta": {}}
+{"id": 1789653278432, "timestamp": "22:54:38", "datetime": "2026-09-17 22:54:38", "level": "TRADE", "source": "AutoExecution", "message": "?? [키움증권(Kiwoom) SOXL 1? ] 10?@ $30.03 (???80.0%)", "meta": {}}

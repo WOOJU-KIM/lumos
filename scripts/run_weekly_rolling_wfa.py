@@ -20,6 +20,7 @@ if sys.platform.startswith('win'):
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+import config
 from config import DATA_DIR, BASE_DIR, MODELS_DIR
 from core.data_lake import MarketDataLake
 from core.ml_engine import MLFeatureEngine
@@ -50,15 +51,15 @@ def run_weekly_rolling_walk_forward():
     print("⏳ [1/4] 데이터 레이크에서 6개년(38,000+개 분봉) 데이터 로드 중...")
     tqqq_15m = lake.load_candles("TQQQ", "15m")
     sqqq_15m = lake.load_candles("SQQQ", "15m")
-    soxx_60m = lake.load_candles("SOXX", "60m")
+    qqq_60m = lake.load_candles("QQQ", "60m")
     nvda_15m = lake.load_candles("NVDA", "15m")
     soxx_15m = lake.load_candles("SOXX", "15m")
     qqq_15m  = lake.load_candles("QQQ", "15m")
     vixy_15m = lake.load_candles("VIXY", "15m")
     ief_15m  = lake.load_candles("IEF", "15m")
 
-    # 60m 20EMA
-    soxx_60m['ema20'] = soxx_60m['Close'].ewm(span=20, adjust=False).mean()
+    # 60m QQQ EMA
+    qqq_60m['ema_filter'] = qqq_60m['Close'].ewm(span=config.QQQ_EMA_PERIOD, adjust=False).mean()
 
     # 2. 피처 및 타겟 추출 (전체 시계열 사전 계산)
     print("⏳ [2/4] 머신러닝 피처 및 Triple Barrier 타겟 사전 추출 중...")
@@ -203,21 +204,32 @@ def run_weekly_rolling_walk_forward():
                     exit_price = None
                     exit_reason = None
 
-                    tp_px = entry_px * 1.030
-                    sl_px = entry_px * 0.980
+                    if 'peak_high' not in active_pos:
+                        active_pos['peak_high'] = cur_high
+                    else:
+                        active_pos['peak_high'] = max(active_pos['peak_high'], cur_high)
+
+                    tp_px = entry_px * (1.0 + config.MAX_TP_PCT)
+                    sl_px = entry_px * (1.0 - config.SL_MIN_PCT)
+
+                    current_sl_px = sl_px
+                    trailing_trigger_px = entry_px * (1.0 + config.TRAILING_TRIGGER_PCT)
+                    if active_pos['peak_high'] >= trailing_trigger_px:
+                        safety_sl_px = entry_px * (1.0 + max(0.0, config.TRAILING_TRIGGER_PCT - 0.015))
+                        current_sl_px = max(safety_sl_px, active_pos['peak_high'] * (1.0 - config.TRAILING_DROP_PCT))
 
                     if cur_high >= tp_px:
                         exit_price = tp_px
-                        exit_reason = "TAKE_PROFIT_3PCT"
-                    elif cur_low <= sl_px:
-                        exit_price = sl_px
-                        exit_reason = "STOP_LOSS_2PCT"
-                    elif active_pos['bars'] >= 6:
+                        exit_reason = "MAX_TP"
+                    elif cur_low <= current_sl_px:
+                        exit_price = current_sl_px
+                        exit_reason = "TRAILING_SL" if current_sl_px > sl_px else "STOP_LOSS"
+                    elif active_pos['bars'] * 15 >= config.TIME_STOP_MINUTES:
                         exit_price = cur_close
-                        exit_reason = "TIME_STOP_90MIN"
-                    elif time_str >= '15:45':
+                        exit_reason = "TIME_STOP"
+                    elif time_str >= config.PHASE_EOD_CLEAR:
                         exit_price = cur_close
-                        exit_reason = "EOD_MARKET_CLOSE"
+                        exit_reason = "EOD_CLEAR"
 
                     if exit_price is not None:
                         raw_ret = (exit_price / entry_px) - 1.0
@@ -254,15 +266,15 @@ def run_weekly_rolling_walk_forward():
                         continue
 
                 # 2. 신규 진입 검토
-                if active_pos is None and time_str < '14:30':
-                    past_soxx_60 = soxx_60m[soxx_60m['datetime'] <= curr_dt]
-                    soxx_60m_bull = True
-                    soxx_60m_bear = True
-                    if len(past_soxx_60) >= 20:
-                        soxx_c = past_soxx_60['Close'].iloc[-1]
-                        soxx_ema20 = past_soxx_60['ema20'].iloc[-1]
-                        soxx_60m_bull = (soxx_c >= soxx_ema20 * 0.998)
-                        soxx_60m_bear = (soxx_c <= soxx_ema20 * 1.002)
+                if active_pos is None and time_str < config.PHASE_MAIN_END:
+                    past_qqq_60 = qqq_60m[qqq_60m['datetime'] <= curr_dt]
+                    qqq_60m_bull = True
+                    qqq_60m_bear = True
+                    if len(past_qqq_60) >= 20:
+                        q_c = past_qqq_60['Close'].iloc[-1]
+                        q_ema = past_qqq_60['ema_filter'].iloc[-1]
+                        qqq_60m_bull = (q_c >= q_ema * 0.998)
+                        qqq_60m_bear = (q_c <= q_ema * 1.002)
 
                     dir_gbdt = row.get('Direction', 'NONE')
                     conf_gbdt = float(row.get('Confidence', 0.50))
@@ -304,20 +316,22 @@ def run_weekly_rolling_walk_forward():
                         elif sig_code < 0:
                             cross_dir = "SHORT_SQQQ"
 
-                    if dir_gbdt == "LONG_TQQQ" and conf_gbdt >= 0.60 and soxx_60m_bull and cross_dir != "SHORT_SQQQ":
+                    if dir_gbdt == "LONG_TQQQ" and conf_gbdt >= config.GBDT_CONFIDENCE_THRESHOLD and qqq_60m_bull and cross_dir != "SHORT_SQQQ":
                         active_pos = {
                             'sym': 'TQQQ',
                             'entry_px': cur_tqqq_close,
                             'entry_dt': curr_dt,
-                            'bars': 0
+                            'bars': 0,
+                            'peak_high': cur_tqqq_close
                         }
-                    elif dir_gbdt == "SHORT_SQQQ" and conf_gbdt >= 0.60 and soxx_60m_bear and cross_dir != "LONG_TQQQ":
+                    elif dir_gbdt == "SHORT_SQQQ" and conf_gbdt >= config.GBDT_CONFIDENCE_THRESHOLD and qqq_60m_bear and cross_dir != "LONG_TQQQ":
                         if cur_sqqq_close > 0:
                             active_pos = {
                                 'sym': 'SQQQ',
                                 'entry_px': cur_sqqq_close,
                                 'entry_dt': curr_dt,
-                                'bars': 0
+                                'bars': 0,
+                                'peak_high': cur_sqqq_close
                             }
 
         week_progress += 1

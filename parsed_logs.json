@@ -1,0 +1,335 @@
+[
+  {
+    "id": 1789651675291,
+    "timestamp": "22:27:55",
+    "datetime": "2026-09-17 22:27:55",
+    "level": "ERROR",
+    "source": "BuyChase",
+    "message": "?   ? : ❌ [TR_ERROR] API_ID=ust20000 | Code=20 | Msg=[2000](RC4057:모의투자 장시작전)",
+    "meta": {}
+  },
+  {
+    "id": 1789651782033,
+    "timestamp": "22:29:42",
+    "datetime": "2026-09-17 22:29:42",
+    "level": "ERROR",
+    "source": "BuyChase",
+    "message": "?   ? : ❌ [TR_ERROR] API_ID=ust20000 | Code=20 | Msg=[2000](RC4057:모의투자 장시작전)",
+    "meta": {}
+  },
+  {
+    "id": 1789652862479,
+    "timestamp": "22:47:42",
+    "datetime": "2026-09-17 22:47:42",
+    "level": "INFO",
+    "source": "LiveRunner",
+    "message": "? VIRTUAL (모의투자) ?  ? 확신도? (: 61112456, 확신도 $71,617.01)",
+    "meta": {}
+  },
+  {
+    "id": 1789652862485,
+    "timestamp": "22:47:42",
+    "datetime": "2026-09-17 22:47:42",
+    "level": "INFO",
+    "source": "LiveRunner",
+    "message": "확신도?  확신도확신도확신도",
+    "meta": {}
+  },
+  {
+    "id": 1789652884568,
+    "timestamp": "22:48:04",
+    "datetime": "2026-09-17 22:48:04",
+    "level": "INFO",
+    "source": "AI",
+    "message": "15분봉 정기 브리핑 완료 (확신도: 50.0%)",
+    "meta": {}
+  },
+  {
+    "id": 1789653278432,
+    "timestamp": "22:54:38",
+    "datetime": "2026-09-17 22:54:38",
+    "level": "TRADE",
+    "source": "AutoExecution",
+    "message": "?? [키움증권(Kiwoom) TQQQ 1? ] 10?@ $30.03 (???80.0%)",
+    "meta": {}
+  },
+  {
+    "id": 1789653283167,
+    "timestamp": "22:54:43",
+    "datetime": "2026-09-17 22:54:43",
+    "level": "TRADE",
+    "source": "OrderChasing",
+    "message": "??[ 2??? ?? TQQQ 10?@ $30.03 (???1/1)",
+    "meta": {}
+  },
+  {
+    "id": 1789653287241,
+    "timestamp": "22:54:47",
+    "datetime": "2026-09-17 22:54:47",
+    "level": "TRADE",
+    "source": "OrderChasing",
+    "message": "? [  ?] TQQQ ? ? (??100%  ??AI ???????)",
+    "meta": {}
+  },
+  {
+    "id": 1789653540133,
+    "timestamp": "22:59:00",
+    "datetime": "2026-09-17 22:59:00",
+    "level": "TRADE",
+    "source": "AutoExecution",
+    "message": "?? [키움증권(Kiwoom) TQQQ 1? ] 10?@ $30.03 (???80.0%)",
+    "meta": {}
+  },
+  {
+    "id": 1789653544975,
+    "timestamp": "22:59:04",
+    "datetime": "2026-09-17 22:59:04",
+    "level": "TRADE",
+    "source": "OrderChasing",
+    "message": "??[ 2??? ?? TQQQ 10?@ $30.03 (???1/1)",
+    "meta": {}
+  },
+  {
+    "id": 1789653548751,
+    "timestamp": "22:59:08",
+    "datetime": "2026-09-17 22:59:08",
+    "level": "TRADE",
+    "source": "OrderChasing",
+    "message": "? [  ?] TQQQ ? ? (??100%  ??AI ???????)",
+    "meta": {}
+  },
+  {
+    "id": 1789654011709,
+    "timestamp": "23:06:51",
+    "datetime": "2026-09-17 23:06:51",
+    "level": "TRADE",
+    "source": "AutoExecution",
+    "message": "?? [키움증권(Kiwoom) TQQQ 1? ] 10?@ $30.03 (???80.0%)",
+    "meta": {}
+  },
+  {
+    "id": 1789654016470,
+    "timestamp": "23:06:56",
+    "datetime": "2026-09-17 23:06:56",
+    "level": "TRADE",
+    "source": "OrderChasing",
+    "message": "??[ 2??? ?? TQQQ 10?@ $30.03 (???1/1)",
+    "meta": {}
+  },
+  {
+    "id": 1789654020243,
+    "timestamp": "23:07:00",
+    "datetime": "2026-09-17 23:07:00",
+    "level": "TRADE",
+    "source": "OrderChasing",
+    "message": "? [  ?] TQQQ ? ? (??100%  ??AI ???????)",
+    "meta": {}
+  },
+  {
+    "id": 1789655000856,
+    "timestamp": "23:23:20",
+    "datetime": "2026-09-17 23:23:20",
+    "level": "INFO",
+    "source": "AI",
+    "message": "15분봉 정기 브리핑 완료 (최대확신도: 64.3%)",
+    "meta": {}
+  },
+  {
+    "id": 1789655106590,
+    "timestamp": "23:25:06",
+    "datetime": "2026-09-17 23:25:06",
+    "level": "INFO",
+    "source": "AI",
+    "message": "15분봉 정기 브리핑 완료 (최대확신도: 65.5%)",
+    "meta": {}
+  },
+  {
+    "id": 1789655195591,
+    "timestamp": "23:26:35",
+    "datetime": "2026-09-17 23:26:35",
+    "level": "INFO",
+    "source": "AI",
+    "message": "15분봉 정기 브리핑 완료 (최대확신도: 65.6%)",
+    "meta": {}
+  },
+  {
+    "id": 1789655420340,
+    "timestamp": "23:30:20",
+    "datetime": "2026-09-17 23:30:20",
+    "level": "INFO",
+    "source": "AI",
+    "message": "15분봉 정기 브리핑 완료 (최대확신도: 66.0%)",
+    "meta": {}
+  },
+  {
+    "id": 1789656321512,
+    "timestamp": "23:45:21",
+    "datetime": "2026-09-17 23:45:21",
+    "level": "INFO",
+    "source": "AI",
+    "message": "15분봉 정기 브리핑 완료 (최대확신도: 69.5%)",
+    "meta": {}
+  },
+  {
+    "id": 1789657221991,
+    "timestamp": "00:00:21",
+    "datetime": "2026-09-18 00:00:21",
+    "level": "INFO",
+    "source": "AI",
+    "message": "15분봉 정기 브리핑 완료 (최대확신도: 68.7%)",
+    "meta": {}
+  },
+  {
+    "id": 1789658120757,
+    "timestamp": "00:15:20",
+    "datetime": "2026-09-18 00:15:20",
+    "level": "INFO",
+    "source": "AI",
+    "message": "15분봉 정기 브리핑 완료 (최대확신도: 67.5%)",
+    "meta": {}
+  },
+  {
+    "id": 1789659021770,
+    "timestamp": "00:30:21",
+    "datetime": "2026-09-18 00:30:21",
+    "level": "INFO",
+    "source": "AI",
+    "message": "15분봉 정기 브리핑 완료 (최대확신도: 69.1%)",
+    "meta": {}
+  },
+  {
+    "id": 1789659919702,
+    "timestamp": "00:45:19",
+    "datetime": "2026-09-18 00:45:19",
+    "level": "INFO",
+    "source": "AI",
+    "message": "15분봉 정기 브리핑 완료 (최대확신도: 63.9%)",
+    "meta": {}
+  },
+  {
+    "id": 1789660819481,
+    "timestamp": "01:00:19",
+    "datetime": "2026-09-18 01:00:19",
+    "level": "INFO",
+    "source": "AI",
+    "message": "15분봉 정기 브리핑 완료 (최대확신도: 62.5%)",
+    "meta": {}
+  },
+  {
+    "id": 1789661721596,
+    "timestamp": "01:15:21",
+    "datetime": "2026-09-18 01:15:21",
+    "level": "INFO",
+    "source": "AI",
+    "message": "15분봉 정기 브리핑 완료 (최대확신도: 60.9%)",
+    "meta": {}
+  },
+  {
+    "id": 1789662619476,
+    "timestamp": "01:30:19",
+    "datetime": "2026-09-18 01:30:19",
+    "level": "INFO",
+    "source": "AI",
+    "message": "15분봉 정기 브리핑 완료 (최대확신도: 59.7%)",
+    "meta": {}
+  },
+  {
+    "id": 1789663520088,
+    "timestamp": "01:45:20",
+    "datetime": "2026-09-18 01:45:20",
+    "level": "INFO",
+    "source": "AI",
+    "message": "15분봉 정기 브리핑 완료 (최대확신도: 63.8%)",
+    "meta": {}
+  },
+  {
+    "id": 1789664420801,
+    "timestamp": "02:00:20",
+    "datetime": "2026-09-18 02:00:20",
+    "level": "INFO",
+    "source": "AI",
+    "message": "15분봉 정기 브리핑 완료 (최대확신도: 46.4%)",
+    "meta": {}
+  },
+  {
+    "id": 1789665320693,
+    "timestamp": "02:15:20",
+    "datetime": "2026-09-18 02:15:20",
+    "level": "INFO",
+    "source": "AI",
+    "message": "15분봉 정기 브리핑 완료 (최대확신도: 40.5%)",
+    "meta": {}
+  },
+  {
+    "id": 1789666219600,
+    "timestamp": "02:30:19",
+    "datetime": "2026-09-18 02:30:19",
+    "level": "INFO",
+    "source": "AI",
+    "message": "15분봉 정기 브리핑 완료 (최대확신도: 42.0%)",
+    "meta": {}
+  },
+  {
+    "id": 1789667122395,
+    "timestamp": "02:45:22",
+    "datetime": "2026-09-18 02:45:22",
+    "level": "INFO",
+    "source": "AI",
+    "message": "15분봉 정기 브리핑 완료 (최대확신도: 45.3%)",
+    "meta": {}
+  },
+  {
+    "id": 1789668020063,
+    "timestamp": "03:00:20",
+    "datetime": "2026-09-18 03:00:20",
+    "level": "INFO",
+    "source": "AI",
+    "message": "15분봉 정기 브리핑 완료 (최대확신도: 38.1%)",
+    "meta": {}
+  },
+  {
+    "id": 1789668919787,
+    "timestamp": "03:15:19",
+    "datetime": "2026-09-18 03:15:19",
+    "level": "INFO",
+    "source": "AI",
+    "message": "15분봉 정기 브리핑 완료 (최대확신도: 37.8%)",
+    "meta": {}
+  },
+  {
+    "id": 1789669822911,
+    "timestamp": "03:30:22",
+    "datetime": "2026-09-18 03:30:22",
+    "level": "INFO",
+    "source": "AI",
+    "message": "15분봉 정기 브리핑 완료 (최대확신도: 38.1%)",
+    "meta": {}
+  },
+  {
+    "id": 1789670721351,
+    "timestamp": "03:45:21",
+    "datetime": "2026-09-18 03:45:21",
+    "level": "INFO",
+    "source": "AI",
+    "message": "15분봉 정기 브리핑 완료 (최대확신도: 53.9%)",
+    "meta": {}
+  },
+  {
+    "id": 1789671622120,
+    "timestamp": "04:00:22",
+    "datetime": "2026-09-18 04:00:22",
+    "level": "INFO",
+    "source": "AI",
+    "message": "15분봉 정기 브리핑 완료 (최대확신도: 51.9%)",
+    "meta": {}
+  },
+  {
+    "id": 1789672521838,
+    "timestamp": "04:15:21",
+    "datetime": "2026-09-18 04:15:21",
+    "level": "INFO",
+    "source": "AI",
+    "message": "15분봉 정기 브리핑 완료 (최대확신도: 35.3%)",
+    "meta": {}
+  }
+]

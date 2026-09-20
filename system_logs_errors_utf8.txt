@@ -1,0 +1,351 @@
+﻿
+data\system_logs.jsonl:198961:{"id": 1789651669923, "timestamp": "22:27:49", "datetime": "2026-09-17 22:27:49", "level"
+: "INFO", "source": "SystemCore", "message": "🚀 Lumos v10.2 자율 트레이딩 통합 시스템 코어 초기화 완료", "meta": {}}
+data\system_logs.jsonl:198962:{"id": 1789651669924, "timestamp": "22:27:49", "datetime": "2026-09-17 22:27:49", "level"
+: "KIWOOM", "source": "KiwoomBroker", "message": "🏛 키움 OpenAPI (VIRTUAL 모의투자) 인증 토큰 발급 및 계좌 잔고 동기화 완료", "meta": {}}
+data\system_logs.jsonl:198963:{"id": 1789651669924, "timestamp": "22:27:49", "datetime": "2026-09-17 22:27:49", "level"
+: "MOE", "source": "MoEOrchestrator", "message": "🧠 Track 6: MoE AI 메타 오케스트레이터 게이팅 네트워크 활성화 (승률 80.0% / PF 3.12)", "me
+ta": {}}
+data\system_logs.jsonl:198964:{"id": 1789651669925, "timestamp": "22:27:49", "datetime": "2026-09-17 22:27:49", "level"
+: "INFO", "source": "MarketGuard", "message": "🛡 장 마감 90분 전 신규 진입 차단 가드 (No-Entry Cutoff: 14:30 NYT) 활성화", "meta": {}}
+data\system_logs.jsonl:198965:{"id": 1789651669926, "timestamp": "22:27:49", "datetime": "2026-09-17 22:27:49", "level"
+: "INFO", "source": "LiveRunner", "message": "⏳ 뉴욕 정규장 개장(22:30 KST) 대기 중 - 15초 주기 실시간 관제 루프 가동 중", "meta": {}}
+data\system_logs.jsonl:198966:{"id": 1789651675291, "timestamp": "22:27:55", "datetime": "2026-09-17 22:27:55", "level"
+: "ERROR", "source": "BuyChase", "message": "?   ? : ❌ [TR_ERROR] API_ID=ust20000 | Code=20 | Msg=[2000](RC4057:모의투자 장시
+작전)", "meta": {}}
+data\system_logs.jsonl:198967:{"id": 1789651776428, "timestamp": "22:29:36", "datetime": "2026-09-17 22:29:36", "level"
+: "INFO", "source": "SystemCore", "message": "🚀 Lumos v10.2 자율 트레이딩 통합 시스템 코어 초기화 완료", "meta": {}}
+data\system_logs.jsonl:198968:{"id": 1789651776429, "timestamp": "22:29:36", "datetime": "2026-09-17 22:29:36", "level"
+: "KIWOOM", "source": "KiwoomBroker", "message": "🏛 키움 OpenAPI (VIRTUAL 모의투자) 인증 토큰 발급 및 계좌 잔고 동기화 완료", "meta": {}}
+data\system_logs.jsonl:198969:{"id": 1789651776430, "timestamp": "22:29:36", "datetime": "2026-09-17 22:29:36", "level"
+: "MOE", "source": "MoEOrchestrator", "message": "🧠 Track 6: MoE AI 메타 오케스트레이터 게이팅 네트워크 활성화 (승률 80.0% / PF 3.12)", "me
+ta": {}}
+data\system_logs.jsonl:198970:{"id": 1789651776430, "timestamp": "22:29:36", "datetime": "2026-09-17 22:29:36", "level"
+: "INFO", "source": "MarketGuard", "message": "🛡 장 마감 90분 전 신규 진입 차단 가드 (No-Entry Cutoff: 14:30 NYT) 활성화", "meta": {}}
+data\system_logs.jsonl:198971:{"id": 1789651776431, "timestamp": "22:29:36", "datetime": "2026-09-17 22:29:36", "level"
+: "INFO", "source": "LiveRunner", "message": "⏳ 뉴욕 정규장 개장(22:30 KST) 대기 중 - 15초 주기 실시간 관제 루프 가동 중", "meta": {}}
+data\system_logs.jsonl:198972:{"id": 1789651782033, "timestamp": "22:29:42", "datetime": "2026-09-17 22:29:42", "level"
+: "ERROR", "source": "BuyChase", "message": "?   ? : ❌ [TR_ERROR] API_ID=ust20000 | Code=20 | Msg=[2000](RC4057:모의투자 장시
+작전)", "meta": {}}
+data\system_logs.jsonl:198973:{"id": 1789652123911, "timestamp": "22:35:23", "datetime": "2026-09-17 22:35:23", "level"
+: "INFO", "source": "SystemCore", "message": "🚀 Lumos v10.2 자율 트레이딩 통합 시스템 코어 초기화 완료", "meta": {}}
+data\system_logs.jsonl:198974:{"id": 1789652123928, "timestamp": "22:35:23", "datetime": "2026-09-17 22:35:23", "level"
+: "KIWOOM", "source": "KiwoomBroker", "message": "🏛 키움 OpenAPI (VIRTUAL 모의투자) 인증 토큰 발급 및 계좌 잔고 동기화 완료", "meta": {}}
+data\system_logs.jsonl:198975:{"id": 1789652123929, "timestamp": "22:35:23", "datetime": "2026-09-17 22:35:23", "level"
+: "MOE", "source": "MoEOrchestrator", "message": "🧠 Track 6: MoE AI 메타 오케스트레이터 게이팅 네트워크 활성화 (승률 80.0% / PF 3.12)", "me
+ta": {}}
+data\system_logs.jsonl:198976:{"id": 1789652123930, "timestamp": "22:35:23", "datetime": "2026-09-17 22:35:23", "level"
+: "INFO", "source": "MarketGuard", "message": "🛡 장 마감 90분 전 신규 진입 차단 가드 (No-Entry Cutoff: 14:30 NYT) 활성화", "meta": {}}
+data\system_logs.jsonl:198977:{"id": 1789652123930, "timestamp": "22:35:23", "datetime": "2026-09-17 22:35:23", "level"
+: "INFO", "source": "LiveRunner", "message": "⏳ 뉴욕 정규장 개장(22:30 KST) 대기 중 - 15초 주기 실시간 관제 루프 가동 중", "meta": {}}
+data\system_logs.jsonl:198978:{"id": 1789652125154, "timestamp": "22:35:25", "datetime": "2026-09-17 22:35:25", "level"
+: "INFO", "source": "LiveRunner", "message": "? VIRTUAL (모의투자) ?  ? ??? (: 61112456, ?? $71,620.25)", "meta": {}}
+data\system_logs.jsonl:198979:{"id": 1789652125158, "timestamp": "22:35:25", "datetime": "2026-09-17 22:35:25", "level"
+: "INFO", "source": "LiveRunner", "message": "???  ??????", "meta": {}}
+data\system_logs.jsonl:198981:{"id": 1789652146424, "timestamp": "22:35:46", "datetime": "2026-09-17 22:35:46", "level"
+: "INFO", "source": "AI", "message": "15???? ? (?: 50.0%)", "meta": {}}
+data\system_logs.jsonl:198992:{"id": 1789652725460, "timestamp": "22:45:25", "datetime": "2026-09-17 22:45:25", "level"
+: "INFO", "source": "AI", "message": "15???? ? (?: 50.0%)", "meta": {}}
+data\system_logs.jsonl:198996:{"id": 1789652857851, "timestamp": "22:47:37", "datetime": "2026-09-17 22:47:37", "level"
+: "INFO", "source": "SystemCore", "message": "🚀 Lumos v10.2 자율 트레이딩 통합 시스템 코어 초기화 완료", "meta": {}}
+data\system_logs.jsonl:198997:{"id": 1789652857852, "timestamp": "22:47:37", "datetime": "2026-09-17 22:47:37", "level"
+: "KIWOOM", "source": "KiwoomBroker", "message": "🏛 키움 OpenAPI (VIRTUAL 모의투자) 인증 토큰 발급 및 계좌 잔고 동기화 완료", "meta": {}}
+data\system_logs.jsonl:198998:{"id": 1789652857853, "timestamp": "22:47:37", "datetime": "2026-09-17 22:47:37", "level"
+: "MOE", "source": "MoEOrchestrator", "message": "🧠 Track 6: MoE AI 메타 오케스트레이터 게이팅 네트워크 활성화 (승률 80.0% / PF 3.12)", "me
+ta": {}}
+data\system_logs.jsonl:198999:{"id": 1789652857853, "timestamp": "22:47:37", "datetime": "2026-09-17 22:47:37", "level"
+: "INFO", "source": "MarketGuard", "message": "🛡 장 마감 90분 전 신규 진입 차단 가드 (No-Entry Cutoff: 14:30 NYT) 활성화", "meta": {}}
+data\system_logs.jsonl:199000:{"id": 1789652857854, "timestamp": "22:47:37", "datetime": "2026-09-17 22:47:37", "level"
+: "INFO", "source": "LiveRunner", "message": "⏳ 뉴욕 정규장 개장(22:30 KST) 대기 중 - 15초 주기 실시간 관제 루프 가동 중", "meta": {}}
+data\system_logs.jsonl:199001:{"id": 1789652862479, "timestamp": "22:47:42", "datetime": "2026-09-17 22:47:42", "level"
+: "INFO", "source": "LiveRunner", "message": "? VIRTUAL (모의투자) ?  ? 확신도? (: 61112456, 확신도 $71,617.01)", "meta": {}}
+data\system_logs.jsonl:199002:{"id": 1789652862485, "timestamp": "22:47:42", "datetime": "2026-09-17 22:47:42", "level"
+: "INFO", "source": "LiveRunner", "message": "확신도?  확신도확신도확신도", "meta": {}}
+data\system_logs.jsonl:199004:{"id": 1789652884568, "timestamp": "22:48:04", "datetime": "2026-09-17 22:48:04", "level"
+: "INFO", "source": "AI", "message": "15분봉 정기 브리핑 완료 (확신도: 50.0%)", "meta": {}}
+data\system_logs.jsonl:199005:{"id": 1789652916494, "timestamp": "22:48:36", "datetime": "2026-09-17 22:48:36", "level"
+: "INFO", "source": "SystemCore", "message": "🚀 Lumos v10.2 자율 트레이딩 통합 시스템 코어 초기화 완료", "meta": {}}
+data\system_logs.jsonl:199006:{"id": 1789652916511, "timestamp": "22:48:36", "datetime": "2026-09-17 22:48:36", "level"
+: "KIWOOM", "source": "KiwoomBroker", "message": "🏛 키움 OpenAPI (VIRTUAL 모의투자) 인증 토큰 발급 및 계좌 잔고 동기화 완료", "meta": {}}
+data\system_logs.jsonl:199007:{"id": 1789652916512, "timestamp": "22:48:36", "datetime": "2026-09-17 22:48:36", "level"
+: "MOE", "source": "MoEOrchestrator", "message": "🧠 Track 6: MoE AI 메타 오케스트레이터 게이팅 네트워크 활성화 (승률 80.0% / PF 3.12)", "me
+ta": {}}
+data\system_logs.jsonl:199008:{"id": 1789652916513, "timestamp": "22:48:36", "datetime": "2026-09-17 22:48:36", "level"
+: "INFO", "source": "MarketGuard", "message": "🛡 장 마감 90분 전 신규 진입 차단 가드 (No-Entry Cutoff: 14:30 NYT) 활성화", "meta": {}}
+data\system_logs.jsonl:199009:{"id": 1789652916514, "timestamp": "22:48:36", "datetime": "2026-09-17 22:48:36", "level"
+: "INFO", "source": "LiveRunner", "message": "⏳ 뉴욕 정규장 개장(22:30 KST) 대기 중 - 15초 주기 실시간 관제 루프 가동 중", "meta": {}}
+data\system_logs.jsonl:199010:{"id": 1789652956051, "timestamp": "22:49:16", "datetime": "2026-09-17 22:49:16", "level"
+: "INFO", "source": "SystemCore", "message": "🚀 Lumos v10.2 자율 트레이딩 통합 시스템 코어 초기화 완료", "meta": {}}
+data\system_logs.jsonl:199011:{"id": 1789652956070, "timestamp": "22:49:16", "datetime": "2026-09-17 22:49:16", "level"
+: "KIWOOM", "source": "KiwoomBroker", "message": "🏛 키움 OpenAPI (VIRTUAL 모의투자) 인증 토큰 발급 및 계좌 잔고 동기화 완료", "meta": {}}
+data\system_logs.jsonl:199012:{"id": 1789652956071, "timestamp": "22:49:16", "datetime": "2026-09-17 22:49:16", "level"
+: "MOE", "source": "MoEOrchestrator", "message": "🧠 Track 6: MoE AI 메타 오케스트레이터 게이팅 네트워크 활성화 (승률 80.0% / PF 3.12)", "me
+ta": {}}
+data\system_logs.jsonl:199013:{"id": 1789652956071, "timestamp": "22:49:16", "datetime": "2026-09-17 22:49:16", "level"
+: "INFO", "source": "MarketGuard", "message": "🛡 장 마감 90분 전 신규 진입 차단 가드 (No-Entry Cutoff: 14:30 NYT) 활성화", "meta": {}}
+data\system_logs.jsonl:199014:{"id": 1789652956072, "timestamp": "22:49:16", "datetime": "2026-09-17 22:49:16", "level"
+: "INFO", "source": "LiveRunner", "message": "⏳ 뉴욕 정규장 개장(22:30 KST) 대기 중 - 15초 주기 실시간 관제 루프 가동 중", "meta": {}}
+data\system_logs.jsonl:199015:{"id": 1789652957918, "timestamp": "22:49:17", "datetime": "2026-09-17 22:49:17", "level"
+: "INFO", "source": "LiveRunner", "message": "? VIRTUAL (모의투자) ?  ? ??? (: 61112456, ?? $71,617.01)", "meta": {}}
+data\system_logs.jsonl:199016:{"id": 1789652957923, "timestamp": "22:49:17", "datetime": "2026-09-17 22:49:17", "level"
+: "INFO", "source": "LiveRunner", "message": "???  ??????", "meta": {}}
+data\system_logs.jsonl:199018:{"id": 1789652979508, "timestamp": "22:49:39", "datetime": "2026-09-17 22:49:39", "level"
+: "INFO", "source": "AI", "message": "15???? ? (?: 50.0%)", "meta": {}}
+data\system_logs.jsonl:199025:{"id": 1789653272457, "timestamp": "22:54:32", "datetime": "2026-09-17 22:54:32", "level"
+: "INFO", "source": "SystemCore", "message": "🚀 Lumos v10.2 자율 트레이딩 통합 시스템 코어 초기화 완료", "meta": {}}
+data\system_logs.jsonl:199026:{"id": 1789653272458, "timestamp": "22:54:32", "datetime": "2026-09-17 22:54:32", "level"
+: "KIWOOM", "source": "KiwoomBroker", "message": "🏛 키움 OpenAPI (VIRTUAL 모의투자) 인증 토큰 발급 및 계좌 잔고 동기화 완료", "meta": {}}
+data\system_logs.jsonl:199027:{"id": 1789653272459, "timestamp": "22:54:32", "datetime": "2026-09-17 22:54:32", "level"
+: "MOE", "source": "MoEOrchestrator", "message": "🧠 Track 6: MoE AI 메타 오케스트레이터 게이팅 네트워크 활성화 (승률 80.0% / PF 3.12)", "me
+ta": {}}
+data\system_logs.jsonl:199028:{"id": 1789653272459, "timestamp": "22:54:32", "datetime": "2026-09-17 22:54:32", "level"
+: "INFO", "source": "MarketGuard", "message": "🛡 장 마감 90분 전 신규 진입 차단 가드 (No-Entry Cutoff: 14:30 NYT) 활성화", "meta": {}}
+data\system_logs.jsonl:199029:{"id": 1789653272459, "timestamp": "22:54:32", "datetime": "2026-09-17 22:54:32", "level"
+: "INFO", "source": "LiveRunner", "message": "⏳ 뉴욕 정규장 개장(22:30 KST) 대기 중 - 15초 주기 실시간 관제 루프 가동 중", "meta": {}}
+data\system_logs.jsonl:199030:{"id": 1789653278432, "timestamp": "22:54:38", "datetime": "2026-09-17 22:54:38", "level"
+: "TRADE", "source": "AutoExecution", "message": "?? [키움증권(Kiwoom) SOXL 1? ] 10?@ $30.03 (???80.0%)", "meta": {}}
+data\system_logs.jsonl:199031:{"id": 1789653283167, "timestamp": "22:54:43", "datetime": "2026-09-17 22:54:43", "level"
+: "TRADE", "source": "OrderChasing", "message": "??[ 2??? ?? SOXL 10?@ $30.03 (???1/1)", "meta": {}}
+data\system_logs.jsonl:199032:{"id": 1789653287241, "timestamp": "22:54:47", "datetime": "2026-09-17 22:54:47", "level"
+: "TRADE", "source": "OrderChasing", "message": "? [  ?] SOXL ? ? (??100%  ??AI ???????)", "meta": {}}
+data\system_logs.jsonl:199038:{"id": 1789653533243, "timestamp": "22:58:53", "datetime": "2026-09-17 22:58:53", "level"
+: "INFO", "source": "SystemCore", "message": "🚀 Lumos v10.2 자율 트레이딩 통합 시스템 코어 초기화 완료", "meta": {}}
+data\system_logs.jsonl:199039:{"id": 1789653533260, "timestamp": "22:58:53", "datetime": "2026-09-17 22:58:53", "level"
+: "KIWOOM", "source": "KiwoomBroker", "message": "🏛 키움 OpenAPI (VIRTUAL 모의투자) 인증 토큰 발급 및 계좌 잔고 동기화 완료", "meta": {}}
+data\system_logs.jsonl:199040:{"id": 1789653533262, "timestamp": "22:58:53", "datetime": "2026-09-17 22:58:53", "level"
+: "MOE", "source": "MoEOrchestrator", "message": "🧠 Track 6: MoE AI 메타 오케스트레이터 게이팅 네트워크 활성화 (승률 80.0% / PF 3.12)", "me
+ta": {}}
+data\system_logs.jsonl:199041:{"id": 1789653533264, "timestamp": "22:58:53", "datetime": "2026-09-17 22:58:53", "level"
+: "INFO", "source": "MarketGuard", "message": "🛡 장 마감 90분 전 신규 진입 차단 가드 (No-Entry Cutoff: 14:30 NYT) 활성화", "meta": {}}
+data\system_logs.jsonl:199042:{"id": 1789653533265, "timestamp": "22:58:53", "datetime": "2026-09-17 22:58:53", "level"
+: "INFO", "source": "LiveRunner", "message": "⏳ 뉴욕 정규장 개장(22:30 KST) 대기 중 - 15초 주기 실시간 관제 루프 가동 중", "meta": {}}
+data\system_logs.jsonl:199043:{"id": 1789653540133, "timestamp": "22:59:00", "datetime": "2026-09-17 22:59:00", "level"
+: "TRADE", "source": "AutoExecution", "message": "?? [키움증권(Kiwoom) SOXL 1? ] 10?@ $30.03 (???80.0%)", "meta": {}}
+data\system_logs.jsonl:199044:{"id": 1789653544975, "timestamp": "22:59:04", "datetime": "2026-09-17 22:59:04", "level"
+: "TRADE", "source": "OrderChasing", "message": "??[ 2??? ?? SOXL 10?@ $30.03 (???1/1)", "meta": {}}
+data\system_logs.jsonl:199045:{"id": 1789653548751, "timestamp": "22:59:08", "datetime": "2026-09-17 22:59:08", "level"
+: "TRADE", "source": "OrderChasing", "message": "? [  ?] SOXL ? ? (??100%  ??AI ???????)", "meta": {}}
+data\system_logs.jsonl:199048:{"id": 1789653624747, "timestamp": "23:00:24", "datetime": "2026-09-17 23:00:24", "level"
+: "INFO", "source": "AI", "message": "15???? ? (?: 50.0%)", "meta": {}}
+data\system_logs.jsonl:199050:{"id": 1789653663594, "timestamp": "23:01:03", "datetime": "2026-09-17 23:01:03", "level"
+: "INFO", "source": "SystemCore", "message": "🚀 Lumos v10.2 자율 트레이딩 통합 시스템 코어 초기화 완료", "meta": {}}
+data\system_logs.jsonl:199051:{"id": 1789653663595, "timestamp": "23:01:03", "datetime": "2026-09-17 23:01:03", "level"
+: "KIWOOM", "source": "KiwoomBroker", "message": "🏛 키움 OpenAPI (VIRTUAL 모의투자) 인증 토큰 발급 및 계좌 잔고 동기화 완료", "meta": {}}
+data\system_logs.jsonl:199052:{"id": 1789653663595, "timestamp": "23:01:03", "datetime": "2026-09-17 23:01:03", "level"
+: "MOE", "source": "MoEOrchestrator", "message": "🧠 Track 6: MoE AI 메타 오케스트레이터 게이팅 네트워크 활성화 (승률 80.0% / PF 3.12)", "me
+ta": {}}
+data\system_logs.jsonl:199053:{"id": 1789653663596, "timestamp": "23:01:03", "datetime": "2026-09-17 23:01:03", "level"
+: "INFO", "source": "MarketGuard", "message": "🛡 장 마감 90분 전 신규 진입 차단 가드 (No-Entry Cutoff: 14:30 NYT) 활성화", "meta": {}}
+data\system_logs.jsonl:199054:{"id": 1789653663597, "timestamp": "23:01:03", "datetime": "2026-09-17 23:01:03", "level"
+: "INFO", "source": "LiveRunner", "message": "⏳ 뉴욕 정규장 개장(22:30 KST) 대기 중 - 15초 주기 실시간 관제 루프 가동 중", "meta": {}}
+data\system_logs.jsonl:199055:{"id": 1789653664959, "timestamp": "23:01:04", "datetime": "2026-09-17 23:01:04", "level"
+: "INFO", "source": "LiveRunner", "message": "? VIRTUAL (모의투자) ?  ? ??? (: 61112456, ?? $71,617.01)", "meta": {}}
+data\system_logs.jsonl:199056:{"id": 1789653664964, "timestamp": "23:01:04", "datetime": "2026-09-17 23:01:04", "level"
+: "INFO", "source": "LiveRunner", "message": "???  ??????", "meta": {}}
+data\system_logs.jsonl:199061:{"id": 1789653685183, "timestamp": "23:01:25", "datetime": "2026-09-17 23:01:25", "level"
+: "INFO", "source": "AI", "message": "15???? ? (?: 50.0%)", "meta": {}}
+data\system_logs.jsonl:199076:{"id": 1789653765697, "timestamp": "23:02:45", "datetime": "2026-09-17 23:02:45", "level"
+: "INFO", "source": "SystemCore", "message": "🚀 Lumos v10.2 자율 트레이딩 통합 시스템 코어 초기화 완료", "meta": {}}
+data\system_logs.jsonl:199077:{"id": 1789653765714, "timestamp": "23:02:45", "datetime": "2026-09-17 23:02:45", "level"
+: "KIWOOM", "source": "KiwoomBroker", "message": "🏛 키움 OpenAPI (VIRTUAL 모의투자) 인증 토큰 발급 및 계좌 잔고 동기화 완료", "meta": {}}
+data\system_logs.jsonl:199078:{"id": 1789653765715, "timestamp": "23:02:45", "datetime": "2026-09-17 23:02:45", "level"
+: "MOE", "source": "MoEOrchestrator", "message": "🧠 Track 6: MoE AI 메타 오케스트레이터 게이팅 네트워크 활성화 (승률 80.0% / PF 3.12)", "me
+ta": {}}
+data\system_logs.jsonl:199079:{"id": 1789653765716, "timestamp": "23:02:45", "datetime": "2026-09-17 23:02:45", "level"
+: "INFO", "source": "MarketGuard", "message": "🛡 장 마감 90분 전 신규 진입 차단 가드 (No-Entry Cutoff: 14:30 NYT) 활성화", "meta": {}}
+data\system_logs.jsonl:199080:{"id": 1789653765718, "timestamp": "23:02:45", "datetime": "2026-09-17 23:02:45", "level"
+: "INFO", "source": "LiveRunner", "message": "⏳ 뉴욕 정규장 개장(22:30 KST) 대기 중 - 15초 주기 실시간 관제 루프 가동 중", "meta": {}}
+data\system_logs.jsonl:199081:{"id": 1789653767656, "timestamp": "23:02:47", "datetime": "2026-09-17 23:02:47", "level"
+: "INFO", "source": "LiveRunner", "message": "? VIRTUAL (모의투자) ?  ? ??? (: 61112456, ?? $71,617.01)", "meta": {}}
+data\system_logs.jsonl:199082:{"id": 1789653767661, "timestamp": "23:02:47", "datetime": "2026-09-17 23:02:47", "level"
+: "INFO", "source": "LiveRunner", "message": "???  ??????", "meta": {}}
+data\system_logs.jsonl:199088:{"id": 1789653795577, "timestamp": "23:03:15", "datetime": "2026-09-17 23:03:15", "level"
+: "INFO", "source": "AI", "message": "15???? ? (?: 50.0%)", "meta": {}}
+data\system_logs.jsonl:199126:{"id": 1789654006486, "timestamp": "23:06:46", "datetime": "2026-09-17 23:06:46", "level"
+: "INFO", "source": "SystemCore", "message": "🚀 Lumos v10.2 자율 트레이딩 통합 시스템 코어 초기화 완료", "meta": {}}
+data\system_logs.jsonl:199127:{"id": 1789654006488, "timestamp": "23:06:46", "datetime": "2026-09-17 23:06:46", "level"
+: "KIWOOM", "source": "KiwoomBroker", "message": "🏛 키움 OpenAPI (VIRTUAL 모의투자) 인증 토큰 발급 및 계좌 잔고 동기화 완료", "meta": {}}
+data\system_logs.jsonl:199128:{"id": 1789654006489, "timestamp": "23:06:46", "datetime": "2026-09-17 23:06:46", "level"
+: "MOE", "source": "MoEOrchestrator", "message": "🧠 Track 6: MoE AI 메타 오케스트레이터 게이팅 네트워크 활성화 (승률 80.0% / PF 3.12)", "me
+ta": {}}
+data\system_logs.jsonl:199129:{"id": 1789654006489, "timestamp": "23:06:46", "datetime": "2026-09-17 23:06:46", "level"
+: "INFO", "source": "MarketGuard", "message": "🛡 장 마감 90분 전 신규 진입 차단 가드 (No-Entry Cutoff: 14:30 NYT) 활성화", "meta": {}}
+data\system_logs.jsonl:199130:{"id": 1789654006490, "timestamp": "23:06:46", "datetime": "2026-09-17 23:06:46", "level"
+: "INFO", "source": "LiveRunner", "message": "⏳ 뉴욕 정규장 개장(22:30 KST) 대기 중 - 15초 주기 실시간 관제 루프 가동 중", "meta": {}}
+data\system_logs.jsonl:199132:{"id": 1789654011709, "timestamp": "23:06:51", "datetime": "2026-09-17 23:06:51", "level"
+: "TRADE", "source": "AutoExecution", "message": "?? [키움증권(Kiwoom) SOXL 1? ] 10?@ $30.03 (???80.0%)", "meta": {}}
+data\system_logs.jsonl:199134:{"id": 1789654016470, "timestamp": "23:06:56", "datetime": "2026-09-17 23:06:56", "level"
+: "TRADE", "source": "OrderChasing", "message": "??[ 2??? ?? SOXL 10?@ $30.03 (???1/1)", "meta": {}}
+data\system_logs.jsonl:199135:{"id": 1789654020243, "timestamp": "23:07:00", "datetime": "2026-09-17 23:07:00", "level"
+: "TRADE", "source": "OrderChasing", "message": "? [  ?] SOXL ? ? (??100%  ??AI ???????)", "meta": {}}
+data\system_logs.jsonl:199136:{"id": 1789654028270, "timestamp": "23:07:08", "datetime": "2026-09-17 23:07:08", "level"
+: "INFO", "source": "SystemCore", "message": "🚀 Lumos v10.2 자율 트레이딩 통합 시스템 코어 초기화 완료", "meta": {}}
+data\system_logs.jsonl:199137:{"id": 1789654028287, "timestamp": "23:07:08", "datetime": "2026-09-17 23:07:08", "level"
+: "KIWOOM", "source": "KiwoomBroker", "message": "🏛 키움 OpenAPI (VIRTUAL 모의투자) 인증 토큰 발급 및 계좌 잔고 동기화 완료", "meta": {}}
+data\system_logs.jsonl:199138:{"id": 1789654028289, "timestamp": "23:07:08", "datetime": "2026-09-17 23:07:08", "level"
+: "MOE", "source": "MoEOrchestrator", "message": "🧠 Track 6: MoE AI 메타 오케스트레이터 게이팅 네트워크 활성화 (승률 80.0% / PF 3.12)", "me
+ta": {}}
+data\system_logs.jsonl:199139:{"id": 1789654028289, "timestamp": "23:07:08", "datetime": "2026-09-17 23:07:08", "level"
+: "INFO", "source": "MarketGuard", "message": "🛡 장 마감 90분 전 신규 진입 차단 가드 (No-Entry Cutoff: 14:30 NYT) 활성화", "meta": {}}
+data\system_logs.jsonl:199140:{"id": 1789654028289, "timestamp": "23:07:08", "datetime": "2026-09-17 23:07:08", "level"
+: "INFO", "source": "LiveRunner", "message": "⏳ 뉴욕 정규장 개장(22:30 KST) 대기 중 - 15초 주기 실시간 관제 루프 가동 중", "meta": {}}
+data\system_logs.jsonl:199141:{"id": 1789654029700, "timestamp": "23:07:09", "datetime": "2026-09-17 23:07:09", "level"
+: "INFO", "source": "LiveRunner", "message": "? VIRTUAL (모의투자) ?  ? ??? (: 61112456, ?? $71,617.01)", "meta": {}}
+data\system_logs.jsonl:199142:{"id": 1789654029705, "timestamp": "23:07:09", "datetime": "2026-09-17 23:07:09", "level"
+: "INFO", "source": "LiveRunner", "message": "???  ??????", "meta": {}}
+data\system_logs.jsonl:199147:{"id": 1789654049266, "timestamp": "23:07:29", "datetime": "2026-09-17 23:07:29", "level"
+: "INFO", "source": "AI", "message": "15???? ? (?: 50.0%)", "meta": {}}
+data\system_logs.jsonl:199162:{"id": 1789654444389, "timestamp": "23:14:04", "datetime": "2026-09-17 23:14:04", "level"
+: "INFO", "source": "SystemCore", "message": "🚀 Lumos v10.2 자율 트레이딩 통합 시스템 코어 초기화 완료", "meta": {}}
+data\system_logs.jsonl:199163:{"id": 1789654444404, "timestamp": "23:14:04", "datetime": "2026-09-17 23:14:04", "level"
+: "KIWOOM", "source": "KiwoomBroker", "message": "🏛 키움 OpenAPI (VIRTUAL 모의투자) 인증 토큰 발급 및 계좌 잔고 동기화 완료", "meta": {}}
+data\system_logs.jsonl:199164:{"id": 1789654444405, "timestamp": "23:14:04", "datetime": "2026-09-17 23:14:04", "level"
+: "MOE", "source": "MoEOrchestrator", "message": "🧠 Track 6: MoE AI 메타 오케스트레이터 게이팅 네트워크 활성화 (승률 80.0% / PF 3.12)", "me
+ta": {}}
+data\system_logs.jsonl:199165:{"id": 1789654444406, "timestamp": "23:14:04", "datetime": "2026-09-17 23:14:04", "level"
+: "INFO", "source": "MarketGuard", "message": "🛡 장 마감 90분 전 신규 진입 차단 가드 (No-Entry Cutoff: 14:30 NYT) 활성화", "meta": {}}
+data\system_logs.jsonl:199166:{"id": 1789654444406, "timestamp": "23:14:04", "datetime": "2026-09-17 23:14:04", "level"
+: "INFO", "source": "LiveRunner", "message": "⏳ 뉴욕 정규장 개장(22:30 KST) 대기 중 - 15초 주기 실시간 관제 루프 가동 중", "meta": {}}
+data\system_logs.jsonl:199167:{"id": 1789654445604, "timestamp": "23:14:05", "datetime": "2026-09-17 23:14:05", "level"
+: "INFO", "source": "LiveRunner", "message": "? VIRTUAL (모의투자) ?  ? ??? (: 61112456, ?? $71,617.01)", "meta": {}}
+data\system_logs.jsonl:199168:{"id": 1789654445610, "timestamp": "23:14:05", "datetime": "2026-09-17 23:14:05", "level"
+: "INFO", "source": "LiveRunner", "message": "???  ??????", "meta": {}}
+data\system_logs.jsonl:199175:{"id": 1789654467412, "timestamp": "23:14:27", "datetime": "2026-09-17 23:14:27", "level"
+: "INFO", "source": "AI", "message": "15???? ? (?: 55.5%)", "meta": {}}
+data\system_logs.jsonl:199186:{"id": 1789654521088, "timestamp": "23:15:21", "datetime": "2026-09-17 23:15:21", "level"
+: "INFO", "source": "AI", "message": "15???? ? (?: 50.0%)", "meta": {}}
+data\system_logs.jsonl:199188:{"id": 1789654528833, "timestamp": "23:15:28", "datetime": "2026-09-17 23:15:28", "level"
+: "INFO", "source": "AI", "message": "15???? ? (?: 64.3%)", "meta": {}}
+data\system_logs.jsonl:199272:{"id": 1789654977067, "timestamp": "23:22:57", "datetime": "2026-09-17 23:22:57", "level"
+: "INFO", "source": "SystemCore", "message": "🚀 Lumos v10.2 자율 트레이딩 통합 시스템 코어 초기화 완료", "meta": {}}
+data\system_logs.jsonl:199273:{"id": 1789654977083, "timestamp": "23:22:57", "datetime": "2026-09-17 23:22:57", "level"
+: "KIWOOM", "source": "KiwoomBroker", "message": "🏛 키움 OpenAPI (VIRTUAL 모의투자) 인증 토큰 발급 및 계좌 잔고 동기화 완료", "meta": {}}
+data\system_logs.jsonl:199274:{"id": 1789654977084, "timestamp": "23:22:57", "datetime": "2026-09-17 23:22:57", "level"
+: "MOE", "source": "MoEOrchestrator", "message": "🧠 Track 6: MoE AI 메타 오케스트레이터 게이팅 네트워크 활성화 (승률 80.0% / PF 3.12)", "me
+ta": {}}
+data\system_logs.jsonl:199275:{"id": 1789654977085, "timestamp": "23:22:57", "datetime": "2026-09-17 23:22:57", "level"
+: "INFO", "source": "MarketGuard", "message": "🛡 장 마감 90분 전 신규 진입 차단 가드 (No-Entry Cutoff: 14:30 NYT) 활성화", "meta": {}}
+data\system_logs.jsonl:199276:{"id": 1789654977085, "timestamp": "23:22:57", "datetime": "2026-09-17 23:22:57", "level"
+: "INFO", "source": "LiveRunner", "message": "⏳ 뉴욕 정규장 개장(22:30 KST) 대기 중 - 15초 주기 실시간 관제 루프 가동 중", "meta": {}}
+data\system_logs.jsonl:199277:{"id": 1789654978289, "timestamp": "23:22:58", "datetime": "2026-09-17 23:22:58", "level"
+: "INFO", "source": "LiveRunner", "message": "? VIRTUAL (모의투자) ?  ? ??? (: 61112456, ?? $71,617.01)", "meta": {}}
+data\system_logs.jsonl:199278:{"id": 1789654978296, "timestamp": "23:22:58", "datetime": "2026-09-17 23:22:58", "level"
+: "INFO", "source": "LiveRunner", "message": "???  ??????", "meta": {}}
+data\system_logs.jsonl:199284:{"id": 1789655000856, "timestamp": "23:23:20", "datetime": "2026-09-17 23:23:20", "level"
+: "INFO", "source": "AI", "message": "15분봉 정기 브리핑 완료 (최대확신도: 64.3%)", "meta": {}}
+data\system_logs.jsonl:199298:{"id": 1789655080369, "timestamp": "23:24:40", "datetime": "2026-09-17 23:24:40", "level"
+: "INFO", "source": "SystemCore", "message": "🚀 Lumos v10.2 자율 트레이딩 통합 시스템 코어 초기화 완료", "meta": {}}
+data\system_logs.jsonl:199299:{"id": 1789655080387, "timestamp": "23:24:40", "datetime": "2026-09-17 23:24:40", "level"
+: "KIWOOM", "source": "KiwoomBroker", "message": "🏛 키움 OpenAPI (VIRTUAL 모의투자) 인증 토큰 발급 및 계좌 잔고 동기화 완료", "meta": {}}
+data\system_logs.jsonl:199300:{"id": 1789655080388, "timestamp": "23:24:40", "datetime": "2026-09-17 23:24:40", "level"
+: "MOE", "source": "MoEOrchestrator", "message": "🧠 Track 6: MoE AI 메타 오케스트레이터 게이팅 네트워크 활성화 (승률 80.0% / PF 3.12)", "me
+ta": {}}
+data\system_logs.jsonl:199301:{"id": 1789655080389, "timestamp": "23:24:40", "datetime": "2026-09-17 23:24:40", "level"
+: "INFO", "source": "MarketGuard", "message": "🛡 장 마감 90분 전 신규 진입 차단 가드 (No-Entry Cutoff: 14:30 NYT) 활성화", "meta": {}}
+data\system_logs.jsonl:199302:{"id": 1789655080389, "timestamp": "23:24:40", "datetime": "2026-09-17 23:24:40", "level"
+: "INFO", "source": "LiveRunner", "message": "⏳ 뉴욕 정규장 개장(22:30 KST) 대기 중 - 15초 주기 실시간 관제 루프 가동 중", "meta": {}}
+data\system_logs.jsonl:199303:{"id": 1789655084140, "timestamp": "23:24:44", "datetime": "2026-09-17 23:24:44", "level"
+: "INFO", "source": "LiveRunner", "message": "? VIRTUAL (모의투자) ?  ? ??? (: 61112456, ?? $71,617.01)", "meta": {}}
+data\system_logs.jsonl:199304:{"id": 1789655084146, "timestamp": "23:24:44", "datetime": "2026-09-17 23:24:44", "level"
+: "INFO", "source": "LiveRunner", "message": "???  ??????", "meta": {}}
+data\system_logs.jsonl:199309:{"id": 1789655106590, "timestamp": "23:25:06", "datetime": "2026-09-17 23:25:06", "level"
+: "INFO", "source": "AI", "message": "15분봉 정기 브리핑 완료 (최대확신도: 65.5%)", "meta": {}}
+data\system_logs.jsonl:199322:{"id": 1789655174241, "timestamp": "23:26:14", "datetime": "2026-09-17 23:26:14", "level"
+: "INFO", "source": "SystemCore", "message": "🚀 Lumos v10.2 자율 트레이딩 통합 시스템 코어 초기화 완료", "meta": {}}
+data\system_logs.jsonl:199323:{"id": 1789655174242, "timestamp": "23:26:14", "datetime": "2026-09-17 23:26:14", "level"
+: "KIWOOM", "source": "KiwoomBroker", "message": "🏛 키움 OpenAPI (VIRTUAL 모의투자) 인증 토큰 발급 및 계좌 잔고 동기화 완료", "meta": {}}
+data\system_logs.jsonl:199324:{"id": 1789655174243, "timestamp": "23:26:14", "datetime": "2026-09-17 23:26:14", "level"
+: "MOE", "source": "MoEOrchestrator", "message": "🧠 Track 6: MoE AI 메타 오케스트레이터 게이팅 네트워크 활성화 (승률 80.0% / PF 3.12)", "me
+ta": {}}
+data\system_logs.jsonl:199325:{"id": 1789655174244, "timestamp": "23:26:14", "datetime": "2026-09-17 23:26:14", "level"
+: "INFO", "source": "MarketGuard", "message": "🛡 장 마감 90분 전 신규 진입 차단 가드 (No-Entry Cutoff: 14:30 NYT) 활성화", "meta": {}}
+data\system_logs.jsonl:199326:{"id": 1789655174244, "timestamp": "23:26:14", "datetime": "2026-09-17 23:26:14", "level"
+: "INFO", "source": "LiveRunner", "message": "⏳ 뉴욕 정규장 개장(22:30 KST) 대기 중 - 15초 주기 실시간 관제 루프 가동 중", "meta": {}}
+data\system_logs.jsonl:199327:{"id": 1789655175517, "timestamp": "23:26:15", "datetime": "2026-09-17 23:26:15", "level"
+: "INFO", "source": "LiveRunner", "message": "? VIRTUAL (모의투자) ?  ? ??? (: 61112456, ?? $71,617.01)", "meta": {}}
+data\system_logs.jsonl:199328:{"id": 1789655175519, "timestamp": "23:26:15", "datetime": "2026-09-17 23:26:15", "level"
+: "INFO", "source": "LiveRunner", "message": "???  ??????", "meta": {}}
+data\system_logs.jsonl:199333:{"id": 1789655195591, "timestamp": "23:26:35", "datetime": "2026-09-17 23:26:35", "level"
+: "INFO", "source": "AI", "message": "15분봉 정기 브리핑 완료 (최대확신도: 65.6%)", "meta": {}}
+data\system_logs.jsonl:199377:{"id": 1789655419129, "timestamp": "23:30:19", "datetime": "2026-09-17 23:30:19", "level"
+: "INFO", "source": "AI", "message": "15???? ? (?: 50.0%)", "meta": {}}
+data\system_logs.jsonl:199378:{"id": 1789655420340, "timestamp": "23:30:20", "datetime": "2026-09-17 23:30:20", "level"
+: "INFO", "source": "AI", "message": "15분봉 정기 브리핑 완료 (최대확신도: 66.0%)", "meta": {}}
+data\system_logs.jsonl:199552:{"id": 1789656318226, "timestamp": "23:45:18", "datetime": "2026-09-17 23:45:18", "level"
+: "INFO", "source": "AI", "message": "15???? ? (?: 50.0%)", "meta": {}}
+data\system_logs.jsonl:199554:{"id": 1789656321512, "timestamp": "23:45:21", "datetime": "2026-09-17 23:45:21", "level"
+: "INFO", "source": "AI", "message": "15분봉 정기 브리핑 완료 (최대확신도: 69.5%)", "meta": {}}
+data\system_logs.jsonl:199727:{"id": 1789657220254, "timestamp": "00:00:20", "datetime": "2026-09-18 00:00:20", "level"
+: "INFO", "source": "AI", "message": "15???? ? (?: 50.0%)", "meta": {}}
+data\system_logs.jsonl:199728:{"id": 1789657221991, "timestamp": "00:00:21", "datetime": "2026-09-18 00:00:21", "level"
+: "INFO", "source": "AI", "message": "15분봉 정기 브리핑 완료 (최대확신도: 68.7%)", "meta": {}}
+data\system_logs.jsonl:199904:{"id": 1789658120757, "timestamp": "00:15:20", "datetime": "2026-09-18 00:15:20", "level"
+: "INFO", "source": "AI", "message": "15분봉 정기 브리핑 완료 (최대확신도: 67.5%)", "meta": {}}
+data\system_logs.jsonl:199905:{"id": 1789658121574, "timestamp": "00:15:21", "datetime": "2026-09-18 00:15:21", "level"
+: "INFO", "source": "AI", "message": "15???? ? (?: 50.0%)", "meta": {}}
+data\system_logs.jsonl:200080:{"id": 1789659021770, "timestamp": "00:30:21", "datetime": "2026-09-18 00:30:21", "level"
+: "INFO", "source": "AI", "message": "15분봉 정기 브리핑 완료 (최대확신도: 69.1%)", "meta": {}}
+data\system_logs.jsonl:200081:{"id": 1789659022594, "timestamp": "00:30:22", "datetime": "2026-09-18 00:30:22", "level"
+: "INFO", "source": "AI", "message": "15???? ? (?: 50.0%)", "meta": {}}
+data\system_logs.jsonl:200255:{"id": 1789659919702, "timestamp": "00:45:19", "datetime": "2026-09-18 00:45:19", "level"
+: "INFO", "source": "AI", "message": "15분봉 정기 브리핑 완료 (최대확신도: 63.9%)", "meta": {}}
+data\system_logs.jsonl:200256:{"id": 1789659920259, "timestamp": "00:45:20", "datetime": "2026-09-18 00:45:20", "level"
+: "INFO", "source": "AI", "message": "15???? ? (?: 50.0%)", "meta": {}}
+data\system_logs.jsonl:200432:{"id": 1789660819481, "timestamp": "01:00:19", "datetime": "2026-09-18 01:00:19", "level"
+: "INFO", "source": "AI", "message": "15분봉 정기 브리핑 완료 (최대확신도: 62.5%)", "meta": {}}
+data\system_logs.jsonl:200433:{"id": 1789660819597, "timestamp": "01:00:19", "datetime": "2026-09-18 01:00:19", "level"
+: "INFO", "source": "AI", "message": "15???? ? (?: 50.0%)", "meta": {}}
+data\system_logs.jsonl:200608:{"id": 1789661719548, "timestamp": "01:15:19", "datetime": "2026-09-18 01:15:19", "level"
+: "INFO", "source": "AI", "message": "15???? ? (?: 50.0%)", "meta": {}}
+data\system_logs.jsonl:200610:{"id": 1789661721596, "timestamp": "01:15:21", "datetime": "2026-09-18 01:15:21", "level"
+: "INFO", "source": "AI", "message": "15분봉 정기 브리핑 완료 (최대확신도: 60.9%)", "meta": {}}
+data\system_logs.jsonl:200782:{"id": 1789662619476, "timestamp": "01:30:19", "datetime": "2026-09-18 01:30:19", "level"
+: "INFO", "source": "AI", "message": "15분봉 정기 브리핑 완료 (최대확신도: 59.7%)", "meta": {}}
+data\system_logs.jsonl:200783:{"id": 1789662620170, "timestamp": "01:30:20", "datetime": "2026-09-18 01:30:20", "level"
+: "INFO", "source": "AI", "message": "15???? ? (?: 50.0%)", "meta": {}}
+data\system_logs.jsonl:200959:{"id": 1789663519645, "timestamp": "01:45:19", "datetime": "2026-09-18 01:45:19", "level"
+: "INFO", "source": "AI", "message": "15???? ? (?: 50.0%)", "meta": {}}
+data\system_logs.jsonl:200960:{"id": 1789663520088, "timestamp": "01:45:20", "datetime": "2026-09-18 01:45:20", "level"
+: "INFO", "source": "AI", "message": "15분봉 정기 브리핑 완료 (최대확신도: 63.8%)", "meta": {}}
+data\system_logs.jsonl:201136:{"id": 1789664420801, "timestamp": "02:00:20", "datetime": "2026-09-18 02:00:20", "level"
+: "INFO", "source": "AI", "message": "15분봉 정기 브리핑 완료 (최대확신도: 46.4%)", "meta": {}}
+data\system_logs.jsonl:201138:{"id": 1789664421393, "timestamp": "02:00:21", "datetime": "2026-09-18 02:00:21", "level"
+: "INFO", "source": "AI", "message": "15???? ? (?: 50.0%)", "meta": {}}
+data\system_logs.jsonl:201313:{"id": 1789665318197, "timestamp": "02:15:18", "datetime": "2026-09-18 02:15:18", "level"
+: "INFO", "source": "AI", "message": "15???? ? (?: 50.0%)", "meta": {}}
+data\system_logs.jsonl:201314:{"id": 1789665320693, "timestamp": "02:15:20", "datetime": "2026-09-18 02:15:20", "level"
+: "INFO", "source": "AI", "message": "15분봉 정기 브리핑 완료 (최대확신도: 40.5%)", "meta": {}}
+data\system_logs.jsonl:201490:{"id": 1789666219600, "timestamp": "02:30:19", "datetime": "2026-09-18 02:30:19", "level"
+: "INFO", "source": "AI", "message": "15분봉 정기 브리핑 완료 (최대확신도: 42.0%)", "meta": {}}
+data\system_logs.jsonl:201491:{"id": 1789666220220, "timestamp": "02:30:20", "datetime": "2026-09-18 02:30:20", "level"
+: "INFO", "source": "AI", "message": "15???? ? (?: 50.0%)", "meta": {}}
+data\system_logs.jsonl:201667:{"id": 1789667119117, "timestamp": "02:45:19", "datetime": "2026-09-18 02:45:19", "level"
+: "INFO", "source": "AI", "message": "15???? ? (?: 50.0%)", "meta": {}}
+data\system_logs.jsonl:201668:{"id": 1789667122395, "timestamp": "02:45:22", "datetime": "2026-09-18 02:45:22", "level"
+: "INFO", "source": "AI", "message": "15분봉 정기 브리핑 완료 (최대확신도: 45.3%)", "meta": {}}
+data\system_logs.jsonl:201843:{"id": 1789668020063, "timestamp": "03:00:20", "datetime": "2026-09-18 03:00:20", "level"
+: "INFO", "source": "AI", "message": "15분봉 정기 브리핑 완료 (최대확신도: 38.1%)", "meta": {}}
+data\system_logs.jsonl:201845:{"id": 1789668021627, "timestamp": "03:00:21", "datetime": "2026-09-18 03:00:21", "level"
+: "INFO", "source": "AI", "message": "15???? ? (?: 50.0%)", "meta": {}}
+data\system_logs.jsonl:202019:{"id": 1789668918090, "timestamp": "03:15:18", "datetime": "2026-09-18 03:15:18", "level"
+: "INFO", "source": "AI", "message": "15???? ? (?: 50.0%)", "meta": {}}
+data\system_logs.jsonl:202020:{"id": 1789668919787, "timestamp": "03:15:19", "datetime": "2026-09-18 03:15:19", "level"
+: "INFO", "source": "AI", "message": "15분봉 정기 브리핑 완료 (최대확신도: 37.8%)", "meta": {}}
+data\system_logs.jsonl:202196:{"id": 1789669820422, "timestamp": "03:30:20", "datetime": "2026-09-18 03:30:20", "level"
+: "INFO", "source": "AI", "message": "15???? ? (?: 50.0%)", "meta": {}}
+data\system_logs.jsonl:202197:{"id": 1789669822911, "timestamp": "03:30:22", "datetime": "2026-09-18 03:30:22", "level"
+: "INFO", "source": "AI", "message": "15분봉 정기 브리핑 완료 (최대확신도: 38.1%)", "meta": {}}
+data\system_logs.jsonl:202372:{"id": 1789670718992, "timestamp": "03:45:18", "datetime": "2026-09-18 03:45:18", "level"
+: "INFO", "source": "AI", "message": "15???? ? (?: 50.0%)", "meta": {}}
+data\system_logs.jsonl:202373:{"id": 1789670721351, "timestamp": "03:45:21", "datetime": "2026-09-18 03:45:21", "level"
+: "INFO", "source": "AI", "message": "15분봉 정기 브리핑 완료 (최대확신도: 53.9%)", "meta": {}}
+data\system_logs.jsonl:202550:{"id": 1789671622120, "timestamp": "04:00:22", "datetime": "2026-09-18 04:00:22", "level"
+: "INFO", "source": "AI", "message": "15분봉 정기 브리핑 완료 (최대확신도: 51.9%)", "meta": {}}
+data\system_logs.jsonl:202551:{"id": 1789671622534, "timestamp": "04:00:22", "datetime": "2026-09-18 04:00:22", "level"
+: "INFO", "source": "AI", "message": "15???? ? (?: 50.0%)", "meta": {}}
+data\system_logs.jsonl:202728:{"id": 1789672519498, "timestamp": "04:15:19", "datetime": "2026-09-18 04:15:19", "level"
+: "INFO", "source": "AI", "message": "15???? ? (?: 50.0%)", "meta": {}}
+data\system_logs.jsonl:202729:{"id": 1789672521838, "timestamp": "04:15:21", "datetime": "2026-09-18 04:15:21", "level"
+: "INFO", "source": "AI", "message": "15분봉 정기 브리핑 완료 (최대확신도: 35.3%)", "meta": {}}
+
+

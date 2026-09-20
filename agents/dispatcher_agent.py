@@ -78,7 +78,8 @@ class DispatcherAgent:
             retry_cnt = task["retry_count"]
             payload = {
                 "chat_id": self.chat_id,
-                "text": msg
+                "text": msg,
+                "parse_mode": "HTML"
             }
 
             success = False

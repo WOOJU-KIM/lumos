@@ -1,0 +1,205 @@
+﻿
+data\system_logs.jsonl:198529:{"id": 1789642853477, "timestamp": "20:00:53", "datetime": "2026-09-17 20:00:53", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198530:{"id": 1789642908595, "timestamp": "20:01:48", "datetime": "2026-09-17 20:01:48", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198531:{"id": 1789642963741, "timestamp": "20:02:43", "datetime": "2026-09-17 20:02:43", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198532:{"id": 1789643008942, "timestamp": "20:03:28", "datetime": "2026-09-17 20:03:28", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198533:{"id": 1789643064068, "timestamp": "20:04:24", "datetime": "2026-09-17 20:04:24", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198534:{"id": 1789643109261, "timestamp": "20:05:09", "datetime": "2026-09-17 20:05:09", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198535:{"id": 1789643164444, "timestamp": "20:06:04", "datetime": "2026-09-17 20:06:04", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198536:{"id": 1789643209602, "timestamp": "20:06:49", "datetime": "2026-09-17 20:06:49", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198537:{"id": 1789643264824, "timestamp": "20:07:44", "datetime": "2026-09-17 20:07:44", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198538:{"id": 1789643310121, "timestamp": "20:08:30", "datetime": "2026-09-17 20:08:30", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198539:{"id": 1789643365372, "timestamp": "20:09:25", "datetime": "2026-09-17 20:09:25", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198540:{"id": 1789643420529, "timestamp": "20:10:20", "datetime": "2026-09-17 20:10:20", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198541:{"id": 1789643465685, "timestamp": "20:11:05", "datetime": "2026-09-17 20:11:05", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198542:{"id": 1789643521026, "timestamp": "20:12:01", "datetime": "2026-09-17 20:12:01", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198543:{"id": 1789643566410, "timestamp": "20:12:46", "datetime": "2026-09-17 20:12:46", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198544:{"id": 1789643621579, "timestamp": "20:13:41", "datetime": "2026-09-17 20:13:41", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198545:{"id": 1789643666737, "timestamp": "20:14:26", "datetime": "2026-09-17 20:14:26", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198546:{"id": 1789643721858, "timestamp": "20:15:21", "datetime": "2026-09-17 20:15:21", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198547:{"id": 1789643777157, "timestamp": "20:16:17", "datetime": "2026-09-17 20:16:17", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198548:{"id": 1789643832294, "timestamp": "20:17:12", "datetime": "2026-09-17 20:17:12", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198549:{"id": 1789643887448, "timestamp": "20:18:07", "datetime": "2026-09-17 20:18:07", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198550:{"id": 1789643942581, "timestamp": "20:19:02", "datetime": "2026-09-17 20:19:02", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198551:{"id": 1789643987730, "timestamp": "20:19:47", "datetime": "2026-09-17 20:19:47", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198552:{"id": 1789643990687, "timestamp": "20:19:50", "datetime": "2026-09-17 20:19:50", "level"
+: "INFO", "source": "SystemCore", "message": "🚀 Lumos v10.2 자율 트레이딩 통합 시스템 코어 초기화 완료", "meta": {}}
+data\system_logs.jsonl:198553:{"id": 1789643990688, "timestamp": "20:19:50", "datetime": "2026-09-17 20:19:50", "level"
+: "KIWOOM", "source": "KiwoomBroker", "message": "🏛 키움 OpenAPI (VIRTUAL 모의투자) 인증 토큰 발급 및 계좌 잔고 동기화 완료", "meta": {}}
+data\system_logs.jsonl:198554:{"id": 1789643990690, "timestamp": "20:19:50", "datetime": "2026-09-17 20:19:50", "level"
+: "MOE", "source": "MoEOrchestrator", "message": "🧠 Track 6: MoE AI 메타 오케스트레이터 게이팅 네트워크 활성화 (승률 80.0% / PF 3.12)", "me
+ta": {}}
+data\system_logs.jsonl:198555:{"id": 1789643990691, "timestamp": "20:19:50", "datetime": "2026-09-17 20:19:50", "level"
+: "INFO", "source": "MarketGuard", "message": "🛡 장 마감 90분 전 신규 진입 차단 가드 (No-Entry Cutoff: 14:30 NYT) 활성화", "meta": {}}
+data\system_logs.jsonl:198556:{"id": 1789643990691, "timestamp": "20:19:50", "datetime": "2026-09-17 20:19:50", "level"
+: "INFO", "source": "LiveRunner", "message": "⏳ 뉴욕 정규장 개장(22:30 KST) 대기 중 - 15초 주기 실시간 관제 루프 가동 중", "meta": {}}
+data\system_logs.jsonl:198557:{"id": 1789643999731, "timestamp": "20:19:59", "datetime": "2026-09-17 20:19:59", "level"
+: "ERROR", "source": "BuyChase", "message": "?   ? : ❌ [TR_ERROR] API_ID=ust20000 | Code=20 | Msg=[2000](RC4057:모의투자 장시
+작전)", "meta": {}}
+data\system_logs.jsonl:198558:{"id": 1789644032927, "timestamp": "20:20:32", "datetime": "2026-09-17 20:20:32", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198559:{"id": 1789644038083, "timestamp": "20:20:38", "datetime": "2026-09-17 20:20:38", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198560:{"id": 1789644043229, "timestamp": "20:20:43", "datetime": "2026-09-17 20:20:43", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198561:{"id": 1789644048355, "timestamp": "20:20:48", "datetime": "2026-09-17 20:20:48", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198562:{"id": 1789644053470, "timestamp": "20:20:53", "datetime": "2026-09-17 20:20:53", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198563:{"id": 1789644058583, "timestamp": "20:20:58", "datetime": "2026-09-17 20:20:58", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198564:{"id": 1789644063706, "timestamp": "20:21:03", "datetime": "2026-09-17 20:21:03", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198565:{"id": 1789644068839, "timestamp": "20:21:08", "datetime": "2026-09-17 20:21:08", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198566:{"id": 1789644073954, "timestamp": "20:21:13", "datetime": "2026-09-17 20:21:13", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198567:{"id": 1789644079059, "timestamp": "20:21:19", "datetime": "2026-09-17 20:21:19", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198568:{"id": 1789644084180, "timestamp": "20:21:24", "datetime": "2026-09-17 20:21:24", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198569:{"id": 1789644089315, "timestamp": "20:21:29", "datetime": "2026-09-17 20:21:29", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198570:{"id": 1789644094451, "timestamp": "20:21:34", "datetime": "2026-09-17 20:21:34", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198571:{"id": 1789644099580, "timestamp": "20:21:39", "datetime": "2026-09-17 20:21:39", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198572:{"id": 1789644104701, "timestamp": "20:21:44", "datetime": "2026-09-17 20:21:44", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198573:{"id": 1789644109828, "timestamp": "20:21:49", "datetime": "2026-09-17 20:21:49", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198574:{"id": 1789644114960, "timestamp": "20:21:54", "datetime": "2026-09-17 20:21:54", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198575:{"id": 1789644120097, "timestamp": "20:22:00", "datetime": "2026-09-17 20:22:00", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198576:{"id": 1789644125224, "timestamp": "20:22:05", "datetime": "2026-09-17 20:22:05", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198577:{"id": 1789644130410, "timestamp": "20:22:10", "datetime": "2026-09-17 20:22:10", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198578:{"id": 1789644135560, "timestamp": "20:22:15", "datetime": "2026-09-17 20:22:15", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198579:{"id": 1789644140716, "timestamp": "20:22:20", "datetime": "2026-09-17 20:22:20", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198580:{"id": 1789644145850, "timestamp": "20:22:25", "datetime": "2026-09-17 20:22:25", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198581:{"id": 1789644150992, "timestamp": "20:22:30", "datetime": "2026-09-17 20:22:30", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198582:{"id": 1789644156129, "timestamp": "20:22:36", "datetime": "2026-09-17 20:22:36", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198583:{"id": 1789644161263, "timestamp": "20:22:41", "datetime": "2026-09-17 20:22:41", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198584:{"id": 1789644166419, "timestamp": "20:22:46", "datetime": "2026-09-17 20:22:46", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198585:{"id": 1789644171538, "timestamp": "20:22:51", "datetime": "2026-09-17 20:22:51", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198586:{"id": 1789644176670, "timestamp": "20:22:56", "datetime": "2026-09-17 20:22:56", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198587:{"id": 1789644181779, "timestamp": "20:23:01", "datetime": "2026-09-17 20:23:01", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198588:{"id": 1789644186900, "timestamp": "20:23:06", "datetime": "2026-09-17 20:23:06", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198589:{"id": 1789644192028, "timestamp": "20:23:12", "datetime": "2026-09-17 20:23:12", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198590:{"id": 1789644197206, "timestamp": "20:23:17", "datetime": "2026-09-17 20:23:17", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198591:{"id": 1789644202326, "timestamp": "20:23:22", "datetime": "2026-09-17 20:23:22", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198592:{"id": 1789644207455, "timestamp": "20:23:27", "datetime": "2026-09-17 20:23:27", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198593:{"id": 1789644212609, "timestamp": "20:23:32", "datetime": "2026-09-17 20:23:32", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198594:{"id": 1789644217737, "timestamp": "20:23:37", "datetime": "2026-09-17 20:23:37", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198595:{"id": 1789644222910, "timestamp": "20:23:42", "datetime": "2026-09-17 20:23:42", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198596:{"id": 1789644228069, "timestamp": "20:23:48", "datetime": "2026-09-17 20:23:48", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198597:{"id": 1789644233224, "timestamp": "20:23:53", "datetime": "2026-09-17 20:23:53", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198598:{"id": 1789644238379, "timestamp": "20:23:58", "datetime": "2026-09-17 20:23:58", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198599:{"id": 1789644243510, "timestamp": "20:24:03", "datetime": "2026-09-17 20:24:03", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198600:{"id": 1789644248649, "timestamp": "20:24:08", "datetime": "2026-09-17 20:24:08", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198601:{"id": 1789644253775, "timestamp": "20:24:13", "datetime": "2026-09-17 20:24:13", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198602:{"id": 1789644258926, "timestamp": "20:24:18", "datetime": "2026-09-17 20:24:18", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198603:{"id": 1789644264059, "timestamp": "20:24:24", "datetime": "2026-09-17 20:24:24", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198604:{"id": 1789644269172, "timestamp": "20:24:29", "datetime": "2026-09-17 20:24:29", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198605:{"id": 1789644274352, "timestamp": "20:24:34", "datetime": "2026-09-17 20:24:34", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198606:{"id": 1789644279494, "timestamp": "20:24:39", "datetime": "2026-09-17 20:24:39", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198607:{"id": 1789644285033, "timestamp": "20:24:45", "datetime": "2026-09-17 20:24:45", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198608:{"id": 1789644290174, "timestamp": "20:24:50", "datetime": "2026-09-17 20:24:50", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198609:{"id": 1789644295318, "timestamp": "20:24:55", "datetime": "2026-09-17 20:24:55", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198610:{"id": 1789644300465, "timestamp": "20:25:00", "datetime": "2026-09-17 20:25:00", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198611:{"id": 1789644305570, "timestamp": "20:25:05", "datetime": "2026-09-17 20:25:05", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198612:{"id": 1789644310711, "timestamp": "20:25:10", "datetime": "2026-09-17 20:25:10", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198613:{"id": 1789644315829, "timestamp": "20:25:15", "datetime": "2026-09-17 20:25:15", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198614:{"id": 1789644320962, "timestamp": "20:25:20", "datetime": "2026-09-17 20:25:20", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198615:{"id": 1789644326090, "timestamp": "20:25:26", "datetime": "2026-09-17 20:25:26", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198616:{"id": 1789644331232, "timestamp": "20:25:31", "datetime": "2026-09-17 20:25:31", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198617:{"id": 1789644336388, "timestamp": "20:25:36", "datetime": "2026-09-17 20:25:36", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198618:{"id": 1789644341573, "timestamp": "20:25:41", "datetime": "2026-09-17 20:25:41", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198619:{"id": 1789644346681, "timestamp": "20:25:46", "datetime": "2026-09-17 20:25:46", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198620:{"id": 1789644351813, "timestamp": "20:25:51", "datetime": "2026-09-17 20:25:51", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198621:{"id": 1789644356942, "timestamp": "20:25:56", "datetime": "2026-09-17 20:25:56", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198622:{"id": 1789644362058, "timestamp": "20:26:02", "datetime": "2026-09-17 20:26:02", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198623:{"id": 1789644367168, "timestamp": "20:26:07", "datetime": "2026-09-17 20:26:07", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198624:{"id": 1789644372314, "timestamp": "20:26:12", "datetime": "2026-09-17 20:26:12", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198625:{"id": 1789644377456, "timestamp": "20:26:17", "datetime": "2026-09-17 20:26:17", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198626:{"id": 1789644382569, "timestamp": "20:26:22", "datetime": "2026-09-17 20:26:22", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198627:{"id": 1789644387717, "timestamp": "20:26:27", "datetime": "2026-09-17 20:26:27", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+data\system_logs.jsonl:198628:{"id": 1789644392832, "timestamp": "20:26:32", "datetime": "2026-09-17 20:26:32", "level"
+: "INFO", "source": "WebSocket", "message": "⚡ 키움 실시간 WebSocket 세션 연결 완료 (VIRTUAL (모의투자))", "meta": {}}
+
+

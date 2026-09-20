@@ -259,10 +259,13 @@ class PowerHourSniper:
                 elif sig_code < 0:
                     dir_cross = "SHORT_SQQQ"
 
+                dir_gbdt = direction
                 is_cross_veto = (
-                    (direction == "LONG_TQQQ" and dir_cross == "SHORT_SQQQ") or
-                    (direction == "SHORT_SQQQ" and dir_cross == "LONG_TQQQ")
+                    (dir_gbdt == "LONG_TQQQ" and dir_cross == "SHORT_SQQQ") or
+                    (dir_gbdt == "SHORT_SQQQ" and dir_cross == "LONG_TQQQ")
                 )
+                if not getattr(config, "USE_CROSS_ASSET_VETO", True):
+                    is_cross_veto = False
         except Exception:
             pass
 
@@ -280,6 +283,9 @@ class PowerHourSniper:
                     is_60m_trend_ok = (soxx_c <= soxx_ema * 1.002)
         except Exception:
             pass
+
+        if not getattr(config, "USE_60M_TREND_FILTER", True):
+            is_60m_trend_ok = True
 
         # Screen 3: 단기 5분봉 과열 필터
         rsi_5m = float(last_row.get("RSI_14", 50.0))
