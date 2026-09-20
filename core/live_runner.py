@@ -217,7 +217,7 @@ class KiwoomLiveRunner:
             ws_filled = self._order_fills.get(order_no, 0)
             if ws_filled >= target_qty:
                 return True, ws_filled, 0
-            time.sleep(0.05)
+            time.sleep(config.WS_FILL_POLL_INTERVAL)
 
         # ????? ????? 1?? ?
         stk_bal = self.broker.get_overseas_stock_balance()
@@ -531,7 +531,7 @@ class KiwoomLiveRunner:
             )
             if ord_no_1:
                 self.broker.cancel_order(order_no=ord_no_1, symbol=symbol, quantity=unfilled_1)
-            time.sleep(0.5)
+            time.sleep(config.CANCEL_ORDER_WAIT_TIME)
 
             # ? ? ?? ???? 
             stk_bal_1 = self.broker.get_overseas_stock_balance(force_refresh=True)
@@ -657,7 +657,7 @@ class KiwoomLiveRunner:
             )
             if ord_no_2:
                 self.broker.cancel_order(order_no=ord_no_2, symbol=symbol, quantity=unfilled_2)
-            time.sleep(0.5)
+            time.sleep(config.CANCEL_ORDER_WAIT_TIME)
 
             # ? ???  ?
             stk_bal_final = self.broker.get_overseas_stock_balance(force_refresh=True)
@@ -836,7 +836,7 @@ class KiwoomLiveRunner:
 
                 if s_ord_no:
                     self.broker.cancel_order(order_no=s_ord_no, symbol=symbol, quantity=rem_qty)
-                    time.sleep(0.5)
+                    time.sleep(config.CANCEL_ORDER_WAIT_TIME)
 
         except Exception as e:
             logger.error(f"매도 추격 주문 에러: {e}")
@@ -991,12 +991,12 @@ class KiwoomLiveRunner:
                                 self._manage_open_positions(stk_bal, realtime_px_override=live_p)
                     except Exception as e:
                         pass
-                sleep_seconds = 3 if mkt["is_open"] else 15
+                sleep_seconds = config.MAIN_LOOP_TICK_OPEN if mkt["is_open"] else config.MAIN_LOOP_TICK_CLOSED
                 time.sleep(sleep_seconds)
 
             except Exception as e:
                 system_logger.log("ERROR", "LiveRunner", f" ? : {e}")
-                time.sleep(1)
+                time.sleep(config.MAIN_LOOP_ERROR_WAIT)
 
     def run_once_and_start_listener(self):
         """
