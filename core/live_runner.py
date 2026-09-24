@@ -1,6 +1,4 @@
-import config
 import os
-# import os
 import sys
 import time
 import json
@@ -15,6 +13,8 @@ from typing import Dict, Any, Optional, Tuple, List
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+import config
 
 # Windows  utf-8 ?
 if sys.platform.startswith('win'):
@@ -219,8 +219,9 @@ class KiwoomLiveRunner:
                 return True, ws_filled, 0
             time.sleep(config.WS_FILL_POLL_INTERVAL)
 
-        # ????? ????? 1?? ?
-        stk_bal = self.broker.get_overseas_stock_balance()
+        # 타임아웃 발생시 실제 계좌 잔고를 조회하여 체결 여부 이중 확인
+        # 🚨 중요: 5초 캐시(Cache)를 무시하고 무조건 서버에 통신하여 최신 잔고를 가져와야 함 (force_refresh=True 필수)
+        stk_bal = self.broker.get_overseas_stock_balance(force_refresh=True)
         actual_qty = 0
         if stk_bal.get("ok"):
             for h in stk_bal.get("holdings", []):
@@ -266,8 +267,8 @@ class KiwoomLiveRunner:
 
             pnl_pct = (price - buy_px) / buy_px
 
-            tp_threshold = float(active_pos.get("tp_pct", 3.0)) / 100.0 if active_pos.get("tp_pct") else 0.030
-            sl_threshold = float(active_pos.get("sl_pct", 2.0)) / 100.0 if active_pos.get("sl_pct") else 0.020
+            tp_threshold = float(active_pos.get("tp_pct", config.MAX_TP_PCT * 100)) / 100.0 if active_pos.get("tp_pct") else config.MAX_TP_PCT
+            sl_threshold = float(active_pos.get("sl_pct", config.SL_MIN_PCT * 100)) / 100.0 if active_pos.get("sl_pct") else config.SL_MIN_PCT
             time_stop_minutes = float(active_pos.get("time_stop_minutes", 90))
 
             # 1.  ?
@@ -326,8 +327,8 @@ class KiwoomLiveRunner:
             return
 
         active_pos = self._get_active_position()
-        tp_max_pct = float(active_pos.get("tp_pct", 3.5)) / 100.0 if active_pos else 0.035
-        sl_initial_pct = float(active_pos.get("sl_pct", 2.0)) / 100.0 if active_pos else 0.020
+        tp_max_pct = float(active_pos.get("tp_pct", config.MAX_TP_PCT * 100)) / 100.0 if active_pos else config.MAX_TP_PCT
+        sl_initial_pct = float(active_pos.get("sl_pct", config.SL_MIN_PCT * 100)) / 100.0 if active_pos else config.SL_MIN_PCT
 
         for h in holdings:
             sym = str(h.get("symbol") or h.get("stk_cd") or "").strip().upper()
@@ -358,14 +359,15 @@ class KiwoomLiveRunner:
 
             is_trailing_active = False
             current_sl_px = buy_px * (1.0 - sl_initial_pct)
-            trailing_trigger_px = buy_px * 1.020
+            trailing_trigger_px = buy_px * (1.0 + config.TRAILING_TRIGGER_PCT)
             
             if peak_high >= trailing_trigger_px:
                 is_trailing_active = True
-                current_sl_px = buy_px * 1.005
+                t_initial = peak_high * (1.0 - config.TRAILING_DROP_PCT)
+                current_sl_px = max(buy_px * 1.002, t_initial)
                 
             if is_trailing_active:
-                t = peak_high * 0.992
+                t = peak_high * (1.0 - config.TRAILING_DROP_PCT)
                 if t > current_sl_px:
                     current_sl_px = t
             
@@ -459,10 +461,7 @@ class KiwoomLiveRunner:
             # ?  ?  (1? )
             mode_title = "? [?? ?]" if self.broker.is_simulation else "? [?? ??]"
             score_block = "\n".join([f"??**{k.upper()}:** `{v*100:.1f}??" for k, v in sorted(all_scores.items(), key=lambda x: x[1], reverse=True)])
-            buy_msg = f"""{mode_title} 신규 매수 주문 (1차)\n🚨 **브로커:** `{self.broker.broker_name} {self.broker.mode_str}`\n💡 **종목:** `{symbol}`\n📊 **수량:** `{target_qty}`\n💰 **주문가:** `${order_px_1:.2f}`\n\n🔥 **[GBDT 모델 확신도]**\n{score_block}\n\n🎯 **목표가:** `${tp_px:.2f}`\n🛡️ **손절가:** `${sl_px:.2f}`\n⏱️ **시간청산:** {time_stop_min}분"""
-
-
-            self.dispatcher.send_telegram_message(buy_msg)
+            # Removed redundant buy_msg to avoid double telegram alerts
             system_logger.log("TRADE", "AutoExecution", f"?? [{self.broker.broker_name} {symbol} 1? ] {target_qty}?@ ${order_px_1:.2f} (???{top_conf:.1f}%)")
 
             # 1. ???(?  ??0ms   ?)
@@ -792,6 +791,18 @@ class KiwoomLiveRunner:
                     active_pos = self._get_active_position() or {}
                     self._clear_active_position()
                     final_pnl_pct = ((latest_px - buy_px) / buy_px * 100) if buy_px > 0 else 0.0
+                    
+                    try:
+                        self.notifier.send_exit_alert(
+                            ticker=symbol,
+                            entry_price=buy_px,
+                            exit_price=latest_px,
+                            exit_reason=reason_desc,
+                            qty=sold_qty,
+                            is_simulation=self.broker.is_simulation
+                        )
+                    except Exception as te:
+                        logger.error(f"텔레그램 매도 알림 1 발송 에러: {te}")
 
                     # ? [AI ?? ?? ???Dual CSV+DB) ? ?]
                     high_px = active_pos.get("high_price_during_hold", max(buy_px, latest_px))
@@ -830,8 +841,11 @@ class KiwoomLiveRunner:
                     mode_title = "? [?? ?]" if self.broker.is_simulation else "? [?? ??]"
                     system_logger.log("TRADE", "Liquidation", f"? [{mode_title} 100% ? ? ?] {symbol} {quantity}? | ?: {reason_desc} |  ?: {final_pnl_pct:+.2f}%")
 
-                    sell_msg = f"""{mode_title} 100% 매도 청산 완료\n🚨 **브로커:** `{self.broker.broker_name} {self.broker.mode_str}`\n💡 **사유:** `{reason_desc}`\n📊 **종목/수량:** `{symbol} {quantity:,}주`\n💰 **체결가:** `${latest_px:.2f}` (최종 수익률: {final_pnl_pct:+.2f}%)\n🛡️ **사후 관리:** `100% 현금화 완료 (AI MoE 새 진입 대기)`"""
-                    self.dispatcher.send_telegram_message(sell_msg)
+                    try:
+                        sell_msg = f"""{mode_title} 100% 매도 청산 완료\n🚨 **브로커:** `{self.broker.broker_name} {self.broker.mode_str}`\n💡 **사유:** `{reason_desc}`\n📊 **종목/수량:** `{symbol} {quantity:,}주`\n💰 **체결가:** `${latest_px:.2f}` (최종 수익률: {final_pnl_pct:+.2f}%)\n🛡️ **사후 관리:** `100% 현금화 완료 (AI MoE 새 진입 대기)`"""
+                        self.dispatcher.send_telegram_message(sell_msg)
+                    except Exception as te2:
+                        logger.error(f"텔레그램 매도 알림 2 발송 에러: {te2}")
                     return True
 
                 if s_ord_no:
@@ -886,9 +900,36 @@ class KiwoomLiveRunner:
 
                         if not already_run:
                             try:
+                                # 증권사 통신: 체결 내역 브리핑 발송 (에러 발생 시에도 무시되도록 try-except 가드)
+                                try:
+                                    exec_hist = self.broker.get_daily_execution_history()
+                                    if exec_hist.get("ok") and exec_hist.get("execution_count", 0) > 0:
+                                        msg = f"📊 **[오늘의 실제 매매 체결 내역 (증권사 원장)]**\n\n총 {exec_hist['execution_count']}건의 체결 내역이 확인되었습니다.\n"
+                                        for ex in exec_hist["executions"]:
+                                            sym = ex.get('pdno') or ex.get('stk_cd') or ex.get('symbol') or "알수없음"
+                                            od_type = ex.get('sll_buy_dvsn_cd_name') or ex.get('order_type') or ex.get('sll_buy_dvsn_cd') or "체결"
+                                            qty = ex.get('ccld_qty') or ex.get('quantity') or ex.get('ord_qty') or 0
+                                            px = ex.get('ft_ccld_unpr3') or ex.get('ccld_unpr') or ex.get('price') or 0
+                                            msg += f"• {sym} | {od_type} | {qty}주 @ \n"
+                                        self.dispatcher.send_telegram_message(msg)
+                                        system_logger.log("INFO", "ExecutionHistory", f"당일 체결 내역 브리핑 발송 완료 ({exec_hist['execution_count']}건)")
+                                except Exception as eh_err:
+                                    system_logger.log("ERROR", "ExecutionHistory", f"체결 내역 조회/발송 실패 (무시됨): {eh_err}")
+                            except Exception as dummy: pass
+
+                            try:
                                 from core.data_lake import DailyAutoPipeline
                                 pipeline = DailyAutoPipeline(self.data_lake)
                                 eod_res = pipeline.run_full_eod_pipeline(send_telegram=True)
+                                
+                                # Generate Daily JSON Report
+                                try:
+                                    from core.eod_reporter import DailyReporter
+                                    reporter = DailyReporter(self.broker)
+                                    reporter.generate_report()
+                                except Exception as rep_err:
+                                    logger.warning(f"[EOD Reporter Error] {rep_err}")
+                                    
                                 with open(eod_date_file, "w", encoding="utf-8") as f:
                                     json.dump({"eod_date": today_str, "completed_at": time.strftime("%Y-%m-%d %H:%M:%S")}, f)
                             except Exception as e:
@@ -920,13 +961,29 @@ class KiwoomLiveRunner:
                             is_appr = moe_res.get('is_approved', False)
                             direction = moe_res.get('direction', 'NONE')
                             
-                            dir_str = "매수 대기" if direction == "NONE" else direction
+                            gbdt_probs = moe_res.get('gbdt_probs', {"LONG": 0.0, "SHORT": 0.0, "NONE": 0.0})
+                            p_long = gbdt_probs.get("LONG", 0.0) * 100
+                            p_short = gbdt_probs.get("SHORT", 0.0) * 100
+                            p_none = gbdt_probs.get("NONE", 0.0) * 100
+                            
+                            ny_dt = now_dt.astimezone(ZoneInfo('America/New_York'))
+                            if direction == "LONG_TQQQ":
+                                dir_str = "TQQQ 매수"
+                            elif direction == "SHORT_SQQQ":
+                                dir_str = "SQQQ 매수"
+                            else:
+                                dir_str = "매수 관망"
+                                
                             briefing_msg = f"""🤖 <b>[Lumos AI 정기 브리핑]</b>
-• <b>시간</b>: {now_dt.strftime('%H:%M')} (KST)
-• <b>AI 판독 방향</b>: {dir_str}
-• <b>GBDT 확신도</b>: {conf:.1f}%
-• <b>VIXY</b>: {live_prices.get('VIXY', 0.0):.2f} / <b>IEF</b>: {live_prices.get('IEF', 0.0):.2f}
-• <b>상태</b>: {'진입 승인 🚀' if is_appr else '관망 중 👁️'}
+⏰ 시간: {ny_dt.strftime('%H:%M')} (뉴욕시간)
+⏰ 시간: {now_dt.strftime('%H:%M')} (한국시간)
+🧭 AI 판독 방향: {dir_str}
+🎯 진입 임계값: {config.GBDT_CONFIDENCE_THRESHOLD * 100:.1f}%
+📈 롱(TQQQ) 확률: {p_long:.1f}%
+📉 숏(SQQQ) 확률: {p_short:.1f}%
+⏸ 관망 확률: {p_none:.1f}%
+🔥 최종 GBDT 확신도: {conf:.1f}%
+🚦 상태: {'진입 승인 🟢 (보유종목 있어 실제 진입은 Skip)' if (is_appr and active_pos) else '진입 승인 🟢' if is_appr else '관망 유지 🟡'}
 """
                             self.dispatcher.send_telegram_message(briefing_msg)
                             system_logger.log("INFO", "AI", f"15???? ? (?: {conf:.1f}%)")
@@ -939,21 +996,21 @@ class KiwoomLiveRunner:
                                     if cur_px > 0:
                                         conn_res = self.broker.test_connection()
                                         usd_avail = float(conn_res.get("usd_order_available", 0.0))
-                                        order_qty = int((usd_avail * 0.99) / (cur_px + 0.05))
+                                        order_qty = int((usd_avail * config.MAX_ALLOCATION_RATIO) / (cur_px + config.QTY_CALC_BUFFER))
                                         
                                         if order_qty > 0:
                                             system_logger.log("TRADE", "AI", f"V3 AI  ? ?! {winner_sym} {order_qty}? ?")
                                             atr_14 = float(moe_res.get('features', {}).get('ATR_14', cur_px * 0.018))
                                             atr_pct = (atr_14 / cur_px) * 100.0 if cur_px > 0 else 1.8
-                                            sl_pct = max(2.0, min(3.2, atr_pct * 1.5))
-                                            tp_pct = 3.5
+                                            sl_pct = max(config.SL_MIN_PCT * 100.0, min(config.SL_MAX_PCT * 100.0, atr_pct * config.SL_ATR_MULTIPLIER))
+                                            tp_pct = config.MAX_TP_PCT * 100.0
                                             
                                             targets = {
                                                 "dynamic_tp_px": round(cur_px * (1.0 + tp_pct/100.0), 2),
                                                 "dynamic_sl_px": round(cur_px * (1.0 - sl_pct/100.0), 2),
                                                 "tp_pct": tp_pct,
                                                 "sl_pct": sl_pct,
-                                                "time_stop_minutes": 90,
+                                                "time_stop_minutes": config.TIME_STOP_MINUTES,
                                                 "strategy_tag": "Lumos V4 Optimal"
                                             }
                                             self._execute_buy_with_10s_chase(
@@ -970,25 +1027,34 @@ class KiwoomLiveRunner:
                 if mkt["is_open"] and not self._is_order_in_progress:
                     try:
                         stk_bal = self.broker.get_overseas_stock_balance()
-                        if stk_bal.get("ok") and stk_bal.get("holdings"):
-                            live_p = {
-                                "TQQQ": self.ws_streamer.get_latest_price("TQQQ", 0.0),
-                                "SQQQ": self.ws_streamer.get_latest_price("SQQQ", 0.0)
-                            }
-                            if current_session == "EOD_LIQUIDATION":
-                                for h in stk_bal.get("holdings"):
-                                    sym = str(h.get("symbol") or h.get("stk_cd") or "").strip().upper()
-                                    qty = int(float(str(h.get("quantity") or h.get("poss_qty") or 0).replace(",", "")))
+                        if stk_bal.get("ok"):
+                            if not stk_bal.get("holdings"):
+                                if self._get_active_position():
+                                    self._clear_active_position()
+                            else:
+                                live_p = {
+                                    config.TRADE_SYMBOLS[0]: self.ws_streamer.get_latest_price(config.TRADE_SYMBOLS[0], 0.0),
+                                    config.TRADE_SYMBOLS[1]: self.ws_streamer.get_latest_price(config.TRADE_SYMBOLS[1], 0.0)
+                                }
+                                if current_session == "EOD_LIQUIDATION":
+                                    for h in stk_bal.get("holdings"):
+                                        sym = str(h.get("symbol") or h.get("stk_cd") or "").strip().upper()
+                                        qty = int(float(str(h.get("quantity") or h.get("poss_qty") or 0).replace(",", "")))
+                                    try:
+                                        buy_px = float(str(h.get("purchase_price") or h.get("pchs_avg_pric") or h.get("buy_price") or 0.0).replace(",", ""))
+                                    except Exception:
+                                        buy_px = 0.0
                                     if qty > 0:
                                         system_logger.log("TRADE", "EOD", f"Executing 15:50 EOD Liquidation for {sym}")
                                         self._execute_sell_with_10s_chase(
                                             symbol=sym,
                                             quantity=qty,
                                             reason_desc="EOD 15:50 100% Liquidation",
-                                            is_market_order=True
+                                            is_market_order=True,
+                                            buy_px=buy_px
                                         )
-                            else:
-                                self._manage_open_positions(stk_bal, realtime_px_override=live_p)
+                                else:
+                                    self._manage_open_positions(stk_bal, realtime_px_override=live_p)
                     except Exception as e:
                         pass
                 sleep_seconds = config.MAIN_LOOP_TICK_OPEN if mkt["is_open"] else config.MAIN_LOOP_TICK_CLOSED
@@ -1034,21 +1100,34 @@ class KiwoomLiveRunner:
         logger.info(f"   ??? : {self.broker.account_no}-{self.broker.account_type}")
         logger.info(f"   ?????: ${conn_res['usd_order_available']:,.2f} USD")
 
-        # 3. ?  ? ??????
-        ai_engine_desc = "`Phase 1: 15 GBDT Model (62% ? ??/ ????Veto ?? / GBDT Feature ?)`"
-        start_msg = f"""? **[Lumos ??{self.broker.mode_str} ?  ?????**
-??**? ?:** `{mkt_status['now_kst_str']}`
-? **? ???** `100% ??? (KST-NYT {sync_res['delta_hours']:.0f}h ? ?,  ???)`
-? ** ?:** `{mkt_status['status_desc']}`
-??**???:** `{mkt_status['next_open_kst_str']}` ({mkt_status['time_until_open_str']})
-? **? ?** `{self.broker.broker_name} ({self.broker.mode_str})`
-? ** :** `{self.broker.account_no}-{self.broker.account_type}`
-? **???:** `${conn_res['usd_order_available']:,.2f} USD` (??`{conn_res['krw_converted']:,}??)
-? ** ????** `{conn_res['holdings_count']}?
-? **AI ?:** {ai_engine_desc}
-??**? ? ?:** `3-Out Veto ???(? ? {self.daily_stoploss_count}/3??`
-??**??:** `10ms WebSocket ??? ????????? ??
-??, ???????? ???? ???."""
+        # 2.5. 기존에 걸려있는 모든 미체결 주문 일괄 취소 (수동 주문 잔재로 인한 예수금 잠김 방지)
+        logger.info(f"\\n[2.5/3] 기존 미체결 주문 일괄 취소 확인 중...")
+        try:
+            cancel_res = self.broker.cancel_all_open_orders()
+            if cancel_res:
+                logger.info(f"   => {len(cancel_res)}건의 기존 미체결 주문을 성공적으로 취소했습니다.")
+            else:
+                logger.info(f"   => 취소할 기존 미체결 주문이 없습니다.")
+        except Exception as e:
+            logger.warning(f"   => 기존 미체결 주문 취소 중 에러 발생 (무시하고 진행): {e}")
+
+        # 3. 모델 등 정보 설정
+        cross_asset_txt = "O" if getattr(config, "USE_CROSS_ASSET_VETO", False) else "X"
+        trend_txt = "O" if getattr(config, "USE_60M_TREND_FILTER", False) else "X"
+        ai_engine_desc = f"Phase 1: 15m GBDT Model (진입 > {config.GBDT_CONFIDENCE_THRESHOLD*100:.1f}% / 크로스에셋 Veto: {cross_asset_txt} / QQQ 60분 추세방패: {trend_txt})"
+        start_msg = f"""🚀 **[Lumos {self.broker.mode_str} 거래 시스템 시작]**
+⏰ **현재 시간:** {mkt_status['now_kst_str']}
+🔄 **시간 동기화:** 100% 일치 (KST-NYT {sync_res['delta_hours']:.0f}h 시차 검증 완료)
+📊 **시장 상태:** {mkt_status['status_desc']}
+⏳ **다음 개장/폐장:** {mkt_status['next_open_kst_str']} ({mkt_status['time_until_open_str']})
+🏢 **연결 증권사:** {self.broker.broker_name} ({self.broker.mode_str})
+💳 **계좌 번호:** {self.broker.account_no}-{self.broker.account_type}
+💵 **가용 예수금:** ${conn_res['usd_order_available']:,.2f} USD
+📦 **현재 보유종목:** {conn_res['holdings_count']}종목
+🧠 **AI 엔진:** {ai_engine_desc}
+⚡ **마켓 데이터:** 10ms WebSocket 스트리밍 기반 실시간 체결 처리 중...
+
+✅ 성공적으로 초기화되었습니다. 매매 대기 중..."""
         try:
             self.dispatcher.send_telegram_message(start_msg)
             system_logger.log("INFO", "LiveRunner", f"? {self.broker.mode_str} ?  ? ??? (: {self.broker.account_no}, ?? ${conn_res['usd_order_available']:,.2f})")
@@ -1070,6 +1149,8 @@ class KiwoomLiveRunner:
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Lumos Auto Trading Live Runner")
+    parser.add_argument("--real", action="store_true", help="Run in real trading mode")
+    parser.add_argument("--sim", action="store_true", help="Run in simulation mode")
     args, unknown = parser.parse_known_args()
 
     is_sim = None
