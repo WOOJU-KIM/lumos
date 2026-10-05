@@ -1,3 +1,5 @@
+import logging
+logger = logging.getLogger(__name__)
 import os
 import sys
 import json
@@ -5,6 +7,7 @@ import time
 import requests
 from datetime import datetime, timedelta
 from pathlib import Path
+import config
 from typing import Dict, Any, Optional, List, Tuple
 
 # Windows 콘솔 UTF-8 설정
@@ -87,10 +90,10 @@ class KisClient:
 • 오버나잇 0% 리스크 룰에 따라 정규장 마감 10분 전 전량 시장가 청산됩니다."""
             
             try:
-                print("\n" + "!" * 75)
-                print("[경고] 한국투자증권 실전투자(REAL) 모드로 가동되었습니다.")
-                print(f"    계좌번호: {cano_mask}-{self.acnt_prdt_cd} | Base URL: {self.base_url}")
-                print("!" * 75 + "\n")
+                logger.info("\n" + "!" * 75)
+                logger.info("[경고] 한국투자증권 실전투자(REAL) 모드로 가동되었습니다.")
+                logger.info(f"    계좌번호: {cano_mask}-{self.acnt_prdt_cd} | Base URL: {self.base_url}")
+                logger.info("!" * 75 + "\n")
             except Exception:
                 pass
 
@@ -109,7 +112,7 @@ class KisClient:
             }
             requests.post(url, json=payload, timeout=5)
         except Exception as e:
-            print(f"텔레그램 경고 발송 실패: {e}")
+            logger.info(f"텔레그램 경고 발송 실패: {e}")
 
     # =========================================================================
     # [1. OAuth2 토큰 발급 및 캐싱 관리]
@@ -416,9 +419,9 @@ class KisClient:
                 for h in holdings:
                     t = h["ticker"]
                     q = int(h["qty"])
-                    p = float(h["now_price"]) * 0.98  # 즉시 체결을 위해 -2% 슬리피지 지정가
+                    p = float(h["now_price"]) * (1.0 - getattr(config, "SELL_SLIPPAGE_ADJUST", 0.05))  # 즉시 체결을 위해 -2% 슬리피지 지정가
                     if q > 0:
-                        print(f"[오버나잇 청산 가드] {t} {q}주 전량 매도 주문 실행 (사유: {reason})")
+                        logger.info(f"[오버나잇 청산 가드] {t} {q}주 전량 매도 주문 실행 (사유: {reason})")
                         ord_res = self.order_overseas_stock(t, "SELL", q, price=p)
                         results.append(ord_res)
         return results

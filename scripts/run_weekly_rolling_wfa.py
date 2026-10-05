@@ -48,9 +48,11 @@ def run_weekly_rolling_walk_forward():
     print("=" * 115)
 
     # 1. 6개년 시계열 전량 로드
-    print("⏳ [1/4] 데이터 레이크에서 6개년(38,000+개 분봉) 데이터 로드 중...")
+    print("⏳ [1/4] 데이터 레이크에서 6개년 데이터 로드 중 (5분봉 포함)...")
     tqqq_15m = lake.load_candles("TQQQ", "15m")
     sqqq_15m = lake.load_candles("SQQQ", "15m")
+    tqqq_5m = lake.load_candles("TQQQ", "5m")
+    sqqq_5m = lake.load_candles("SQQQ", "5m")
     qqq_60m = lake.load_candles("QQQ", "60m")
     nvda_15m = lake.load_candles("NVDA", "15m")
     soxx_15m = lake.load_candles("SOXX", "15m")
@@ -63,7 +65,7 @@ def run_weekly_rolling_walk_forward():
 
     # 2. 피처 및 타겟 추출 (전체 시계열 사전 계산)
     print("⏳ [2/4] 머신러닝 피처 및 Triple Barrier 타겟 사전 추출 중...")
-    ml_engine = MLFeatureEngine(confidence_threshold=0.60)
+    ml_engine = MLFeatureEngine(confidence_threshold=config.GBDT_CONFIDENCE_THRESHOLD)
     tqqq_feat = ml_engine.extract_features(tqqq_15m)
     labels = ml_engine.compute_triple_barrier_labels(tqqq_feat)
 
@@ -106,7 +108,7 @@ def run_weekly_rolling_walk_forward():
     print(f"🎯 주간 롤링 테스트 주차: 총 {total_test_weeks}주 ({unique_weeks[test_start_idx]} ~ {unique_weeks[-1]})\n")
 
     # 3. 주간 롤링 워크포워드 시뮬레이션
-    print("⏳ [3/4] 210회 주간 롤링 재학습 & 블라인드 실전 백테스트 실행 중...")
+    print("⏳ [3/4] 주간 롤링 재학습 & 블라인드 실전 백테스트 실행 중...")
     t0 = time.time()
 
     initial_capital = 10_000_000.0  # 천만 원
@@ -117,9 +119,17 @@ def run_weekly_rolling_walk_forward():
     trades = []
     trade_id = 0
     active_pos = None
-    slippage_rate = 0.0020  # 왕복 0.05%
+    slippage_rate = config.BACKTEST_FEE_SLIPPAGE
 
     week_progress = 0
+
+    # 5m df set index for speed
+    tqqq_5m['datetime'] = pd.to_datetime(tqqq_5m['datetime'])
+    sqqq_5m['datetime'] = pd.to_datetime(sqqq_5m['datetime'])
+    tqqq_5m.set_index('datetime', inplace=True)
+    sqqq_5m.set_index('datetime', inplace=True)
+    tqqq_5m['date_str'] = tqqq_5m.index.strftime('%Y-%m-%d')
+    sqqq_5m['date_str'] = sqqq_5m.index.strftime('%Y-%m-%d')
 
     for w_idx in range(test_start_idx, len(unique_weeks)):
         cur_test_week = unique_weeks[w_idx]
@@ -135,10 +145,12 @@ def run_weekly_rolling_walk_forward():
             objective='multiclass',
             num_class=3,
             class_weight='balanced',
-            n_estimators=80,
+            n_estimators=config.GBDT_N_ESTIMATORS,
             max_depth=4,
-            learning_rate=0.03,
+            learning_rate=config.GBDT_LEARNING_RATE,
             random_state=42,
+            deterministic=True,
+            force_col_wise=True,
             verbosity=-1,
             n_jobs=-1
         )
@@ -176,98 +188,28 @@ def run_weekly_rolling_walk_forward():
 
         # D. 이번 1주일 시뮬레이션 집행
         test_dates = sorted(test_df['date_str'].unique())
+        last_exit_time = pd.Timestamp.min
 
         for d_str in test_dates:
             day_bars = test_df[test_df['date_str'] == d_str]
+            day_tqqq_5m = tqqq_5m[tqqq_5m['date_str'] == d_str]
+            day_sqqq_5m = sqqq_5m[sqqq_5m['date_str'] == d_str]
 
             for idx, row in day_bars.iterrows():
-                curr_dt = row['datetime']
+                curr_dt_ts = row['datetime_dt']
+                curr_dt_str = row['datetime']
                 time_str = row['time_str']
+                
+                if curr_dt_ts <= last_exit_time:
+                    continue
+
                 cur_tqqq_close = float(row['Close'])
-                cur_tqqq_high = float(row['High'])
-                cur_tqqq_low = float(row['Low'])
-
-                sqqq_row = sqqq_dict.get(curr_dt)
+                sqqq_row = sqqq_dict.get(curr_dt_str)
                 cur_sqqq_close = float(sqqq_row['Close']) if sqqq_row else 0.0
-                cur_sqqq_high = float(sqqq_row['High']) if sqqq_row else 0.0
-                cur_sqqq_low = float(sqqq_row['Low']) if sqqq_row else 0.0
 
-                # 1. 청산 검사 (TP +3%, SL -2%, 90분 타임스탑, 15:45 EOD)
-                if active_pos is not None:
-                    active_pos['bars'] += 1
-                    sym = active_pos['sym']
-                    entry_px = active_pos['entry_px']
-                    cur_close = cur_tqqq_close if sym == 'TQQQ' else cur_sqqq_close
-                    cur_high = cur_tqqq_high if sym == 'TQQQ' else cur_sqqq_high
-                    cur_low = cur_tqqq_low if sym == 'TQQQ' else cur_sqqq_low
-
-                    exit_price = None
-                    exit_reason = None
-
-                    if 'peak_high' not in active_pos:
-                        active_pos['peak_high'] = cur_high
-                    else:
-                        active_pos['peak_high'] = max(active_pos['peak_high'], cur_high)
-
-                    tp_px = entry_px * (1.0 + config.MAX_TP_PCT)
-                    sl_px = entry_px * (1.0 - config.SL_MIN_PCT)
-
-                    current_sl_px = sl_px
-                    trailing_trigger_px = entry_px * (1.0 + config.TRAILING_TRIGGER_PCT)
-                    if active_pos['peak_high'] >= trailing_trigger_px:
-                        safety_sl_px = entry_px * (1.0 + max(0.0, config.TRAILING_TRIGGER_PCT - 0.015))
-                        current_sl_px = max(safety_sl_px, active_pos['peak_high'] * (1.0 - config.TRAILING_DROP_PCT))
-
-                    if cur_high >= tp_px:
-                        exit_price = tp_px
-                        exit_reason = "MAX_TP"
-                    elif cur_low <= current_sl_px:
-                        exit_price = current_sl_px
-                        exit_reason = "TRAILING_SL" if current_sl_px > sl_px else "STOP_LOSS"
-                    elif active_pos['bars'] * 15 >= config.TIME_STOP_MINUTES:
-                        exit_price = cur_close
-                        exit_reason = "TIME_STOP"
-                    elif time_str >= config.PHASE_EOD_CLEAR:
-                        exit_price = cur_close
-                        exit_reason = "EOD_CLEAR"
-
-                    if exit_price is not None:
-                        raw_ret = (exit_price / entry_px) - 1.0
-                        net_ret = raw_ret - slippage_rate
-                        pnl_krw = current_capital * net_ret
-                        current_capital += pnl_krw
-
-                        if current_capital > peak_capital:
-                            peak_capital = current_capital
-                        dd = (peak_capital - current_capital) / peak_capital * 100.0
-                        if dd > max_drawdown_pct:
-                            max_drawdown_pct = dd
-
-                        trade_id += 1
-                        trades.append({
-                            'trade_id': trade_id,
-                            'datetime': curr_dt,
-                            'week_id': cur_test_week,
-                            'symbol': sym,
-                            'entry_px': entry_px,
-                            'exit_px': exit_price,
-                            'entry_dt': active_pos['entry_dt'],
-                            'exit_dt': curr_dt,
-                            'bars_held': active_pos['bars'],
-                            'holding_min': active_pos['bars'] * 15,
-                            'raw_ret_pct': round(raw_ret * 100, 2),
-                            'net_ret_pct': round(net_ret * 100, 2),
-                            'pnl_krw': int(round(pnl_krw)),
-                            'ending_capital': int(round(current_capital)),
-                            'exit_reason': exit_reason,
-                            'is_win': 1 if net_ret > 0 else 0
-                        })
-                        active_pos = None
-                        continue
-
-                # 2. 신규 진입 검토
+                # 신규 진입 검토
                 if active_pos is None and time_str < config.PHASE_MAIN_END:
-                    past_qqq_60 = qqq_60m[qqq_60m['datetime'] <= curr_dt]
+                    past_qqq_60 = qqq_60m[qqq_60m['datetime'] <= curr_dt_str]
                     qqq_60m_bull = True
                     qqq_60m_bear = True
                     if len(past_qqq_60) >= 20:
@@ -279,11 +221,11 @@ def run_weekly_rolling_walk_forward():
                     dir_gbdt = row.get('Direction', 'NONE')
                     conf_gbdt = float(row.get('Confidence', 0.50))
 
-                    n_px = nvda_map.get(curr_dt)
-                    sx_px = soxx_map.get(curr_dt)
-                    q_px = qqq_map.get(curr_dt)
-                    v_px = vix_map.get(curr_dt)
-                    i_px = ief_map.get(curr_dt)
+                    n_px = nvda_map.get(curr_dt_str)
+                    sx_px = soxx_map.get(curr_dt_str)
+                    q_px = qqq_map.get(curr_dt_str)
+                    v_px = vix_map.get(curr_dt_str)
+                    i_px = ief_map.get(curr_dt_str)
 
                     cross_dir = "HOLD"
                     cur_bar_idx = day_bars.index.get_loc(idx)
@@ -316,23 +258,124 @@ def run_weekly_rolling_walk_forward():
                         elif sig_code < 0:
                             cross_dir = "SHORT_SQQQ"
 
-                    if dir_gbdt == "LONG_TQQQ" and conf_gbdt >= config.GBDT_CONFIDENCE_THRESHOLD and qqq_60m_bull and cross_dir != "SHORT_SQQQ":
+                    # config.py 설정 존중 (방패 켜기/끄기)
+                    pass_60m_bull = qqq_60m_bull if config.USE_60M_TREND_FILTER else True
+                    pass_60m_bear = qqq_60m_bear if config.USE_60M_TREND_FILTER else True
+                    pass_cross_long = (cross_dir != "SHORT_SQQQ") if config.USE_CROSS_ASSET_VETO else True
+                    pass_cross_short = (cross_dir != "LONG_TQQQ") if config.USE_CROSS_ASSET_VETO else True
+
+                    if dir_gbdt == "LONG_TQQQ" and conf_gbdt >= config.GBDT_CONFIDENCE_THRESHOLD and pass_60m_bull and pass_cross_long:
+                        cur_atr = float(row.get('ATR_14', cur_tqqq_close * 0.015))
+                        atr_sl_pct = (cur_atr * config.SL_ATR_MULTIPLIER) / cur_tqqq_close
+                        dyn_sl_pct = max(config.SL_MIN_PCT, min(config.SL_MAX_PCT, atr_sl_pct))
+                        
                         active_pos = {
                             'sym': 'TQQQ',
                             'entry_px': cur_tqqq_close,
-                            'entry_dt': curr_dt,
-                            'bars': 0,
-                            'peak_high': cur_tqqq_close
+                            'entry_dt': curr_dt_ts,
+                            'bars_5m': 0,
+                            'peak_high': cur_tqqq_close,
+                            'sl_pct': dyn_sl_pct
                         }
-                    elif dir_gbdt == "SHORT_SQQQ" and conf_gbdt >= config.GBDT_CONFIDENCE_THRESHOLD and qqq_60m_bear and cross_dir != "LONG_TQQQ":
+                    elif dir_gbdt == "SHORT_SQQQ" and conf_gbdt >= config.GBDT_CONFIDENCE_THRESHOLD and pass_60m_bear and pass_cross_short:
                         if cur_sqqq_close > 0:
+                            cur_atr = float(row.get('ATR_14', cur_sqqq_close * 0.015))
+                            atr_sl_pct = (cur_atr * config.SL_ATR_MULTIPLIER) / cur_sqqq_close
+                            dyn_sl_pct = max(config.SL_MIN_PCT, min(config.SL_MAX_PCT, atr_sl_pct))
+                        
                             active_pos = {
                                 'sym': 'SQQQ',
                                 'entry_px': cur_sqqq_close,
-                                'entry_dt': curr_dt,
-                                'bars': 0,
-                                'peak_high': cur_sqqq_close
+                                'entry_dt': curr_dt_ts,
+                                'bars_5m': 0,
+                                'peak_high': cur_sqqq_close,
+                                'sl_pct': dyn_sl_pct
                             }
+
+                # 5분봉 정밀 청산 루프 (포지션이 있으면 즉시 실행)
+                if active_pos is not None:
+                    sym = active_pos['sym']
+                    future_5m = day_tqqq_5m if sym == 'TQQQ' else day_sqqq_5m
+                    future_5m = future_5m[future_5m.index > curr_dt_ts]
+                    
+                    for cur_5m_dt, row_5m in future_5m.iterrows():
+                        cur_5m_time_str = cur_5m_dt.strftime('%H:%M')
+                        cur_high = float(row_5m['High'])
+                        cur_low = float(row_5m['Low'])
+                        cur_close = float(row_5m['Close'])
+                        
+                        active_pos['bars_5m'] += 1
+                        
+                        if 'peak_high' not in active_pos:
+                            active_pos['peak_high'] = cur_high
+                        else:
+                            active_pos['peak_high'] = max(active_pos['peak_high'], cur_high)
+
+                        entry_px = active_pos['entry_px']
+                        dyn_sl_pct = active_pos['sl_pct']
+
+                        tp_px = entry_px * (1.0 + config.MAX_TP_PCT)
+                        sl_px = entry_px * (1.0 - dyn_sl_pct)
+
+                        current_sl_px = sl_px
+                        trailing_trigger_px = entry_px * (1.0 + config.TRAILING_TRIGGER_PCT)
+                        if active_pos['peak_high'] >= trailing_trigger_px:
+                            safety_sl_px = entry_px * (1.0 + max(0.0, config.TRAILING_TRIGGER_PCT - 0.015))
+                            current_sl_px = max(safety_sl_px, active_pos['peak_high'] * (1.0 - config.TRAILING_DROP_PCT))
+
+                        exit_price = None
+                        exit_reason = None
+                        
+                        # 손절선을 최우선적으로 비관적 평가
+                        if cur_low <= current_sl_px:
+                            exit_price = current_sl_px
+                            exit_reason = "TRAILING_SL" if current_sl_px > sl_px else "STOP_LOSS"
+                        elif cur_high >= tp_px:
+                            exit_price = tp_px
+                            exit_reason = "MAX_TP"
+                        elif active_pos['bars_5m'] * 5 >= config.TIME_STOP_MINUTES:
+                            exit_price = cur_close
+                            exit_reason = "TIME_STOP"
+                        elif cur_5m_time_str >= config.PHASE_EOD_CLEAR:
+                            exit_price = cur_close
+                            exit_reason = "EOD_CLEAR"
+
+                        if exit_price is not None:
+                            raw_ret = (exit_price / entry_px) - 1.0
+                            net_ret = raw_ret - slippage_rate
+                            
+                            invest_cap = current_capital * config.MAX_ALLOCATION_RATIO
+                            pnl_krw = invest_cap * net_ret
+                            current_capital += pnl_krw
+
+                            if current_capital > peak_capital:
+                                peak_capital = current_capital
+                            dd = (peak_capital - current_capital) / peak_capital * 100.0
+                            if dd > max_drawdown_pct:
+                                max_drawdown_pct = dd
+
+                            trade_id += 1
+                            trades.append({
+                                'trade_id': trade_id,
+                                'datetime': cur_5m_dt,
+                                'week_id': cur_test_week,
+                                'symbol': sym,
+                                'entry_px': entry_px,
+                                'exit_px': exit_price,
+                                'entry_dt': active_pos['entry_dt'],
+                                'exit_dt': cur_5m_dt,
+                                'bars_held': active_pos['bars_5m'],
+                                'holding_min': active_pos['bars_5m'] * 5,
+                                'raw_ret_pct': round(raw_ret * 100, 2),
+                                'net_ret_pct': round(net_ret * 100, 2),
+                                'pnl_krw': int(round(pnl_krw)),
+                                'ending_capital': int(round(current_capital)),
+                                'exit_reason': exit_reason,
+                                'is_win': 1 if net_ret > 0 else 0
+                            })
+                            last_exit_time = cur_5m_dt
+                            active_pos = None
+                            break # Exit 5m loop, proceed to next 15m scan
 
         week_progress += 1
         if week_progress % 30 == 0 or week_progress == total_test_weeks:
@@ -344,9 +387,12 @@ def run_weekly_rolling_walk_forward():
     # 4. 결과 집계 및 표 출력
     print("⏳ [4/4] 결과 테이블 생성 및 집계 중...")
     df_trades = pd.DataFrame(trades)
-    df_trades['datetime'] = pd.to_datetime(df_trades['datetime'])
-    df_trades['year'] = df_trades['datetime'].dt.year
-    df_trades['year_month'] = df_trades['datetime'].dt.strftime('%Y-%m')
+    if not df_trades.empty:
+        df_trades['datetime'] = pd.to_datetime(df_trades['datetime'])
+        df_trades['year'] = df_trades['datetime'].dt.year
+        df_trades['year_month'] = df_trades['datetime'].dt.strftime('%Y-%m')
+    else:
+        df_trades = pd.DataFrame(columns=['datetime', 'year', 'year_month', 'net_ret_pct', 'pnl_krw', 'ending_capital', 'symbol'])
 
     def calc_stats(sub_df, start_cap):
         if sub_df.empty:
@@ -378,7 +424,7 @@ def run_weekly_rolling_walk_forward():
     total_stats = calc_stats(df_trades, initial_capital)
 
     # 년도별 집계
-    years = sorted(df_trades['year'].unique())
+    years = sorted(df_trades['year'].unique()) if not df_trades.empty else []
     yearly_rows = []
     y_start_cap = initial_capital
     for y in years:
@@ -399,7 +445,7 @@ def run_weekly_rolling_walk_forward():
         y_start_cap = st['end_cap']
 
     # 월별 집계
-    months = sorted(df_trades['year_month'].unique())
+    months = sorted(df_trades['year_month'].unique()) if not df_trades.empty else []
     monthly_rows = []
     m_start_cap = initial_capital
     for m in months:
@@ -421,7 +467,7 @@ def run_weekly_rolling_walk_forward():
 
     result_summary = {
         'initial_capital': float(initial_capital),
-        'final_capital': int(df_trades['ending_capital'].iloc[-1]),
+        'final_capital': int(df_trades['ending_capital'].iloc[-1]) if not df_trades.empty else initial_capital,
         'total_trades': int(len(df_trades)),
         'total_weeks_tested': total_test_weeks,
         'rolling_window_weeks': ROLLING_WINDOW_WEEKS,
@@ -469,7 +515,8 @@ def run_weekly_rolling_walk_forward():
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(clean_summary, f, ensure_ascii=False, indent=2)
 
-    df_trades.to_csv(DATA_DIR / "backtest_weekly_rolling_wfa_trades.csv", index=False, encoding="utf-8-sig")
+    if not df_trades.empty:
+        df_trades.to_csv(DATA_DIR / "backtest_weekly_rolling_wfa_trades.csv", index=False, encoding="utf-8-sig")
     print(f"\n💾 [결과 파일 저장 완료] {output_path}")
 
     return result_summary

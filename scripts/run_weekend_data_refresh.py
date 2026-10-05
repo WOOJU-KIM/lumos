@@ -21,6 +21,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+import config
 from config import BASE_DIR, MODELS_DIR, DATA_DIR
 from core.data_lake import MarketDataLake, DailyAutoPipeline
 from core.ml_engine import MLFeatureEngine
@@ -40,12 +41,12 @@ def run_weekend_data_refresh():
 
     # 1. 최근 504 거래일(Trading Days) 하드코딩 롤링 윈도우 쿼리 로드
     print("\n⏳ [1/5] market_data.db에서 최근 504 거래일(2년) 롤링 윈도우 데이터 추출...")
-    df_15m = data_lake.load_rolling_candles("TQQQ", "15m", max_trading_days=504)
+    df_15m = data_lake.load_rolling_candles("TQQQ", "15m", max_trading_days=config.ROLLING_TRAINING_WEEKS * 5)
 
     if df_15m.empty or len(df_15m) < 100:
         print("⚠️ 로컬 DB 데이터 부족으로 Yahoo Finance에서 60일치 수집 후 재시도...")
         data_lake.harvest_symbol("TQQQ", "15m", period="60d")
-        df_15m = data_lake.load_rolling_candles("TQQQ", "15m", max_trading_days=504)
+        df_15m = data_lake.load_rolling_candles("TQQQ", "15m", max_trading_days=config.ROLLING_TRAINING_WEEKS * 5)
 
     trading_days = sorted(df_15m.index.strftime('%Y-%m-%d').unique())
     num_days = len(trading_days)
@@ -59,12 +60,12 @@ def run_weekend_data_refresh():
 
     # 2. 피처 추출 및 Triple Barrier 정답지 라벨링
     print("\n⏳ [2/5] 28개 종합 피처 추출 및 Triple Barrier (+3.0% TP / -2.0% SL / 90m) 라벨링...")
-    ml_engine = MLFeatureEngine(confidence_threshold=0.65)
+    ml_engine = MLFeatureEngine(confidence_threshold=config.GBDT_CONFIDENCE_THRESHOLD)
     feat_df = ml_engine.extract_features(df_15m)
     labels = MLFeatureEngine.compute_triple_barrier_labels(
         feat_df,
-        take_profit=0.030,
-        stop_loss=0.020,
+        take_profit=config.MAX_TP_PCT,
+        stop_loss=config.SL_MIN_PCT,
         horizon=6
     )
     feat_df['Target'] = labels
@@ -91,7 +92,7 @@ def run_weekend_data_refresh():
 
     # 4-1. Lumos V3 하이브리드 MoE 실전 메인 모델 동시 최신화 (GBDT 65% + Cross-Asset Veto)
     from core.moe_orchestrator import MoEMetaOrchestrator, MOE_MODEL_PATH
-    hybrid_moe = MoEMetaOrchestrator(confidence_threshold=0.65, gbdt_threshold=0.62, mode="hybrid_v3")
+    hybrid_moe = MoEMetaOrchestrator(confidence_threshold=config.GBDT_CONFIDENCE_THRESHOLD, gbdt_threshold=config.GBDT_CONFIDENCE_THRESHOLD, mode="hybrid_v3")
     hybrid_moe.gbdt_engine.model = model
     hybrid_moe.gbdt_engine.feature_names = ml_engine.feature_names
     hybrid_moe.gbdt_engine.top_10_features = top_10
@@ -101,7 +102,7 @@ def run_weekend_data_refresh():
     print(f"   ✅ [Lumos V3 하이브리드 MoE 최신화 완료] ➔ {MOE_MODEL_PATH.name}, model_champion.pkl")
 
     # 4-2. Lumos 레거시 안전 모델(100% 동시합의) 동시 최신화 및 영구 보존
-    safe_moe = MoEMetaOrchestrator(confidence_threshold=0.60, gbdt_threshold=0.60, mode="legacy_dual_consensus")
+    safe_moe = MoEMetaOrchestrator(confidence_threshold=config.GBDT_CONFIDENCE_THRESHOLD, gbdt_threshold=config.GBDT_CONFIDENCE_THRESHOLD, mode="legacy_dual_consensus")
     safe_moe.gbdt_engine.model = model
     safe_moe.gbdt_engine.feature_names = ml_engine.feature_names
     safe_moe.gbdt_engine.top_10_features = top_10

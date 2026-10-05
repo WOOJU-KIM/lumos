@@ -1,4 +1,4 @@
-import os
+﻿import os
 import sys
 import time
 import json
@@ -765,7 +765,7 @@ class KiwoomLiveRunner:
                     latest_px = cur_px
 
                 if is_market_order and not self.broker.is_simulation:
-                    # 15:50 EOD ?? 0%  ?: ?? ?? ?(03, price=0.0)  
+                    # {config.PHASE_EOD_CLEAR} EOD ?? 0%  ?: ?? ?? ?(03, price=0.0)  
                     sell_px = 0.0
                     order_label = "? ? ?(Market Order)"
                 else:
@@ -882,7 +882,7 @@ class KiwoomLiveRunner:
                         self.ws_streamer.reset_session_ticks()
                         
                         system_logger.log("TRADE", "MarketSession", f"??? ?? ? ? ({mkt['now_kst_str']})")
-                        open_msg = f"""🔥 **[정규장 매매 개시]**\n\n⏰ 현재 시각: `{mkt['now_kst_str']}`\n🖥️ 실행 모드: `{self.broker.mode_str}`\n🧠 AI 전략: `하이브리드 MoE V3 (09:30~15:30 EDT)`\n🎯 매수 룰: `GBDT 62% 이상`\n🛡️ 청산 룰: `Max TP +3.5% / ATR Trailing Stop`\n🌙 마감청산: `15:50 EDT 0% 오버나잇 전량 시장가`"""
+                        open_msg = f"""🔥 **[정규장 매매 개시]**\n\n⏰ 현재 시각: `{mkt['now_kst_str']}`\n🖥️ 실행 모드: `{self.broker.mode_str}`\n🧠 AI 전략: `하이브리드 MoE V3 (09:30~15:30 EDT)`\n🎯 매수 룰: `GBDT 62% 이상`\n🛡️ 청산 룰: `Max TP +3.5% / ATR Trailing Stop`\n🌙 마감청산: `{config.PHASE_EOD_CLEAR} EDT 0% 오버나잇 전량 시장가`"""
                         self.dispatcher.send_telegram_message(open_msg)
 
                     elif current_session in ["AFTER_MARKET_CLOSED", "CLOSED"]:
@@ -1045,11 +1045,11 @@ class KiwoomLiveRunner:
                                     except Exception:
                                         buy_px = 0.0
                                     if qty > 0:
-                                        system_logger.log("TRADE", "EOD", f"Executing 15:50 EOD Liquidation for {sym}")
+                                        system_logger.log("TRADE", "EOD", f"Executing {config.PHASE_EOD_CLEAR} EOD Liquidation for {sym}")
                                         self._execute_sell_with_10s_chase(
                                             symbol=sym,
                                             quantity=qty,
-                                            reason_desc="EOD 15:50 100% Liquidation",
+                                            reason_desc=f"EOD {config.PHASE_EOD_CLEAR} 100% Liquidation",
                                             is_market_order=True,
                                             buy_px=buy_px
                                         )

@@ -102,7 +102,6 @@ class SystemIntegrityRegressionTest(unittest.TestCase):
         # buy_res가 True이거나 (모의투자 API 정상동작), False(소켓 에러 등)더라도 
         # 서킷브레이커 자체로 인해 아예 블락되는 건 아님을 확인함.
         
-        runner._reset_daily_circuit_breaker()
         print("✅ [Test 5 통과] 3-Out 서킷브레이커 영구 폐지 (신규 진입 차단 없음) 검증 완료")
 
     def test_6_hybrid_moe_single_trigger_logic(self):

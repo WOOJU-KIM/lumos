@@ -23,6 +23,7 @@ if sys.platform.startswith('win'):
         pass
 
 from dotenv import load_dotenv
+import config
 load_dotenv()
 
 logger = logging.getLogger("KiwoomBroker")
@@ -183,12 +184,12 @@ class KiwoomBroker:
         req = urllib.request.Request(url, data=payload_bytes, headers=headers, method="POST")
 
         # 🔍 요청 직전 URL / Headers / Body 전문 Full 출력
-        print("\n" + "=" * 80)
-        print(f"📡 [REST TR REQUEST 송출] API ID: {api_id} | Endpoint: {endpoint}")
-        print(f"   • URL: {url}")
-        print(f"   • Headers: {json.dumps(headers, ensure_ascii=False)}")
-        print(f"   • Body: {json.dumps(body_dict, ensure_ascii=False)}")
-        print("=" * 80)
+        logger.info("\n" + "=" * 80)
+        logger.info(f"📡 [REST TR REQUEST 송출] API ID: {api_id} | Endpoint: {endpoint}")
+        logger.info(f"   • URL: {url}")
+        logger.info(f"   • Headers: {json.dumps(headers, ensure_ascii=False)}")
+        logger.info(f"   • Body: {json.dumps(body_dict, ensure_ascii=False)}")
+        logger.info("=" * 80)
 
         try:
             with urllib.request.urlopen(req, timeout=10) as response:
@@ -208,9 +209,9 @@ class KiwoomBroker:
                 data = json.loads(raw_text)
                 
                 # 🔍 수신된 HTTP 상태코드 및 Response Body 전문 Full 출력
-                print(f"📥 [REST TR RESPONSE 수신] HTTP Status: {response.status}")
-                print(f"   • Raw Body: {raw_text}")
-                print("=" * 80 + "\n")
+                logger.info(f"📥 [REST TR RESPONSE 수신] HTTP Status: {response.status}")
+                logger.info(f"   • Raw Body: {raw_text}")
+                logger.info("=" * 80 + "\n")
 
                 rc = data.get("return_code", 0)
                 rm = data.get("return_msg", "")
@@ -223,9 +224,9 @@ class KiwoomBroker:
 
         except urllib.error.HTTPError as e:
             err_text = e.read().decode("utf-8")
-            print(f"❌ [REST TR HTTP ERROR] HTTP Status: {e.code}")
-            print(f"   • Error Body: {err_text}")
-            print("=" * 80 + "\n")
+            logger.info(f"❌ [REST TR HTTP ERROR] HTTP Status: {e.code}")
+            logger.info(f"   • Error Body: {err_text}")
+            logger.info("=" * 80 + "\n")
             logger.error(f"❌ TR 요청 실패 [{api_id}] HTTP {e.code}: {err_text}")
             
             # 🔁 HTTP 429 (유량 초과) 발생 시 0.6초 백오프 후 1회 자동 재시도
@@ -239,8 +240,8 @@ class KiwoomBroker:
             return {"return_code": e.code, "return_msg": err_text, "ok": False}
 
         except Exception as e:
-            print(f"❌ [REST TR EXCEPTION] Exception: {e}")
-            print("=" * 80 + "\n")
+            logger.info(f"❌ [REST TR EXCEPTION] Exception: {e}")
+            logger.info("=" * 80 + "\n")
             logger.error(f"❌ TR 요청 예외 [{api_id}]: {e}")
             if raise_on_error:
                 raise
@@ -306,10 +307,10 @@ class KiwoomBroker:
     def get_overseas_stock_balance(self, force_refresh: bool = False) -> Dict[str, Any]:
         """
         [TR: ust21070] 미국주식 원장잔고확인 요청
-        - 총평가금액, 총매입금액, 평가손익, 보유종목 리스트 (5초 캐시, force_refresh=True 시 즉시 재조회)
+        - 총평가금액, 총매입금액, 당일수익, 보유종목 리스트 (5초 캐시, force_refresh=True 시 즉시 조회)
         """
         now_ts = time.time()
-        if not force_refresh and hasattr(self, "_cached_stock_balance") and self._cached_stock_balance and (now_ts - getattr(self, "_stock_balance_cached_time", 0)) < 5:
+        if not force_refresh and hasattr(self, "_cached_stock_balance") and self._cached_stock_balance and (now_ts - getattr(self, "_stock_balance_cached_time", 0)) < config.BALANCE_CACHE_TTL_SEC:
             return self._cached_stock_balance
 
         body = {
@@ -495,8 +496,9 @@ class KiwoomBroker:
             if price > 0.0:
                 exec_px = price
             else:
-                # 슬리피지 방어 즉시 체결: 매수는 +0.03$ (Best Ask), 매도는 -0.03$ (Best Bid)
-                exec_px = max(0.01, round(cur_px - 0.03, 2)) if not is_buy else round(cur_px + 0.03, 2)
+                # 슬리피지 방어 즉시 체결: 매수는 config.BUY_SLIPPAGE_ADJUST (Best Ask), 매도는 config.SELL_SLIPPAGE_ADJUST (Best Bid)
+                import config
+                exec_px = max(0.01, round(cur_px - config.SELL_SLIPPAGE_ADJUST, 2)) if not is_buy else round(cur_px + config.BUY_SLIPPAGE_ADJUST, 2)
             ord_uv_str = str(round(exec_px, 2)) if exec_px > 0 else "0"
             trde_tp = "00"  # 00: 지정가 (키움 모의투자 필수)
             order_mode_desc = f"🎯 모의 지정가(${exec_px:.2f})"
@@ -588,6 +590,44 @@ class KiwoomBroker:
             "executions": open_res.get("orders", []),
             "msg": "키움 공식 원장 조회 완료"
         }
+
+    def get_daily_execution_history(self) -> Dict[str, Any]:
+        """
+        [TR: opt10075 / ust21050] 당일 실시간 체결/매매 내역 조회 (Read-only)
+        매매 로직과 100% 분리되어 장 마감 브리핑 등에만 안전하게 사용됨.
+        """
+        try:
+            body = {
+                "cano": self.account_no,
+                "acnt_prdt_cd": self.account_type,
+                "qry_tp": "1"  # 1: 체결내역
+            }
+            # 에러 발생 시에도 시스템이 멈추지 않도록 raise_on_error=False
+            res = self._send_tr_request(endpoint="/api/us/acnt", api_id="opt10075", body_dict=body, raise_on_error=False)
+            
+            if res.get("return_code") == 0:
+                executions = res.get("result_list", [])
+                return {
+                    "ok": True,
+                    "execution_count": len(executions),
+                    "executions": executions,
+                    "msg": res.get("return_msg", "정상 조회")
+                }
+            else:
+                return {
+                    "ok": False,
+                    "execution_count": 0,
+                    "executions": [],
+                    "msg": res.get("return_msg", "조회 실패")
+                }
+        except Exception as e:
+            logger.error(f"체결 내역 조회 중 예외 발생: {e}")
+            return {
+                "ok": False,
+                "execution_count": 0,
+                "executions": [],
+                "msg": f"에러: {e}"
+            }
 
     def get_open_orders(self) -> Dict[str, Any]:
         """
@@ -789,9 +829,9 @@ class KiwoomBroker:
 
 if __name__ == "__main__":
     broker = KiwoomBroker()
-    print("=" * 75)
-    print("🚀 [키움증권 미국주식 매매 송수신 전 주기 파이프라인 점검 테스트] 🚀")
-    print("=" * 75)
+    logger.info("=" * 75)
+    logger.info("🚀 [키움증권 미국주식 매매 송수신 전 주기 파이프라인 점검 테스트] 🚀")
+    logger.info("=" * 75)
     res = broker.test_full_trading_pipeline("TQQQ")
-    print(json.dumps(res, indent=2, ensure_ascii=False))
+    logger.info(json.dumps(res, indent=2, ensure_ascii=False))
 

@@ -1,16 +1,15 @@
 import time
-from datetime import datetime, time as datetime_time
+from datetime import datetime, time as dtime, timedelta
 from zoneinfo import ZoneInfo
 from typing import Dict, Any, Optional
 import requests
-from utils.logger import system_logger
+from core.system_logger import system_logger
 
 class USMarketCalendar:
     """
     [ ? (NYSE / NASDAQ) ??? ? ??????
     - ????Daylight Saving Time) ?  (3??? ???~ 11?? ???
-    - ???? ?:
-      * ????(EDT): ?? 22:30 ~ ? 05:00
+    - ???? ?:      * ????(EDT): ?? 22:30 ~ ? 05:00
       * ????(EST): ?? 23:30 ~ ? 06:00
     - (???? ?????
     - ?  ?? ?? ? ??
@@ -38,10 +37,15 @@ class USMarketCalendar:
 
         is_weekend = (weekday_ny >= 5)
         
-        market_open_time = dtime(9, 30)
-        trading_cutoff_time = dtime(15, 30)
-        eod_liquidation_time = dtime(15, 50)
-        market_close_time = dtime(16, 0)
+        import config
+        def _parse_time(t_str: str) -> dtime:
+            h, m = map(int, t_str.split(':'))
+            return dtime(h, m)
+            
+        market_open_time = _parse_time(config.PHASE_MAIN_START)
+        trading_cutoff_time = _parse_time(config.PHASE_MAIN_END)
+        eod_liquidation_time = _parse_time(config.PHASE_EOD_CLEAR)
+        market_close_time = _parse_time(config.MARKET_CLOSE_TIME)
 
         is_regular_hours = (not is_weekend) and (market_open_time <= ny_time < market_close_time)
         is_phase2_allowed = False
@@ -74,27 +78,27 @@ class USMarketCalendar:
         if is_weekend:
             day_name_kr = "Weekend"
             session_name = "WEEKEND_CLOSED"
-            status_desc = f"? ?   ? ({day_name_kr}?)"
+            status_desc = f"주말 휴장 ({day_name_kr})"
         elif not is_regular_hours:
             if ny_time < market_open_time:
                 session_name = "PRE_MARKET_WAITING"
-                status_desc = "????? ??? ??"
+                status_desc = "프리마켓 대기 중"
             else:
                 session_name = "AFTER_MARKET_CLOSED"
-                status_desc = "? ??? (???"
+                status_desc = "애프터마켓 (장 마감)"
         else:
             if is_eod_liquidation_window:
                 session_name = "EOD_LIQUIDATION"
-                status_desc = "???? 10??? 0% ?? ? ??????"
+                status_desc = "장 마감 10분 전 0% 오버나잇 청산"
             elif is_trading_allowed:
                 session_name = "REGULAR_MARKET_OPEN"
-                status_desc = "? ? ???Phase 1 ???  ?(15m Model C)"
+                status_desc = "정규장 진행 중 (Phase 1 가동 중)"
             elif is_phase2_allowed:
                 session_name = "POWER_HOUR_SNIPER"
-                status_desc = "??? ???Phase 2 ? ? ??  ?(5m Sniper)"
+                status_desc = "정규장 진행 중 (Phase 2 가동 중)"
             else:
                 session_name = "REGULAR_MARKET_NO_ENTRY"
-                status_desc = "???? ??(?  ,  ?????"
+                status_desc = "신규 진입 차단 (청산만 가능)"
 
         is_dst = bool(now_ny.dst())
 
@@ -161,11 +165,35 @@ class USMarketCalendar:
             "delta_hours": delta_hours,
             "expected_diff": expected_diff,
             "is_dst": is_dst,
-            "dst_text": "????EDT, 13? ?)" if is_dst else "????EST, 14? ?)",
+            "dst_text": "서머타임(EDT, 13h 시차)" if is_dst else "표준시간(EST, 14h 시차)",
             "now_kst_str": now_kst.strftime("%Y-%m-%d %H:%M:%S KST"),
             "now_ny_str": now_ny.strftime("%Y-%m-%d %H:%M:%S %Z"),
             "checklist_items": [
             ]
         }
 
+
+
+    @staticmethod
+    def is_last_trading_day_of_week(ny_date: Optional[datetime] = None) -> bool:
+        if ny_date is None:
+            ny_date = datetime.now(ZoneInfo('America/New_York'))
+        
+        import pandas_market_calendars as mcal
+        from datetime import timedelta
+        
+        nyse = mcal.get_calendar('NYSE')
+        
+        # Calculate the Monday and Sunday of the current week
+        weekday = ny_date.weekday()
+        start_date = ny_date - timedelta(days=weekday)
+        end_date = start_date + timedelta(days=6)
+        
+        valid_days = nyse.valid_days(start_date=start_date.strftime('%Y-%m-%d'), end_date=end_date.strftime('%Y-%m-%d'))
+        
+        if len(valid_days) == 0:
+            return False
+            
+        last_trading_day = valid_days[-1].date()
+        return ny_date.date() == last_trading_day
 

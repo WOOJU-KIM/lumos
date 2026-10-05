@@ -1,3 +1,5 @@
+import logging
+logger = logging.getLogger(__name__)
 import os
 import sys
 import json
@@ -76,7 +78,7 @@ class SystemLogger:
         # 콘솔 표준 출력
         prefix = f"[{entry['timestamp']}][{entry['level']}][{entry['source']}]"
         try:
-            print(f"{prefix} {message}")
+            logger.info(f"{prefix} {message}")
         except Exception:
             pass
 

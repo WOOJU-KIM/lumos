@@ -9,11 +9,12 @@ import pandas as pd
 import numpy as np
 from dotenv import load_dotenv
 
-PROJECT_ROOT = Path(r"c:\Users\chabo\OneDrive\바탕 화면\lumos")
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 load_dotenv(PROJECT_ROOT / ".env")
 
+import config
 from core.data_lake import MarketDataLake
 from core.moe_orchestrator import train_and_save_moe_orchestrator, MoEMetaOrchestrator
 
@@ -25,34 +26,44 @@ def fetch_alpaca_clean_intraday(symbol: str, timeframe: str = "15Min", start_dt:
     page_token = None
     base_url = "https://data.alpaca.markets/v2/stocks/bars"
     
-    print(f"📡 [{symbol}] Alpaca {timeframe} 2년치 다운로드 시작 ({start_dt} ~ {end_dt})...")
+    print(f"📥 [{symbol}] Alpaca {timeframe} 2년치 다운로드 시작 ({start_dt} ~ {end_dt})...")
     t0 = time.time()
     
     while True:
-        url = f"{base_url}?symbols={symbol}&timeframe={timeframe}&start={start_dt}T00:00:00Z&end={end_dt}T23:59:59Z&feed=iex&adjustment=split&limit=1000"
+        url = f"{base_url}?symbols={symbol}&timeframe={timeframe}&start={start_dt}T00:00:00Z&end={end_dt}T23:59:59Z&feed=iex&adjustment=split&limit=10000"
         if page_token:
             url += f"&page_token={page_token}"
             
         req = urllib.request.Request(url, headers={
             "APCA-API-KEY-ID": api_key,
-            "APCA-API-SECRET-KEY": secret_key,
-            "Accept": "application/json"
+            "APCA-API-SECRET-KEY": secret_key
         })
         
-        with urllib.request.urlopen(req) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            bars = data.get("bars", {}).get(symbol, [])
-            all_bars.extend(bars)
-            page_token = data.get("next_page_token")
-            if not page_token:
-                break
-                
-    t1 = time.time()
-    print(f"  ➔ [{symbol}] 원시 수신: {len(all_bars):,}개 캔들 ({t1 - t0:.1f}초)")
-    
-    if not all_bars:
-        return pd.DataFrame()
+        try:
+            with urllib.request.urlopen(req) as resp:
+                data = json.loads(resp.read().decode())
+                bars = data.get("bars", {}).get(symbol, [])
+                if not bars:
+                    break
+                all_bars.extend(bars)
+                page_token = data.get("next_page_token")
+                if not page_token:
+                    break
+        except Exception as e:
+            print(f"❌ 데이터 수집 에러: {e}")
+            time.sleep(1)
+            
+    df = pd.DataFrame(all_bars)
+    if df.empty:
+        return df
         
+    df['t'] = pd.to_datetime(df['t'])
+    df.set_index('t', inplace=True)
+    df.index = df.index.tz_convert('America/New_York')
+    df = df[['o', 'h', 'l', 'c', 'v']]
+    df.columns = ['open', 'high', 'low', 'close', 'volume']
+    
+    t1 = time.time()
     rows = []
     for b in all_bars:
         utc_dt = pd.to_datetime(b["t"])
@@ -122,14 +133,16 @@ def resample_to_60m(df_15m: pd.DataFrame) -> pd.DataFrame:
 
 def main():
     lake = MarketDataLake()
-    symbols = ["TQQQ", "SQQQ", "NVDA", "QQQ", "SOXX"]
-    start_dt = "2024-09-15"
-    end_dt = "2026-09-14"
+    symbols = config.ALL_SYMBOLS
+    
+    # 환경 변수에서 가져오거나, 없으면 기본 하드코딩 값 사용
+    start_dt = os.getenv("LUMOS_ROLLING_START", "2024-09-15")
+    end_dt = os.getenv("LUMOS_ROLLING_END", "2026-09-14")
     
     print("=" * 85)
-    print("🚀 [Lumos 2년치 롤링 데이터 적재 및 현재 기준 AI 재학습 파이프라인]")
-    print(f"⏰ 실행 시각: {datetime.now().strftime('%Y-%m-%d %H:%M:%S KST')}")
-    print(f"📅 대상 기간: {start_dt} ~ {end_dt} (최근 2개년)")
+    print("🚀 [Lumos 2년치 롤링 데이터 적재 및 최신 기준 AI 재학습 파이프라인]")
+    print(f"▶ 실행 시각: {datetime.now().strftime('%Y-%m-%d %H:%M:%S KST')}")
+    print(f"▶ 타겟 기간: {start_dt} ~ {end_dt} (최근 2개년)")
     print(f"📦 대상 심볼: {', '.join(symbols)}")
     print("=" * 85)
     

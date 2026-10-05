@@ -1,3 +1,5 @@
+import logging
+logger = logging.getLogger(__name__)
 from config import GBDT_CONFIDENCE_THRESHOLD
 import os
 import sys
@@ -59,7 +61,7 @@ class WeeklyTournament:
 
     def _prepare_market_data_cache(self) -> Dict[str, Any]:
         """고속 전구간 MoE 백테스트를 위한 멀티 타임프레임 및 피처 사전 캐싱"""
-        print("⏳ [1/5] 데이터 레이크에서 15m/5m/60m 및 거시 지표 데이터 로드 중...")
+        logger.info("⏳ [1/5] 데이터 레이크에서 15m/5m/60m 및 거시 지표 데이터 로드 중...")
         tqqq_15m = self.data_lake.load_candles("TQQQ", "15m")
         sqqq_15m = self.data_lake.load_candles("SQQQ", "15m")
         tqqq_5m  = self.data_lake.load_candles("TQQQ", "5m")
@@ -574,10 +576,10 @@ class WeeklyTournament:
         5. SQLite 레지스트리 기록 및 텔레그램 공식 결과 보고서 발송
         """
         today_str = datetime.now().strftime("%Y-%m-%d")
-        print("=" * 80)
-        print(f"🏆  [Lumos 주간 3자 토너먼트 거버넌스 감사: {today_str}]  🏆")
-        print(f"🧠  평가 엔진: Lumos V3 실전 하이브리드 MoE (GBDT 60% + 크로스에셋 Veto + 3중 스크린 + 5분봉 궤적 청산)")
-        print("=" * 80)
+        logger.info("=" * 80)
+        logger.info(f"🏆  [Lumos 주간 3자 토너먼트 거버넌스 감사: {today_str}]  🏆")
+        logger.info(f"🧠  평가 엔진: Lumos V3 실전 하이브리드 MoE (GBDT 60% + 크로스에셋 Veto + 3중 스크린 + 5분봉 궤적 청산)")
+        logger.info("=" * 80)
         system_logger.log("INFO", "WeeklyTournament", f"🏆 주간 3자 토너먼트 거버넌스 감사 실행 ({today_str})")
 
         # 1. 시세 데이터 및 인디케이터 캐시
@@ -609,17 +611,17 @@ class WeeklyTournament:
         cand3_id = f"M-{datetime.now().strftime('%Y%m%d')}-TUNED-GBDT"
 
         # 3. 실전 동일 MoE 백테스트 실행 (Apples to Apples 동일 구간 검증)
-        print("\n⏳ [2/5] [후보 1: 기존 챔피언] 실전 MoE 백테스트 평가 중...")
+        logger.info("\n⏳ [2/5] [후보 1: 기존 챔피언] 실전 MoE 백테스트 평가 중...")
         res_cand1 = self._backtest_moe_candidate(cand1_moe, cache)
-        print(f"   • [후보 1] 완료: 승률 {res_cand1['win_rate_pct']:.1f}% ({res_cand1['total_wins']}승 {res_cand1['total_losses']}패) | PF {res_cand1['profit_factor']:.2f} | 수익률 +{res_cand1['total_return_pct']:.2f}% | MDD -{res_cand1['mdd_pct']:.2f}% (종합점수: {res_cand1['score']:.1f}점)")
+        logger.info(f"   • [후보 1] 완료: 승률 {res_cand1['win_rate_pct']:.1f}% ({res_cand1['total_wins']}승 {res_cand1['total_losses']}패) | PF {res_cand1['profit_factor']:.2f} | 수익률 +{res_cand1['total_return_pct']:.2f}% | MDD -{res_cand1['mdd_pct']:.2f}% (종합점수: {res_cand1['score']:.1f}점)")
 
-        print("\n⏳ [3/5] [후보 2: 데이터 최신화] 실전 MoE 백테스트 평가 중...")
+        logger.info("\n⏳ [3/5] [후보 2: 데이터 최신화] 실전 MoE 백테스트 평가 중...")
         res_cand2 = self._backtest_moe_candidate(cand2_moe, cache)
-        print(f"   • [후보 2] 완료: 승률 {res_cand2['win_rate_pct']:.1f}% ({res_cand2['total_wins']}승 {res_cand2['total_losses']}패) | PF {res_cand2['profit_factor']:.2f} | 수익률 +{res_cand2['total_return_pct']:.2f}% | MDD -{res_cand2['mdd_pct']:.2f}% (종합점수: {res_cand2['score']:.1f}점)")
+        logger.info(f"   • [후보 2] 완료: 승률 {res_cand2['win_rate_pct']:.1f}% ({res_cand2['total_wins']}승 {res_cand2['total_losses']}패) | PF {res_cand2['profit_factor']:.2f} | 수익률 +{res_cand2['total_return_pct']:.2f}% | MDD -{res_cand2['mdd_pct']:.2f}% (종합점수: {res_cand2['score']:.1f}점)")
 
-        print("\n⏳ [4/5] [후보 3: 신규 하이퍼 튜닝] 실전 MoE 백테스트 평가 중...")
+        logger.info("\n⏳ [4/5] [후보 3: 신규 하이퍼 튜닝] 실전 MoE 백테스트 평가 중...")
         res_cand3 = self._backtest_moe_candidate(cand3_moe, cache)
-        print(f"   • [후보 3] 완료: 승률 {res_cand3['win_rate_pct']:.1f}% ({res_cand3['total_wins']}승 {res_cand3['total_losses']}패) | PF {res_cand3['profit_factor']:.2f} | 수익률 +{res_cand3['total_return_pct']:.2f}% | MDD -{res_cand3['mdd_pct']:.2f}% (종합점수: {res_cand3['score']:.1f}점)")
+        logger.info(f"   • [후보 3] 완료: 승률 {res_cand3['win_rate_pct']:.1f}% ({res_cand3['total_wins']}승 {res_cand3['total_losses']}패) | PF {res_cand3['profit_factor']:.2f} | 수익률 +{res_cand3['total_return_pct']:.2f}% | MDD -{res_cand3['mdd_pct']:.2f}% (종합점수: {res_cand3['score']:.1f}점)")
 
         # 4. 순위 정렬 및 1위 챔피언 확정
         candidates = [
@@ -669,17 +671,17 @@ class WeeklyTournament:
         is_champion_defended = (winner["candidate_type"] == "기존 챔피언 (Champion)")
 
         # 5. [핵심] 실제 거래 모델 즉시 디스크 적용 (Apply to Production)
-        print("\n⏳ [5/5] 선발 챔피언 모델 실전 적용 및 텔레그램 리포트 발송...")
+        logger.info("\n⏳ [5/5] 선발 챔피언 모델 실전 적용 및 텔레그램 리포트 발송...")
         winner_moe = winner["moe_obj"]
         winner_moe.confidence_threshold = self.confidence_threshold
         winner_moe.gbdt_threshold = self.confidence_threshold
         winner_moe.mode = "hybrid_v3"
 
         if is_champion_defended:
-            print(f"   🛡️ [챔피언 방어 성공] 기존 챔피언({winner['model_id']})이 최고 점수({winner['score']}점)로 실전 운용을 지속합니다.")
+            logger.info(f"   🛡️ [챔피언 방어 성공] 기존 챔피언({winner['model_id']})이 최고 점수({winner['score']}점)로 실전 운용을 지속합니다.")
             system_logger.log("INFO", "WeeklyTournament", f"🛡️ 챔피언 방어 완료: {winner['model_id']} (점수: {winner['score']}점)")
         else:
-            print(f"   🔄 [신규 챔피언 공식 승격 및 교체] {winner['candidate_type']} ({winner['model_id']}) ➔ 실전 모델 파일(model_champion.pkl) 교체 완료!")
+            logger.info(f"   🔄 [신규 챔피언 공식 승격 및 교체] {winner['candidate_type']} ({winner['model_id']}) ➔ 실전 모델 파일(model_champion.pkl) 교체 완료!")
             system_logger.log("INFO", "WeeklyTournament", f"🔄 신규 챔피언 승격 및 적용: {winner['candidate_type']} ({winner['model_id']})")
 
         joblib.dump(winner_moe, MOE_MODEL_PATH)
@@ -707,7 +709,7 @@ class WeeklyTournament:
         report = self._compose_tournament_report(today_str, candidates, winner)
         send_res = self.dispatcher.send_telegram_message(report)
         if send_res.get("ok"):
-            print("   🚀 >>> 주간 토너먼트 결산 성적표 텔레그램 발송 완료! <<< 🚀")
+            logger.info("   🚀 >>> 주간 토너먼트 결산 성적표 텔레그램 발송 완료! <<< 🚀")
 
         return {
             "eval_date": today_str,

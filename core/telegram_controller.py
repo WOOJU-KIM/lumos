@@ -1,3 +1,5 @@
+import logging
+logger = logging.getLogger(__name__)
 import time
 import json
 import requests
@@ -44,7 +46,7 @@ class TelegramController:
 
     def handle_message(self, user_text: str) -> None:
         """대표님의 모든 자연어 메시지를 LLM 대화형 에이전트가 분석 및 즉시 회신"""
-        print(f"\n📩 [대표님 메시지 수신] '{user_text}'")
+        logger.info(f"\n📩 [대표님 메시지 수신] '{user_text}'")
         
         # LLM 대화형 에이전트 추론
         reply_text, is_backtest = self.brain.process_message(user_text)
@@ -52,11 +54,11 @@ class TelegramController:
         # 텔레그램 답장 전송
         self.send_message(reply_text)
         action_type_str = "파라미터 갱신 & 백테스트 실행" if is_backtest else "대화형 질문 답변"
-        print(f"🚀 >>> [{action_type_str}] 텔레그램 회신 완료 <<< 🚀")
+        logger.info(f"🚀 >>> [{action_type_str}] 텔레그램 회신 완료 <<< 🚀")
 
     def listen_loop(self, poll_interval: int = 2, max_iterations: Optional[int] = None):
         """텔레그램 실시간 대화형 수신 루프"""
-        print(f"📡 [Telegram Chatbot Agent] AI 총괄 비서 리스너 가동 중 (Chat ID: {self.chat_id})")
+        logger.info(f"📡 [Telegram Chatbot Agent] AI 총괄 비서 리스너 가동 중 (Chat ID: {self.chat_id})")
         iterations = 0
         
         initial_updates = self.get_updates(timeout=1)
@@ -80,7 +82,7 @@ class TelegramController:
                     break
                 time.sleep(poll_interval)
             except KeyboardInterrupt:
-                print("🛑 [Telegram Listener] 리스너 수동 정지")
+                logger.info("🛑 [Telegram Listener] 리스너 수동 정지")
                 break
             except Exception:
                 time.sleep(poll_interval)

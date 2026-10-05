@@ -1,3 +1,5 @@
+import logging
+logger = logging.getLogger(__name__)
 from config import GBDT_CONFIDENCE_THRESHOLD
 import config
 import warnings
@@ -260,7 +262,7 @@ class MLFeatureEngine:
             df = df.sort_values('datetime_dt').reset_index(drop=True)
             
         except Exception as e:
-            print(f"[MLFeatureEngine] 크로스에셋 병합 실패 (오프라인 모드): {e}")
+            logger.info(f"[MLFeatureEngine] 크로스에셋 병합 실패 (오프라인 모드): {e}")
 
         if 'datetime' in df.columns:
             df.index = pd.to_datetime(df['datetime'])
@@ -272,9 +274,9 @@ class MLFeatureEngine:
     @staticmethod
     def compute_triple_barrier_labels(
         df: pd.DataFrame,
-        take_profit: float = 0.030,
-        stop_loss: float = 0.020,
-        horizon: int = 6
+        take_profit: float = config.MAX_TP_PCT,
+        stop_loss: float = config.SL_MIN_PCT,
+        horizon: int = int(config.TIME_STOP_MINUTES / 15)
     ) -> pd.Series:
         """
         [경로 의존적 Triple Barrier 3-Class 정답지 산출]
@@ -337,7 +339,7 @@ class MLFeatureEngine:
         feat_df['Target'] = self.compute_triple_barrier_labels(
             feat_df,
             take_profit=0.030,
-            stop_loss=0.020,
+            stop_loss=config.SL_MIN_PCT,
             horizon=6
         )
 
@@ -357,11 +359,16 @@ class MLFeatureEngine:
         target_live_df = live_experience_df
         if target_live_df is None:
             try:
-                from config import DATA_DIR
-                live_csv = DATA_DIR / "live_trades.csv"
-                if live_csv.exists():
-                    target_live_df = pd.read_csv(live_csv)
-            except Exception:
+                from core.live_experience_logger import LiveExperienceLogger
+                target_live_df = LiveExperienceLogger().get_trades_dataframe()
+                if target_live_df is not None and not target_live_df.empty:
+                    import logging
+                    log = logging.getLogger(__name__)
+                    log.info(f"[MLFeatureEngine] 실전 거래 내역 {len(target_live_df)}건 DB(또는 CSV)에서 안전하게 로드 완료")
+            except Exception as e:
+                import logging
+                log = logging.getLogger(__name__)
+                log.error(f"[MLFeatureEngine] 실전 거래 내역 로드 실패: {e}")
                 target_live_df = None
 
         if target_live_df is not None and not target_live_df.empty and "features_json" in target_live_df.columns:
@@ -375,10 +382,17 @@ class MLFeatureEngine:
             live_targets = []
             for _, row in target_live_df.iterrows():
                 f_json = row.get("features_json")
-                if not f_json or str(f_json).strip() in ("", "{}", "nan"):
+                gbdt_conf = float(row.get("gbdt_confidence", 0.0))
+                
+                # 방어 로직: 피처가 비어있거나, 확신도가 비정상적(0.0)인 쓰레기 데이터는 학습에서 철저히 배제
+                act_entry_px = float(row.get("actual_entry_price", 1.0))
+                if act_entry_px <= 0.01 or not f_json or str(f_json).strip() in ("", "{}", "nan") or gbdt_conf < 0.01:
                     continue
                 try:
                     f_dict = json.loads(f_json) if isinstance(f_json, str) else f_json
+                    # 피처 딕셔너리가 아니거나 정상적인 피처 갯수가 담기지 않은 경우 스킵
+                    if not isinstance(f_dict, dict) or len(f_dict) < 10:
+                        continue
                 except Exception:
                     continue
 
@@ -404,16 +418,16 @@ class MLFeatureEngine:
                 X = pd.concat([X, X_live], ignore_index=True)
                 y = pd.concat([y, y_live], ignore_index=True)
                 sample_weights = pd.concat([sample_weights, weights_live], ignore_index=True)
-                print(f"[MLFeatureEngine] 🧬 과거 캔들 {len(clean_data):,}개 + 실시간 실전 거래 {len(live_rows):,}개 (2.5x 가중치) 통합 학습 적용 완료")
+                logger.info(f"[MLFeatureEngine] 🧬 과거 캔들 {len(clean_data):,}개 + 실시간 실전 거래 {len(live_rows):,}개 (2.5x 가중치) 통합 학습 적용 완료")
 
         try:
             model = LGBMClassifier(
                 objective='multiclass',
                 num_class=3,
                 class_weight='balanced',
-                n_estimators=85,
+                n_estimators=config.GBDT_N_ESTIMATORS,
                 max_depth=4,
-                learning_rate=0.03,
+                learning_rate=config.GBDT_LEARNING_RATE,
                 random_state=42,
                 verbosity=-1
             )
@@ -421,7 +435,7 @@ class MLFeatureEngine:
             importances = model.feature_importances_
         except Exception:
             model = RandomForestClassifier(
-                n_estimators=85,
+                n_estimators=config.GBDT_N_ESTIMATORS,
                 max_depth=5,
                 class_weight='balanced',
                 random_state=42
@@ -468,20 +482,28 @@ class MLFeatureEngine:
 
             for idx in range(len(feat_df)):
                 ps, pn, pl = prob_short[idx], prob_neutral[idx], prob_long[idx]
+                
+                # 모든 방향(Long, Short, Neutral)에 동일한 스케일링 공식 적용
+                calib_pl = min(0.95, max(0.50, 0.50 + (pl - 0.333) * 1.15))
+                calib_ps = min(0.95, max(0.50, 0.50 + (ps - 0.333) * 1.15))
+                calib_pn = min(0.95, max(0.50, 0.50 + (pn - 0.333) * 1.15))
+                
+                # 스케일링된 값으로 원본 확률 덮어쓰기 (텔레그램 및 로그 표출용)
+                prob_long[idx] = calib_pl
+                prob_short[idx] = calib_ps
+                prob_neutral[idx] = calib_pn
+                
                 if pl > pn and pl > ps:
                     signals[idx] = 1
-                    # 3-Class Calibration: 33.3% 기준선 -> 50%~95% 스케일링
-                    calib_conf = min(0.95, max(0.50, 0.50 + (pl - 0.333) * 1.15))
-                    confidences[idx] = calib_conf
+                    confidences[idx] = calib_pl
                     directions[idx] = "LONG_TQQQ"
                 elif ps > pn and ps > pl:
                     signals[idx] = -1
-                    calib_conf = min(0.95, max(0.50, 0.50 + (ps - 0.333) * 1.15))
-                    confidences[idx] = calib_conf
+                    confidences[idx] = calib_ps
                     directions[idx] = "SHORT_SQQQ"
                 else:
                     signals[idx] = 0
-                    confidences[idx] = pn
+                    confidences[idx] = calib_pn
                     directions[idx] = "NONE"
 
             feat_df['Confidence'] = confidences

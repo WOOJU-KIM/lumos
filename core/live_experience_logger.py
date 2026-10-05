@@ -328,22 +328,27 @@ class LiveExperienceLogger:
                 conn.close()
 
     def get_trades_dataframe(self) -> pd.DataFrame:
-        """저장된 전체 실시간 거래 내역을 판다스 DataFrame으로 반환 (AI 재학습용)"""
+        """저장된 전체 실전 거래 내역을 판다스 DataFrame으로 반환 (AI 학습용 - DB 최우선)"""
         with self._write_lock:
-            if self.csv_path.exists():
-                try:
-                    df = pd.read_csv(self.csv_path)
-                    return df
-                except Exception:
-                    pass
-
+            # 1. DB 최우선 로드 (Single Source of Truth)
             conn = self._get_connection()
             try:
-                return pd.read_sql_query("SELECT * FROM live_trades ORDER BY entry_time ASC", conn)
+                df = pd.read_sql_query("SELECT * FROM live_trades ORDER BY entry_time ASC", conn)
+                if not df.empty:
+                    return df
             except Exception:
-                return pd.DataFrame(columns=CSV_COLUMNS)
+                pass
             finally:
                 conn.close()
+
+            # 2. DB 실패 시 보조 수단으로 CSV 읽기
+            if self.csv_path.exists():
+                try:
+                    return pd.read_csv(self.csv_path)
+                except Exception:
+                    pass
+            
+            return pd.DataFrame(columns=CSV_COLUMNS)
 
     def get_summary_stats(self) -> Dict[str, Any]:
         """모의/실전 누적 트레이딩 성적 및 슬리피지 통계 요약"""

@@ -1225,13 +1225,18 @@ class KiwoomLiveRunner:
                                 for h in stk_bal.get("holdings"):
                                     sym = str(h.get("symbol") or h.get("stk_cd") or "").strip().upper()
                                     qty = int(float(str(h.get("quantity") or h.get("poss_qty") or 0).replace(",", "")))
+                                    try:
+                                        buy_px = float(str(h.get("purchase_price") or h.get("pchs_avg_pric") or h.get("buy_price") or 0.0).replace(",", ""))
+                                    except Exception:
+                                        buy_px = 0.0
                                     if qty > 0:
                                         system_logger.log("TRADE", "EOD", f"Executing 15:50 EOD Liquidation for {sym}")
                                         self._execute_sell_with_10s_chase(
                                             symbol=sym,
                                             quantity=qty,
                                             reason_desc="EOD 15:50 100% Liquidation",
-                                            is_market_order=True
+                                            is_market_order=True,
+                                            buy_px=buy_px
                                         )
                             else:
                                 self._manage_open_positions(stk_bal, realtime_px_override=live_p)

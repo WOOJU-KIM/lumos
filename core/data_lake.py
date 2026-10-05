@@ -1,3 +1,5 @@
+import logging
+logger = logging.getLogger(__name__)
 import os
 import sys
 import json
@@ -24,9 +26,10 @@ if sys.platform.startswith('win'):
         pass
 
 from config import DATA_DIR, BASE_DIR
+import config
 
 MARKET_DATA_DB = DATA_DIR / "market_data.db"
-ALL_SYMBOLS = ["SOXL", "SOXS", "TQQQ", "SQQQ", "SOXX", "QQQ", "NVDA", "^VIX", "^TNX"]
+ALL_SYMBOLS = config.ALL_SYMBOLS
 TIMEFRAMES = ["15m", "60m", "5m"]
 
 class MarketDataLake:
@@ -173,18 +176,18 @@ class MarketDataLake:
         self,
         symbol: str,
         timeframe: str = "15m",
-        max_trading_days: int = 504
+        max_trading_days: int = config.ROLLING_TRAINING_WEEKS * 5
     ) -> pd.DataFrame:
         """
-        [최근 504 거래일(2년) 롤링 윈도우 시계열 데이터 고속 로드]
-        1. DB(market_data.db)에서 최근 504 거래일(Trading Days) 산출 서브쿼리로 데이터 로드
+        [최근 {config.ROLLING_TRAINING_WEEKS * 5} 거래일(2년) 롤링 윈도우 시계열 데이터 고속 로드]
+        1. DB(market_data.db)에서 최근 {config.ROLLING_TRAINING_WEEKS * 5} 거래일(Trading Days) 산출 서브쿼리로 데이터 로드
         2. 최신 1주일 치 데이터가 추가되면 가장 오래된 과거 데이터(꼬리)를 정확히 절삭(Drop)
-        3. Concept Drift 방지 및 항상 일정한 504 거래일 데이터 볼륨 유지
+        3. Concept Drift 방지 및 항상 일정한 {config.ROLLING_TRAINING_WEEKS * 5} 거래일 데이터 볼륨 유지
         """
         sym = symbol.upper().strip()
         tf = timeframe.lower().strip()
 
-        # 최근 504 거래일 기준 서브쿼리 (하드코딩 504 거래일)
+        # 최근 {config.ROLLING_TRAINING_WEEKS * 5} 거래일 기준 서브쿼리 (하드코딩 {config.ROLLING_TRAINING_WEEKS * 5} 거래일)
         query = f"""
             SELECT datetime, open as Open, high as High, low as Low, close as Close, volume as Volume 
             FROM market_candles 
@@ -226,7 +229,7 @@ class MarketDataLake:
         api_key = os.getenv("ALPACA_API_KEY", "")
         secret_key = os.getenv("ALPACA_SECRET_KEY", "")
         if not api_key or not secret_key:
-            print(f"⚠️ ALPACA_API_KEY/SECRET 누락 - {symbol} ({timeframe}) 수집 불가")
+            logger.info(f"⚠️ ALPACA_API_KEY/SECRET 누락 - {symbol} ({timeframe}) 수집 불가")
             return 0
 
         sym = symbol.upper().strip()
@@ -270,7 +273,7 @@ class MarketDataLake:
                     break
                 time.sleep(0.1)
             except Exception as e:
-                print(f"⚠️ {sym} ({tf}) Alpaca 수집 예외: {e}")
+                logger.info(f"⚠️ {sym} ({tf}) Alpaca 수집 예외: {e}")
                 break
 
         if not all_bars:
@@ -292,14 +295,14 @@ class MarketDataLake:
         results = {}
         total_inserted = 0
 
-        print("⏳ [7종 심볼 콜드스타트 수집 시작] TQQQ, SQQQ, SOXX, QQQ, NVDA, VIXY, IEF...")
+        logger.info("⏳ [7종 심볼 콜드스타트 수집 시작] TQQQ, SQQQ, SOXX, QQQ, NVDA, VIXY, IEF...")
         for sym in ALL_SYMBOLS:
             for tf in TIMEFRAMES:
                 try:
                     count = self.harvest_symbol(sym, tf, period="60d")
                     results[f"{sym}_{tf}"] = count
                     total_inserted += count
-                    print(f"   • [{sym} {tf}] {count:,}개 적재 완료")
+                    logger.info(f"   • [{sym} {tf}] {count:,}개 적재 완료")
                 except Exception as e:
                     results[f"{sym}_{tf}"] = f"Error: {e}"
 
@@ -308,7 +311,7 @@ class MarketDataLake:
 
     def sync_live_intraday_candles(self, symbols: Optional[List[str]] = None) -> int:
         """장중 실시간 5분봉/15분봉 최신 데이터 동기화 (최근 1일치 고속 수집)"""
-        target_syms = symbols or ["SOXL", "SOXS", "TQQQ", "SQQQ", "NVDA", "QQQ", "SOXX", "^VIX"]
+        target_syms = symbols or config.ALL_SYMBOLS
         total_added = 0
         for sym in target_syms:
             for tf in ["5m", "15m", "60m"]:
@@ -430,13 +433,13 @@ class DailyAutoPipeline:
         }
 
     def run_step2_retrain_all_models(self) -> Dict[str, Any]:
-        """Step 2: 7대 전 모델(Track 1~6) 최근 504 거래일 롤링 데이터 반영 전자동 재학습"""
+        """Step 2: 7대 전 모델(Track 1~6) 최근 {config.ROLLING_TRAINING_WEEKS * 5} 거래일 롤링 데이터 반영 전자동 재학습"""
         from core.ml_engine import MLFeatureEngine
         from core.model_registry import ModelRegistry
         import joblib
 
-        # 최근 504 거래일 고정 롤링 윈도우 추출 (Concept Drift 방지 및 꼬리 절삭)
-        tqqq_15m = self.data_lake.load_rolling_candles("TQQQ", "15m", max_trading_days=504)
+        # 최근 {config.ROLLING_TRAINING_WEEKS * 5} 거래일 고정 롤링 윈도우 추출 (Concept Drift 방지 및 꼬리 절삭)
+        tqqq_15m = self.data_lake.load_rolling_candles(config.TRADE_SYMBOLS[0], "15m", max_trading_days=config.ROLLING_TRAINING_WEEKS * 5)
         if len(tqqq_15m) < 100:
             return {"ok": False, "msg": "데이터 부족으로 재학습 취소"}
 
@@ -452,15 +455,15 @@ class DailyAutoPipeline:
         reg.register_model(
             model_id="M-DATA-REFRESH",
             model_obj=trained_model,
-            algorithm_type="LightGBM Rolling Retrained (504 Days)",
-            train_data_range=f"Recent 504 Trading Days up to {datetime.now().strftime('%Y-%m-%d')}",
+            algorithm_type="LightGBM Rolling Retrained ({config.ROLLING_TRAINING_WEEKS * 5} Days)",
+            train_data_range=f"Recent {config.ROLLING_TRAINING_WEEKS * 5} Trading Days up to {datetime.now().strftime('%Y-%m-%d')}",
             status="SHADOW_ACTIVE",
             win_rate=63.2,
             profit_factor=2.45,
             total_return=20.15,
             mdd=4.15,
             top_features=top_10,
-            notes="최근 504 거래일(2년) 고정 롤링 윈도우 데이터 최신화 모델 (Track 1)"
+            notes="최근 {config.ROLLING_TRAINING_WEEKS * 5} 거래일(2년) 고정 롤링 윈도우 데이터 최신화 모델 (Track 1)"
         )
 
         return {
@@ -470,13 +473,13 @@ class DailyAutoPipeline:
         }
 
     def run_step2_retrain_refresh_model(self) -> Dict[str, Any]:
-        """Track 1: 데이터 최신화(Data Refresh) 최근 504 거래일 롤링 윈도우 LightGBM 재학습"""
+        """Track 1: 데이터 최신화(Data Refresh) 최근 {config.ROLLING_TRAINING_WEEKS * 5} 거래일 롤링 윈도우 LightGBM 재학습"""
         from core.ml_engine import MLFeatureEngine
         from core.model_registry import ModelRegistry
         import joblib
 
-        # 최근 504 거래일 고정 롤링 윈도우 추출 (Concept Drift 방지 및 꼬리 절삭)
-        tqqq_15m = self.data_lake.load_rolling_candles("TQQQ", "15m", max_trading_days=504)
+        # 최근 {config.ROLLING_TRAINING_WEEKS * 5} 거래일 고정 롤링 윈도우 추출 (Concept Drift 방지 및 꼬리 절삭)
+        tqqq_15m = self.data_lake.load_rolling_candles(config.TRADE_SYMBOLS[0], "15m", max_trading_days=config.ROLLING_TRAINING_WEEKS * 5)
         if len(tqqq_15m) < 100:
             return {"ok": False, "msg": "데이터 부족으로 재학습 취소"}
 
@@ -491,15 +494,15 @@ class DailyAutoPipeline:
         reg.register_model(
             model_id="M-DATA-REFRESH",
             model_obj=trained_model,
-            algorithm_type="LightGBM Rolling Retrained (504 Days)",
-            train_data_range=f"Recent 504 Trading Days up to {datetime.now().strftime('%Y-%m-%d')}",
+            algorithm_type="LightGBM Rolling Retrained ({config.ROLLING_TRAINING_WEEKS * 5} Days)",
+            train_data_range=f"Recent {config.ROLLING_TRAINING_WEEKS * 5} Trading Days up to {datetime.now().strftime('%Y-%m-%d')}",
             status="SHADOW_ACTIVE",
             win_rate=63.2,
             profit_factor=2.45,
             total_return=20.15,
             mdd=4.15,
             top_features=top_10,
-            notes="최근 504 거래일(2년) 고정 롤링 윈도우 데이터 최신화 모델 (Track 1)"
+            notes="최근 {config.ROLLING_TRAINING_WEEKS * 5} 거래일(2년) 고정 롤링 윈도우 데이터 최신화 모델 (Track 1)"
         )
 
         return {
@@ -574,8 +577,31 @@ class DailyAutoPipeline:
         else:
             exec_block = "  • **매매 내역:** `금일 체결 없음 (GBDT 확신도 65% 미달로 100% 현금 보존)`"
 
-        pnl_sign = "+" if realized_pnl >= 0 else ""
-        pnl_str = f"{pnl_sign}${realized_pnl:.2f} USD ({pnl_sign}{realized_rate:.2f}%)" if realized_pnl != 0.0 else "$0.00 USD (오버나잇 0% 현금화)"
+        import sqlite3
+        import os
+        try:
+            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            db_path = os.path.join(base_dir, "data", "live_experience.db")
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            cursor.execute('SELECT balance FROM daily_portfolio_history ORDER BY date DESC LIMIT 1')
+            row = cursor.fetchone()
+            conn.close()
+            prev_balance = int(row[0]) if row else total_eval_krw
+            
+            # If there was a previous balance, calculate true portfolio return
+            if prev_balance > 0:
+                realized_rate = round(((total_eval_krw - prev_balance) / prev_balance) * 100.0, 2)
+            else:
+                realized_rate = 0.0
+        except Exception:
+            pass # fallback to realized_rate from broker
+
+        pnl_sign = "+" if realized_rate >= 0 else ""
+        if realized_pnl != 0.0 or realized_rate != 0.0:
+            pnl_str = f"{pnl_sign}${realized_pnl:.2f} USD (포트폴리오 수익률: {pnl_sign}{realized_rate:.2f}%)"
+        else:
+            pnl_str = "$0.00 USD (오버나잇 0% 현금화)"
 
 
         from zoneinfo import ZoneInfo
@@ -615,39 +641,62 @@ class DailyAutoPipeline:
         [일일 EOD 자동화 파이프라인 전 주기 원스톱 실행]
         1. 데이터 적재 ➔ 2. 전 모델 재학습 ➔ 3. 전수 백테스트 ➔ 4. 텔레그램 브리핑
         """
-        print("=" * 75)
-        print("🚀 [Lumos 일일 EOD 원스톱 파이프라인 가동] 🚀")
-        print("=" * 75)
+        logger.info("=" * 75)
+        logger.info("🚀 [Lumos 일일 EOD 원스톱 파이프라인 가동] 🚀")
+        logger.info("=" * 75)
 
         # 1. 데이터 적재
-        print("\n[1/4] 7종 심볼 분봉 데이터 수집 및 DB 적재...")
+        logger.info("\n[1/4] 7종 심볼 분봉 데이터 수집 및 DB 적재...")
         h_res = self.run_step1_daily_harvest()
         records_cnt = h_res.get("total_records_updated", 0)
-        print(f"   • {records_cnt:,}개 캔들 DB UPSERT 완료")
+        logger.info(f"   • {records_cnt:,}개 캔들 DB UPSERT 완료")
 
-        # 2. 전 모델 재학습
-        print("\n[2/4] 7대 전 모델 롤링 재학습 및 피처 갱신...")
+        # 2. 서브모델 및 메인 GBDT 롤링 재학습
+        logger.info("\n[2/4] AI 모델 롤링 재학습 파이프라인 가동...")
         from zoneinfo import ZoneInfo
-        now_kst = datetime.now().astimezone(ZoneInfo('Asia/Seoul'))
-        if now_kst.weekday() == 5:  # Saturday KST
+        from datetime import timedelta
+        import subprocess
+        import sys
+        import os
+        import config
+        from core.market_calendar import USMarketCalendar
+
+        now_ny = datetime.now(ZoneInfo('America/New_York'))
+        is_last_day = USMarketCalendar.is_last_trading_day_of_week(now_ny)
+
+        if is_last_day:
+            logger.info(f"🎯 주간 마지막 거래일({now_ny.date()}) 마감! 주말 롤링 재학습을 발동합니다.")
+            
+            # (1) 기존 서브모델 재학습
             r_res = self.run_step2_retrain_all_models()
-            print(f'   -> {len(r_res.get("models_updated", []))} models rolled and applied.')
+            
+            # (2) 메인 하이브리드 MoE 모델 2년치 롤링 재학습 (ingest_alpaca_2yr_and_retrain.py)
+            start_date = now_ny.date() - timedelta(days=config.TRAINING_LOOKBACK_DAYS)
+            env = os.environ.copy()
+            env["LUMOS_ROLLING_START"] = start_date.strftime("%Y-%m-%d")
+            env["LUMOS_ROLLING_END"] = now_ny.date().strftime("%Y-%m-%d")
+            
+            script_path = str(BASE_DIR / "scripts" / "ingest_alpaca_2yr_and_retrain.py")
+            try:
+                subprocess.run([sys.executable, script_path], env=env, check=True)
+                logger.info("✅ 2년치 Alpaca 데이터 적재 및 GBDT 하이브리드 MoE 모델 재학습 완벽 성공")
+            except subprocess.CalledProcessError as e:
+                logger.info(f"❌ GBDT 하이브리드 모델 재학습 실패: {e}")
         else:
+            logger.info(f"⏩ 아직 주 마지막 거래일이 아니므로(현재 {now_ny.date()}) AI 롤링 학습은 건너뜁니다.")
             r_res = {'models_updated': []}
-            print('   -> Skipping model training (Only applied on Saturday mornings KST to prevent mid-week drift).')
-        # print(f"   • {len(r_res.get('models_updated', []))}개 모델 아티팩트 및 레지스트리 갱신 완료")
 
         # 3. 전수 백테스트
-        print("\n[3/4] 최신 캔들 포함 7대 모델 전수 백테스트 재시뮬레이션...")
+        logger.info("\n[3/4] 최신 캔들 포함 7대 모델 전수 백테스트 재시뮬레이션...")
         tracks = self.run_step3_backtest_all_models()
-        print(f"   • {len(tracks)}개 트랙 백테스트 결과 DB 적재 완료")
+        logger.info(f"   • {len(tracks)}개 트랙 백테스트 결과 DB 적재 완료")
 
         # 4. 텔레그램 발송
         tg_ok = False
         if send_telegram:
-            print("\n[4/4] 텔레그램 일일 결산 & 백테스트 성적표 발송...")
+            logger.info("\n[4/4] 텔레그램 일일 결산 & 백테스트 성적표 발송...")
             tg_ok = self.run_step4_send_telegram_briefing(tracks, records_cnt)
-            print(f"   • 텔레그램 발송: {'✅ 성공' if tg_ok else '⚠️ 실패'}")
+            logger.info(f"   • 텔레그램 발송: {'✅ 성공' if tg_ok else '⚠️ 실패'}")
 
         return {
             "ok": True,

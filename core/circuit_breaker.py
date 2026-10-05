@@ -1,3 +1,5 @@
+import logging
+logger = logging.getLogger(__name__)
 import os
 import sys
 import sqlite3
@@ -88,7 +90,7 @@ class CircuitBreakerEngine:
             else:
                 break
 
-        print(f"🔍 [서킷 브레이커 감시] 최근 연속 손절 횟수: {consecutive_losses} / {self.max_consecutive_losses}회")
+        logger.info(f"🔍 [서킷 브레이커 감시] 최근 연속 손절 횟수: {consecutive_losses} / {self.max_consecutive_losses}회")
 
         if consecutive_losses >= self.max_consecutive_losses:
             # 3연속 손절 즉시 발동
@@ -116,20 +118,20 @@ class CircuitBreakerEngine:
         
         self._save_status("CIRCUIT_BREAKER_HALT", consecutive_losses, reason)
 
-        print("\n" + "🚨" * 35)
-        print(f"🚨 [긴급] 실전 {consecutive_losses}연속 손절로 인해 서킷 브레이커가 발동되었습니다!")
-        print("   • 모든 신규 주문 즉각 차단")
-        print("   • 보유 중인 모든 해외주식 잔여 포지션 전량 시장가 청산 (100% 현금 피신)")
-        print("🚨" * 35 + "\n")
+        logger.info("\n" + "🚨" * 35)
+        logger.info(f"🚨 [긴급] 실전 {consecutive_losses}연속 손절로 인해 서킷 브레이커가 발동되었습니다!")
+        logger.info("   • 모든 신규 주문 즉각 차단")
+        logger.info("   • 보유 중인 모든 해외주식 잔여 포지션 전량 시장가 청산 (100% 현금 피신)")
+        logger.info("🚨" * 35 + "\n")
 
         # 보유 포지션 전량 긴급 청산
         try:
             # 키움 브로커를 통한 비상 포지션 확인 및 청산
             stk_res = self.broker.get_overseas_stock_balance()
             if stk_res.get("holdings_count", 0) > 0:
-                print(f"⚠️ [키움 긴급 청산] 보유 종목 {stk_res.get('holdings_count')}건 청산 대기")
+                logger.info(f"⚠️ [키움 긴급 청산] 보유 종목 {stk_res.get('holdings_count')}건 청산 대기")
         except Exception as e:
-            print(f"⚠️ 긴급 청산 점검 오류: {e}")
+            logger.info(f"⚠️ 긴급 청산 점검 오류: {e}")
 
         # 텔레그램 긴급 알림
         alert_msg = f"""🚨 **[긴급] 실전 3연속 손절 서킷 브레이커 발동**
@@ -154,7 +156,7 @@ class CircuitBreakerEngine:
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self._save_status("NORMAL", 0, f"대표님 수동 해제 ({command_by})")
 
-        print(f"✅ [서킷 브레이커 해제] 정상 매매 모드로 복구 완료 ({command_by})")
+        logger.info(f"✅ [서킷 브레이커 해제] 정상 매매 모드로 복구 완료 ({command_by})")
         
         msg = f"""🟢 **[서킷 브레이커 정상 해제 보고]**
 ━━━━━━━━━━━━━━━━━━━━

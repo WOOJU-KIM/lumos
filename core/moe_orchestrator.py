@@ -1,3 +1,5 @@
+import logging
+logger = logging.getLogger(__name__)
 import config
 from config import GBDT_CONFIDENCE_THRESHOLD
 import os
@@ -86,10 +88,10 @@ class MoEMetaOrchestrator:
 
     def compute_regime_vector(self, current_time_str: Optional[str] = None) -> Dict[str, float]:
         """현재 시장의 5대 상태 벡터 산출"""
-        tqqq_5m = self.data_lake.load_candles("TQQQ", "5m")
-        vix_15m = self.data_lake.load_candles("^VIX", "15m")
-        nvda_5m = self.data_lake.load_candles("NVDA", "5m")
-        qqq_5m = self.data_lake.load_candles("QQQ", "5m")
+        tqqq_5m = self.data_lake.load_candles(config.TRADE_SYMBOLS[0], "5m")
+        vix_15m = self.data_lake.load_candles(config.CROSS_ASSET_SYMBOLS[3] if len(config.CROSS_ASSET_SYMBOLS)>3 else "^VIX", "15m")
+        nvda_5m = self.data_lake.load_candles(config.CROSS_ASSET_SYMBOLS[0], "5m")
+        qqq_5m = self.data_lake.load_candles(config.CROSS_ASSET_SYMBOLS[1], "5m")
 
         elapsed_min = 120.0
         if current_time_str:
@@ -155,8 +157,8 @@ class MoEMetaOrchestrator:
             if cur_px <= 0:
                 cur_px = 100.0
 
-        tp_px = round(cur_px * 1.030, 2)
-        sl_px = round(cur_px * 0.980, 2)
+        tp_px = round(cur_px * (1.0 + config.MAX_TP_PCT), 2)
+        sl_px = round(cur_px * (1.0 - config.SL_MIN_PCT), 2)
         atr_14 = 0.0
         try:
             if df_15m is not None and not df_15m.empty and len(df_15m) >= 14:
@@ -170,8 +172,8 @@ class MoEMetaOrchestrator:
             "dynamic_tp_px": tp_px,
             "dynamic_sl_px": sl_px,
             "hard_cap_sl_px": sl_px,
-            "tp_pct": 3.0,
-            "sl_pct": 2.0,
+            "tp_pct": config.MAX_TP_PCT * 100.0,
+            "sl_pct": config.SL_MIN_PCT * 100.0,
             "atr_14": atr_14
         }
 
@@ -240,7 +242,7 @@ class MoEMetaOrchestrator:
             n_c = _get_c("NVDA")
             q_c = _get_c("QQQ")
             v_c = _get_c("VIX")
-            s_c = _get_c("TQQQ")
+            s_c = _get_c(config.TRADE_SYMBOLS[0])
             soxx_c = _get_c("SOXX")
             
             if len(n_c) >= 5 and len(q_c) >= 5 and len(v_c) >= 5 and len(s_c) >= 5:
@@ -258,7 +260,7 @@ class MoEMetaOrchestrator:
                 if sig_code > 0: dir_cross = "LONG_TQQQ"
                 elif sig_code < 0: dir_cross = "SHORT_SQQQ"
         except Exception as e:
-            print("CROSS_ASSET EXCEPTION:", e)
+            logger.info(f"CROSS_ASSET EXCEPTION: {e}")
             pass
 
         # 3. [GBDT 3-Class 파형 스나이퍼 모델 신호 및 확신도 계산]
@@ -266,7 +268,7 @@ class MoEMetaOrchestrator:
         conf_gbdt = 0.50
         gbdt_probs = {"LONG": 0.33, "SHORT": 0.33, "NONE": 0.34}
         try:
-            live_tqqq_15m = _get_live_df("TQQQ", current_time_str) if "live_prices" in locals() else df_candle_15m
+            live_tqqq_15m = _get_live_df(config.TRADE_SYMBOLS[0], current_time_str) if "live_prices" in locals() else df_candle_15m
             gbdt_sig, gbdt_conf, _, gbdt_probs = self.gbdt_engine.predict_signal_full(live_tqqq_15m)
             conf_gbdt = gbdt_conf
             if gbdt_sig == 1:
@@ -402,17 +404,17 @@ class MoEMetaOrchestrator:
         return decision_meta
 
 def train_and_save_moe_orchestrator(confidence_threshold: float = GBDT_CONFIDENCE_THRESHOLD, mode: str = "hybrid_v3") -> MoEMetaOrchestrator:
-    print(f"🚀 [훈련 개시] Lumos 듀얼 챔피언 MoE 스나이퍼 학습 중... (임계값 {confidence_threshold*100:.0f}%)")
+    logger.info(f"🚀 [훈련 개시] Lumos 듀얼 챔피언 MoE 스나이퍼 학습 중... (임계값 {confidence_threshold*100:.0f}%)")
     orchestrator = MoEMetaOrchestrator(confidence_threshold=confidence_threshold, gbdt_threshold=confidence_threshold, mode=mode)
     data_lake = MarketDataLake()
-    tqqq_15m = data_lake.load_candles("TQQQ", "15m")
+    tqqq_15m = data_lake.load_candles(config.TRADE_SYMBOLS[0], "15m")
     if not tqqq_15m.empty and len(tqqq_15m) >= 100:
         orchestrator.gbdt_engine.train_and_select_top_features(tqqq_15m)
 
     # 1. 신규 메인 실전 하이브리드 V3 모델 저장
     joblib.dump(orchestrator, MOE_MODEL_PATH)
     joblib.dump(orchestrator, Path(__file__).resolve().parent.parent / "models" / "model_champion.pkl")
-    print(f"✅ [Lumos V3 하이브리드 MoE (GBDT 60% + Cross-Asset Veto) 실전 모델 저장 완료] ➔ {MOE_MODEL_PATH}")
+    logger.info(f"✅ [Lumos V3 하이브리드 MoE (GBDT 60% + Cross-Asset Veto) 실전 모델 저장 완료] ➔ {MOE_MODEL_PATH}")
 
     # 2. 레거시 안전 모델(100% 동시합의)도 독립 파일로 영구 동시 보존
     safe_orchestrator = MoEMetaOrchestrator(confidence_threshold=GBDT_CONFIDENCE_THRESHOLD, gbdt_threshold=GBDT_CONFIDENCE_THRESHOLD, mode="legacy_dual_consensus")
@@ -421,15 +423,15 @@ def train_and_save_moe_orchestrator(confidence_threshold: float = GBDT_CONFIDENC
     safe_champ_path = Path(__file__).resolve().parent.parent / "models" / "model_champion_legacy_safe.pkl"
     joblib.dump(safe_orchestrator, safe_path)
     joblib.dump(safe_orchestrator, safe_champ_path)
-    print(f"✅ [Lumos 레거시 안전 모델(100% 동시합의) 동시 보존 완료] ➔ {safe_path.name}")
+    logger.info(f"✅ [Lumos 레거시 안전 모델(100% 동시합의) 동시 보존 완료] ➔ {safe_path.name}")
 
     return orchestrator
 
 if __name__ == "__main__":
     moe = train_and_save_moe_orchestrator()
     lake = MarketDataLake()
-    tqqq = lake.load_candles("TQQQ", "15m")
+    tqqq = lake.load_candles(config.TRADE_SYMBOLS[0], "15m")
     sample_eval = moe.evaluate_dual_filter_signal(tqqq)
-    print("Lumos V3 Hybrid MoE Sample Decision:")
-    print(json.dumps(sample_eval, indent=2, ensure_ascii=False))
+    logger.info("Lumos V3 Hybrid MoE Sample Decision:")
+    logger.info(json.dumps(sample_eval, indent=2, ensure_ascii=False))
 

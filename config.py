@@ -63,8 +63,8 @@ def validate_env():
 
 # 1. 진입 판단 데이터 (Entry Logic)
 GBDT_CONFIDENCE_THRESHOLD = 0.60  # 하이브리드 MoE 진입 최소 확신도 (60%)
-USE_CROSS_ASSET_VETO = False      # 크로스에셋 Veto 방패 사용 여부
-USE_60M_TREND_FILTER = False      # 60분봉 추세 필터 사용 여부
+USE_CROSS_ASSET_VETO = False      # 크로스에셋 Veto 방패 적용 여부
+USE_60M_TREND_FILTER = False      # 60분봉 추세 필터 적용 여부
 MACRO_TREND_SYMBOL = "QQQ"        # GBDT 대추세 및 60분봉 추세 방패 기준 종목
 QQQ_EMA_PERIOD = 20              # QQQ 추세 필터 이평선 기간
 RSI_PERIOD = 14                   # RSI 기본 계산 기간
@@ -89,8 +89,8 @@ TIME_STOP_MINUTES = 120           # 강제 타임 스탑 (120분)
 # 3. 운영 타임라인 (Operational Timeline - NYT 기준)
 PHASE_MAIN_START = "09:30"        # Main Phase 시작
 PHASE_MAIN_END = "15:30"          # 신규 진입 마감
-PHASE_COOLDOWN_END = "15:50"      # 쿨다운 종료 및 EOD 청산 시작
-PHASE_EOD_CLEAR = "15:50"         # 100% 현금화 오버나잇 청산 단독 수행 시간
+PHASE_COOLDOWN_END = "15:55"      # 쿨다운 종료 및 EOD 청산 시작
+PHASE_EOD_CLEAR = "15:55"         # 100% 현금화 오버나잇 청산 단독 수행 시간
 MARKET_CLOSE_TIME = "16:00"       # 장 마감 시간
 
 # 4. 주문 미체결 방어 로직 (Order & Slippage)
@@ -111,8 +111,12 @@ ALL_SYMBOLS = TRADE_SYMBOLS + CROSS_ASSET_SYMBOLS
 
 # --- POLLING & TIMEOUT SETTINGS ---
 WS_FILL_POLL_INTERVAL = 0.05
+BALANCE_CACHE_TTL_SEC = 5.0
 CANCEL_ORDER_WAIT_TIME = 0.5
 MAIN_LOOP_TICK_OPEN = 3
 MAIN_LOOP_TICK_CLOSED = 15
 MAIN_LOOP_ERROR_WAIT = 1.0
 
+
+# 7. 자동 학습 설정 (Auto Training Configuration)
+TRAINING_LOOKBACK_DAYS = 730

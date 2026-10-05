@@ -1,3 +1,5 @@
+import logging
+logger = logging.getLogger(__name__)
 import os
 import sys
 import joblib
@@ -306,8 +308,8 @@ def build_and_save_all_heterogeneous_models():
     joblib.dump(m4, MODELS_DIR / "model_sub_statespace.pkl")
     joblib.dump(m5, MODELS_DIR / "model_sub_cross_asset.pkl")
 
-    print("✅ [4대 비시계열 이종 모델 직렬화 완료]")
-    print(f"   • {m2.model_name} ➔ models/model_sub_orderflow.pkl")
-    print(f"   • {m3.model_name} ➔ models/model_sub_tda.pkl")
-    print(f"   • {m4.model_name} ➔ models/model_sub_statespace.pkl")
-    print(f"   • {m5.model_name} ➔ models/model_sub_cross_asset.pkl")
+    logger.info("✅ [4대 비시계열 이종 모델 직렬화 완료]")
+    logger.info(f"   • {m2.model_name} ➔ models/model_sub_orderflow.pkl")
+    logger.info(f"   • {m3.model_name} ➔ models/model_sub_tda.pkl")
+    logger.info(f"   • {m4.model_name} ➔ models/model_sub_statespace.pkl")
+    logger.info(f"   • {m5.model_name} ➔ models/model_sub_cross_asset.pkl")

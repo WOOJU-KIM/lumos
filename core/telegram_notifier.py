@@ -22,6 +22,7 @@ import threading
 import requests
 from datetime import datetime, timedelta
 from pathlib import Path
+import config
 from typing import Dict, Any, Optional
 
 # Windows 콘솔 UTF-8 인코딩 설정
@@ -93,6 +94,33 @@ class TelegramNotifier:
     # ==============================================================================
     # 📱 1. [Type 1: 방어 (Veto / Block)]
     # ==============================================================================
+    def send_veto_alert(
+        self,
+        ticker: str,
+        gbdt_prob: float,
+        cross_dir: str,
+        is_simulation: Optional[bool] = None
+    ) -> Dict[str, Any]:
+        """[Type 1: 방어 (Veto) 알림]"""
+        if is_simulation is None:
+            import os
+            env_sim = os.getenv("KIWOOM_IS_SIMULATION", "1").strip()
+            is_simulation = (env_sim == "1" or env_sim.lower() == "true")
+        mode_tag = "🧪 [키움 모의투자]" if is_simulation else "🔥 [키움 실전투자]"
+        
+        prob_val = gbdt_prob * 100.0 if gbdt_prob <= 1.0 else gbdt_prob
+        sym_clean = ticker.upper().strip()
+        
+        message = f"""🛡️ <b>[Lumos 방어막 발동] {sym_clean} 진입 차단</b>
+{mode_tag}
+
+🚨 <b>차단 사유 (Cross-Asset Veto)</b>
+• <b>GBDT 공격 신호</b>: {sym_clean} 진입 시도 (확신도: {prob_val:.1f}%)
+• <b>크로스에셋 역풍</b>: {cross_dir} 방향 감지
+• <b>결과</b>: 하이브리드 MoE 규정에 따라 신규 진입을 전면 차단합니다."""
+
+        return self._dispatch_message(message, alert_type="VETO_BLOCK")
+
     # ==============================================================================
     # 2. [Type 2: 매수 체결]
     # ==============================================================================
@@ -121,9 +149,9 @@ class TelegramNotifier:
         total_amt = round(entry_price * qty, 2)
 
         calc_tp = tp_price if tp_price is not None else round(entry_price * 1.030, 2)
-        calc_sl = sl_price if sl_price is not None else round(entry_price * 0.980, 2)
-        tp_pct_calc = round(((calc_tp - entry_price) / entry_price) * 100.0, 2) if entry_price > 0 else 3.0
-        sl_pct_calc = round(((entry_price - calc_sl) / entry_price) * 100.0, 2) if entry_price > 0 else 2.0
+        calc_sl = sl_price if sl_price is not None else round(entry_price * (1.0 - config.SL_MIN_PCT), 2)
+        tp_pct_calc = round(((calc_tp - entry_price) / entry_price) * 100.0, 2) if entry_price > 0 else config.MAX_TP_PCT * 100.0
+        sl_pct_calc = round(((entry_price - calc_sl) / entry_price) * 100.0, 2) if entry_price > 0 else config.SL_MIN_PCT * 100.0
         
         if not time_stop_time:
             from datetime import datetime, timedelta
@@ -284,22 +312,22 @@ class TelegramNotifier:
 # 🧪 자가 테스트 및 데모 시뮬레이션
 # ==============================================================================
 if __name__ == "__main__":
-    print("=" * 80)
-    print("🏛 [Lumos V3 Hybrid MoE 실시간 텔레그램 알림 파이프라인 데모]")
-    print("=" * 80)
+    logger.info("=" * 80)
+    logger.info("🏛 [Lumos V3 Hybrid MoE 실시간 텔레그램 알림 파이프라인 데모]")
+    logger.info("=" * 80)
 
     # 콘솔 시뮬레이션 모드로 생성하여 터미널 포맷 출력만 확인 (사용자 텔레그램 발송 차단)
     notifier = TelegramNotifier(bot_token="", chat_id="", async_mode=False)
 
-    print("\n1. 🛡️ [Type 1: Veto 방어 알림 시뮬레이션]")
+    logger.info("\n1. 🛡️ [Type 1: Veto 방어 알림 시뮬레이션]")
     res1 = notifier.send_veto_alert(
         ticker="TQQQ",
         gbdt_prob=58.4,
         cross_dir="SHORT_SQQQ"
     )
-    print(res1["text"])
+    logger.info(res1["text"])
 
-    print("\n2. ⚡ [Type 2: 자율 매수 체결 알림 시뮬레이션]")
+    logger.info("\n2. ⚡ [Type 2: 자율 매수 체결 알림 시뮬레이션]")
     res2 = notifier.send_entry_alert(
         ticker="TQQQ",
         entry_price=42.50,
@@ -310,9 +338,9 @@ if __name__ == "__main__":
         sl_price=41.65,
         time_stop_time="00:00:00"
     )
-    print(res2["text"])
+    logger.info(res2["text"])
 
-    print("\n3. 🎯 [Type 3-A: 목표가 +3.0% 익절 청산 알림 시뮬레이션]")
+    logger.info("\n3. 🎯 [Type 3-A: 목표가 +3.0% 익절 청산 알림 시뮬레이션]")
     res3a = notifier.send_exit_alert(
         ticker="TQQQ",
         entry_price=42.50,
@@ -320,9 +348,9 @@ if __name__ == "__main__":
         exit_reason="목표가 +3.0% 도달",
         qty=120
     )
-    print(res3a["text"])
+    logger.info(res3a["text"])
 
-    print("\n4. ✂️ [Type 3-B: -2.0% 칼손절 청산 알림 시뮬레이션]")
+    logger.info("\n4. ✂️ [Type 3-B: -2.0% 칼손절 청산 알림 시뮬레이션]")
     res3b = notifier.send_exit_alert(
         ticker="TQQQ",
         entry_price=42.50,
@@ -330,9 +358,9 @@ if __name__ == "__main__":
         exit_reason="-2.0% 칼손절",
         qty=120
     )
-    print(res3b["text"])
+    logger.info(res3b["text"])
 
-    print("\n5. ⏱️ [Type 3-C: 90분 타임스탑 청산 알림 시뮬레이션]")
+    logger.info("\n5. ⏱️ [Type 3-C: 90분 타임스탑 청산 알림 시뮬레이션]")
     res3c = notifier.send_exit_alert(
         ticker="SQQQ",
         entry_price=20.00,
@@ -340,9 +368,9 @@ if __name__ == "__main__":
         exit_reason="90분 타임스탑",
         qty=250
     )
-    print(res3c["text"])
+    logger.info(res3c["text"])
 
-    print("\n6. 🌙 [Type 3-D: 종가 오버나잇 방지 전량 청산 알림 시뮬레이션]")
+    logger.info("\n6. 🌙 [Type 3-D: 종가 오버나잇 방지 전량 청산 알림 시뮬레이션]")
     res3d = notifier.send_exit_alert(
         ticker="TQQQ",
         entry_price=42.50,
@@ -350,8 +378,8 @@ if __name__ == "__main__":
         exit_reason="종가 오버나잇 방지",
         qty=120
     )
-    print(res3d["text"])
+    logger.info(res3d["text"])
 
-    print("\n" + "=" * 80)
-    print("✅ [검증 완료] 3대 카테고리 알림 템플릿 정상 포맷팅 및 파이프라인 검증 성공")
-    print("=" * 80)
+    logger.info("\n" + "=" * 80)
+    logger.info("✅ [검증 완료] 3대 카테고리 알림 템플릿 정상 포맷팅 및 파이프라인 검증 성공")
+    logger.info("=" * 80)
