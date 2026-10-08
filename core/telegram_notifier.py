@@ -4,8 +4,8 @@ Lumos V3 Hybrid MoE 실시간 텔레그램 모니터링 알림 파이프라인 (
 ================================================================================
 [기관급 퀀트 헤지펀드 실시간 관제 시스템 명세]
 1. 하이브리드 MoE 의사결정 및 4대 청산 룰 100% 반영:
-   - Type 1: 🛡️ [방어 / Veto 차단] - GBDT >= 60% 공격 신호 vs Cross-Asset 정반대 역풍 경고 차단
-   - Type 2: ⚡ [매수 / Entry 체결] - GBDT >= 60% & Cross-Asset 승인(동의/HOLD) 체결 완료
+   - Type 1: 🛡️ [방어 / Veto 차단] - GBDT >= {config.GBDT_CONFIDENCE_THRESHOLD*100:.1f}% 공격 신호 vs Cross-Asset 정반대 역풍 경고 차단
+   - Type 2: ⚡ [매수 / Entry 체결] - GBDT >= {config.GBDT_CONFIDENCE_THRESHOLD*100:.1f}% & Cross-Asset 승인(동의/HOLD) 체결 완료
    - Type 3: 🏁 [청산 / Exit 완료] - TP(+3.0% 🎯), SL(-2.0% ✂️), TimeStop(90m ⏱️), EOD(오버나잇 0% 🌙)
 2. 비동기 논블로킹(Non-blocking) 및 동기 전송 듀얼 모드 지원
 3. 지능형 재시도(Exponential Backoff) 및 HTTP 429 Rate Limit 방어
@@ -148,7 +148,7 @@ class TelegramNotifier:
         sym_clean = ticker.upper().strip()
         total_amt = round(entry_price * qty, 2)
 
-        calc_tp = tp_price if tp_price is not None else round(entry_price * 1.030, 2)
+        calc_tp = tp_price if tp_price is not None else round(entry_price * (1.0 + config.MAX_TP_PCT), 2)
         calc_sl = sl_price if sl_price is not None else round(entry_price * (1.0 - config.SL_MIN_PCT), 2)
         tp_pct_calc = round(((calc_tp - entry_price) / entry_price) * 100.0, 2) if entry_price > 0 else config.MAX_TP_PCT * 100.0
         sl_pct_calc = round(((entry_price - calc_sl) / entry_price) * 100.0, 2) if entry_price > 0 else config.SL_MIN_PCT * 100.0
@@ -321,15 +321,15 @@ if __name__ == "__main__":
 
     logger.info("\n1. 🛡️ [Type 1: Veto 방어 알림 시뮬레이션]")
     res1 = notifier.send_veto_alert(
-        ticker="TQQQ",
+        ticker=config.BASE_ASSET_LONG,
         gbdt_prob=58.4,
-        cross_dir="SHORT_SQQQ"
+        cross_dir="SHORT"
     )
     logger.info(res1["text"])
 
     logger.info("\n2. ⚡ [Type 2: 자율 매수 체결 알림 시뮬레이션]")
     res2 = notifier.send_entry_alert(
-        ticker="TQQQ",
+        ticker=config.BASE_ASSET_LONG,
         entry_price=42.50,
         qty=120,
         gbdt_prob=62.5,
@@ -342,7 +342,7 @@ if __name__ == "__main__":
 
     logger.info("\n3. 🎯 [Type 3-A: 목표가 +3.0% 익절 청산 알림 시뮬레이션]")
     res3a = notifier.send_exit_alert(
-        ticker="TQQQ",
+        ticker=config.BASE_ASSET_LONG,
         entry_price=42.50,
         exit_price=43.78,
         exit_reason="목표가 +3.0% 도달",
@@ -352,7 +352,7 @@ if __name__ == "__main__":
 
     logger.info("\n4. ✂️ [Type 3-B: -2.0% 칼손절 청산 알림 시뮬레이션]")
     res3b = notifier.send_exit_alert(
-        ticker="TQQQ",
+        ticker=config.BASE_ASSET_LONG,
         entry_price=42.50,
         exit_price=41.60,
         exit_reason="-2.0% 칼손절",
@@ -362,7 +362,7 @@ if __name__ == "__main__":
 
     logger.info("\n5. ⏱️ [Type 3-C: 90분 타임스탑 청산 알림 시뮬레이션]")
     res3c = notifier.send_exit_alert(
-        ticker="SQQQ",
+        ticker=config.BASE_ASSET_SHORT,
         entry_price=20.00,
         exit_price=20.10,
         exit_reason="90분 타임스탑",
@@ -372,7 +372,7 @@ if __name__ == "__main__":
 
     logger.info("\n6. 🌙 [Type 3-D: 종가 오버나잇 방지 전량 청산 알림 시뮬레이션]")
     res3d = notifier.send_exit_alert(
-        ticker="TQQQ",
+        ticker=config.BASE_ASSET_LONG,
         entry_price=42.50,
         exit_price=42.80,
         exit_reason="종가 오버나잇 방지",

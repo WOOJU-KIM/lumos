@@ -3,6 +3,7 @@ import os
 import json
 import re
 import time
+import config
 import pandas as pd
 from datetime import datetime
 from pathlib import Path
@@ -92,8 +93,8 @@ class AgenticTelegramBrain:
             prompt_body = "\n".join(lines_for_prompt)
             prompt_desc = f"{prompt_body}\n  • [누적 총계]: {total_trades}전 {total_wins}승 (승률 {total_win_rate:.1f}%) | 누적 수익금 {total_pnl:+,.0f}원 (+{total_ret_pct:.2f}%) | MDD {mdd_pct:.2f}% | PF {pf:.2f}\n"
 
-            tqqq_wr = summary_meta.get('tqqq_win_rate_pct', 52.0)
-            sqqq_wr = summary_meta.get('sqqq_win_rate_pct', 66.7)
+            long_wr = summary_meta.get('long_win_rate_pct', 52.0)
+            short_wr = summary_meta.get('short_win_rate_pct', 66.7)
 
             card_desc = f"""📊 **[Lumos V3 월별 수익률 및 누적 성적표]**
 ━━━━━━━━━━━━━━━━━━━━
@@ -106,7 +107,7 @@ class AgenticTelegramBrain:
 • **총 거래 횟수:** `{total_trades}전 {total_wins}승 {total_trades - total_wins}패` (전체 승률 **{total_win_rate:.1f}%**)
 • **누적 실현 수익금:** `+{total_pnl:,.0f}원` (수익률 **+{total_ret_pct:.2f}%**)
 • **수익 팩터 (PF):** `{pf:.2f}` | **최대 낙폭 (MDD):** `{mdd_pct:.2f}%`
-• **종목별 승률:** `TQQQ {tqqq_wr:.1f}%` | `SQQQ {sqqq_wr:.1f}%`"""
+• **종목별 승률:** `TQQQ {long_wr:.1f}%` | `SQQQ {short_wr:.1f}%`"""
 
             return card_desc, prompt_desc
 
@@ -127,7 +128,7 @@ class AgenticTelegramBrain:
         df = self.experience_logger.get_trades_dataframe()
         recent_lines = []
         for _, row in df.tail(3).iterrows():
-            sym = row.get("symbol", "TQQQ")
+            sym = row.get("symbol", config.BASE_ASSET_LONG)
             qty = row.get("quantity", 0)
             in_px = row.get("actual_entry_price", 0.0)
             out_px = row.get("actual_exit_price", 0.0)
@@ -257,10 +258,10 @@ class AgenticTelegramBrain:
 
 6. 운용 퀀트 모델 및 매매 헌법 (Hard Rules):
    - 운용 모델: 하이브리드 MoE V3
-   - 매수 진입 절대 룰: GBDT 확신도 {GBDT_CONFIDENCE_THRESHOLD*100:.0f}% 이상 + 추세 필터(Screen 1) + 거시경제 차단(Veto) 미발동
+   - 매수 진입 절대 룰: GBDT 확신도 {GBDT_CONFIDENCE_THRESHOLD*100:.1f}% 이상 + 추세 필터(Screen 1) + 거시경제 차단(Veto) 미발동
    - 청산 절대 룰: Max TP +{config.MAX_TP_PCT*100:.1f}% / {config.TRAILING_TRIGGER_PCT*100:.1f}% 도달 시 발동, -{config.TRAILING_DROP_PCT*100:.1f}% 하락 시 추격 익절 / 15:50 NYT 전량 시장가 청산
    - 리스크 관리: 99% 비중 진입 원칙. 3-Out 서킷브레이커는 영구 폐지.
-   - 미체결 스마트 주문: 3초 타임아웃 자동 취소 후 즉시 100% 현금 보존 및 다음 A급 타점(GBDT >= {GBDT_CONFIDENCE_THRESHOLD*100:.0f}%) 재탐색"""
+   - 미체결 스마트 주문: 3초 타임아웃 자동 취소 후 즉시 100% 현금 보존 및 다음 A급 타점(GBDT >= {GBDT_CONFIDENCE_THRESHOLD*100:.1f}%) 재탐색"""
         return context
 
     def _call_gemini_with_fallback(self, prompt: str) -> Optional[str]:
@@ -312,7 +313,7 @@ class AgenticTelegramBrain:
                 kb = KiwoomBroker()
                 bal = kb.get_overseas_stock_balance()
                 for h in bal.get("holdings", []):
-                    kb.send_order(h.get("symbol", "TQQQ"), "SELL", h.get("quantity", 0), price=0.0)
+                    kb.send_order(h.get("symbol", config.BASE_ASSET_LONG), "SELL", h.get("quantity", 0), price=0.0)
             except Exception:
                 pass
             return "🛑 **[실전 매매 긴급 일시 정지]**\n대표님의 명령에 따라 매매가 즉시 중단되었으며, 보유 포지션이 100% 현금으로 안전하게 보존되었습니다. '매매 재개해줘'를 입력하시면 다시 가동됩니다.", True
@@ -330,9 +331,9 @@ class AgenticTelegramBrain:
         if any(p == k or p.startswith(k) for k in ["핑", "ping", "1주 테스트", "발주 테스트", "테스트", "/ping"]):
             from core.kiwoom_broker import KiwoomBroker
             kb = KiwoomBroker()
-            b_res = kb.send_order("TQQQ", "BUY", 1, price=0.0)
+            b_res = kb.send_order(config.BASE_ASSET_LONG, "BUY", 1, price=0.0)
             time.sleep(1)
-            s_res = kb.send_order("TQQQ", "SELL", 1, price=0.0)
+            s_res = kb.send_order(config.BASE_ASSET_LONG, "SELL", 1, price=0.0)
             reply = f"""🧪 **[키움증권 1주 핑 테스트 즉시 집행 완료]**
 ━━━━━━━━━━━━━━━━━━━━
 📊 **대상 종목:** `TQQQ 1주`
@@ -378,7 +379,7 @@ class AgenticTelegramBrain:
 🏛 **증시 세션:** `{mkt.get('status_desc')}`
 ⏳ **다음 정규장 개장:** `{mkt.get('next_open_kst_str')}` (약 {mkt.get('time_until_open_str')})
 🛡 **서킷 브레이커:** `{'🚨 일시정지 중' if cb_halted else '🟢 정상 가동 중 (신규 진입 승인)'}`
-🤖 **인터락 가동:** `GBDT 60% 게이팅 / 크로스에셋 Veto / 3초 타임아웃 정상 활성화`"""
+🤖 **인터락 가동:** `GBDT {config.GBDT_CONFIDENCE_THRESHOLD*100:.1f}% 게이팅 / 크로스에셋 Veto / 3초 타임아웃 정상 활성화`"""
             return reply, True
 
         # ----------------------------------------------------
