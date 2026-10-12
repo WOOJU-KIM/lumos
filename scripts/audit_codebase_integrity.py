@@ -15,7 +15,7 @@ suspicious_patterns = [
     (r"129\.\d+", "Hardcoded price around ~129"),
     (r"124\.\d+", "Hardcoded price around ~124"),
     (r"99999|100000", "Hardcoded dummy balance"),
-    (r"tqqq_ret\s*=\s*0\.", "Hardcoded returns in model call"),
+    (r"long_ret\s*=\s*0\.", "Hardcoded returns in model call"),
     (r"nvda_ret\s*=\s*0\.", "Hardcoded returns in model call"),
     (r"except\s*:\s*pass", "Silent bare except: pass"),
     (r"direction\s*=\s*.*if.*>=\s*0", "sig_code >= 0 false positive mapping"),

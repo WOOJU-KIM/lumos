@@ -21,6 +21,7 @@
 import os, sys, json, time
 from pathlib import Path
 import numpy as np
+import config
 import pandas as pd
 from lightgbm import LGBMClassifier
 
@@ -50,14 +51,14 @@ CUT_EOD   = "15:45"
 CONFS     = [0.60, 0.62, 0.64]
 
 
-def precompute_cross_dirs(tqqq_15m, nvda_map, soxx_map, qqq_map, vix_map):
+def precompute_cross_dirs(long_15m, nvda_map, macro_map, qqq_map, vix_map):
     """CrossAsset 방향 전체 사전계산 (원본 동일)"""
     cross_mod = CrossAssetDislocationModel(dislocation_z_threshold=1.6)
-    dts   = tqqq_15m["datetime"].values
-    cls_  = tqqq_15m["Close"].values
-    dirs  = ["NONE"] * len(tqqq_15m)
-    confs = [0.50]   * len(tqqq_15m)
-    for i in range(len(tqqq_15m)):
+    dts   = long_15m["datetime"].values
+    cls_  = long_15m["Close"].values
+    dirs  = ["NONE"] * len(long_15m)
+    confs = [0.50]   * len(long_15m)
+    for i in range(len(long_15m)):
         if i < 5: continue
         cur_t  = dts[i]; past_t = dts[i-5]
         if not (cur_t in nvda_map and past_t in nvda_map and
@@ -66,21 +67,21 @@ def precompute_cross_dirs(tqqq_15m, nvda_map, soxx_map, qqq_map, vix_map):
             continue
         s_r  = float(cls_[i] / cls_[i-5] - 1.0)
         n_r  = float(nvda_map[cur_t] / nvda_map[past_t] - 1.0)
-        sx_r = float(soxx_map[cur_t] / soxx_map[past_t] - 1.0) if (cur_t in soxx_map and past_t in soxx_map) else n_r
+        sx_r = float(macro_map[cur_t] / macro_map[past_t] - 1.0) if (cur_t in macro_map and past_t in macro_map) else n_r
         q_r  = float(qqq_map[cur_t] / qqq_map[past_t] - 1.0)
         v_r  = float(vix_map[cur_t] / vix_map[past_t] - 1.0)
         try:
-            code, cf, _ = cross_mod.predict_signal(tqqq_ret=s_r, nvda_ret=n_r, soxx_ret=sx_r, qqq_ret=q_r, vix_ret=v_r, tnx_ret=0.0)
-            dirs[i]  = "LONG_TQQQ" if code > 0 else ("SHORT_SQQQ" if code < 0 else "NONE")
+            code, cf, _ = cross_mod.predict_signal(long_ret=s_r, nvda_ret=n_r, macro_ret=sx_r, qqq_ret=q_r, vix_ret=v_r, tnx_ret=0.0)
+            dirs[i]  = "LONG" if code > 0 else ("SHORT" if code < 0 else "NONE")
             confs[i] = cf
         except Exception:
             pass
     return dirs, confs
 
 
-def run_conf_wfa(df_feat, df_tqqq_feat_idx, df_sqqq_feat_idx,
-                 tqqq_5m_d, sqqq_5m_d,
-                 soxx_60m, tqqq_60m,
+def run_conf_wfa(df_feat, df_long_feat_idx, df_short_feat_idx,
+                 long_5m_d, short_5m_d,
+                 macro_60m, long_60m,
                  unique_weeks, fcols, conf_thr, label):
     """단일 conf 임계값으로 WFA 시뮬레이션"""
     print(f"\n{'='*90}\n[{label}] conf>={conf_thr*100:.0f}% WFA 시작\n{'='*90}")
@@ -125,10 +126,10 @@ def run_conf_wfa(df_feat, df_tqqq_feat_idx, df_sqqq_feat_idx,
         for i in range(len(dts_wk)):
             ps, pn, pl = p_s[i], p_n[i], p_l[i]
             if pl > pn and pl > ps:
-                gbdt_dirs.append("LONG_TQQQ")
+                gbdt_dirs.append("LONG")
                 gbdt_confs.append(min(0.95, max(0.50, 0.50+(pl-0.333)*1.15)))
             elif ps > pn and ps > pl:
-                gbdt_dirs.append("SHORT_SQQQ")
+                gbdt_dirs.append("SHORT")
                 gbdt_confs.append(min(0.95, max(0.50, 0.50+(ps-0.333)*1.15)))
             else:
                 gbdt_dirs.append("NONE"); gbdt_confs.append(0.50)
@@ -160,31 +161,31 @@ def run_conf_wfa(df_feat, df_tqqq_feat_idx, df_sqqq_feat_idx,
                 cross_dir = row.get("cross_dir", "NONE")
 
                 # ─ GBDT 기준 미달 ─
-                if gbdt_dir not in ("LONG_TQQQ","SHORT_SQQQ") or gbdt_conf < conf_thr:
+                if gbdt_dir not in ("LONG","SHORT") or gbdt_conf < conf_thr:
                     b_idx += 1; continue
 
                 # ─ CrossAsset Veto ─
-                if ((gbdt_dir=="LONG_TQQQ"  and cross_dir=="SHORT_SQQQ") or
-                    (gbdt_dir=="SHORT_SQQQ" and cross_dir=="LONG_TQQQ")):
+                if ((gbdt_dir=="LONG"  and cross_dir=="SHORT") or
+                    (gbdt_dir=="SHORT" and cross_dir=="LONG")):
                     b_idx += 1; continue
 
                 # ─ Screen 1: 60분봉 EMA20 추세 ─
-                past60s = soxx_60m[soxx_60m["datetime"] <= cur_dt]
-                past60l = tqqq_60m[tqqq_60m["datetime"] <= cur_dt]
+                past60s = macro_60m[macro_60m["datetime"] <= cur_dt]
+                past60l = long_60m[long_60m["datetime"] <= cur_dt]
                 if len(past60s) >= 20 and len(past60l) >= 20:
-                    soxx_c  = past60s["Close"].iloc[-1]
-                    tqqq_c  = past60l["Close"].iloc[-1]
-                    soxx_e  = past60s["ema20"].iloc[-1]
-                    tqqq_e  = past60l["ema20"].iloc[-1]
-                    if gbdt_dir == "LONG_TQQQ":
-                        if not (soxx_c >= soxx_e*0.998 and tqqq_c >= tqqq_e*0.998):
+                    macro_c  = past60s["Close"].iloc[-1]
+                    long_c  = past60l["Close"].iloc[-1]
+                    macro_e  = past60s["ema20"].iloc[-1]
+                    long_e  = past60l["ema20"].iloc[-1]
+                    if gbdt_dir == "LONG":
+                        if not (macro_c >= macro_e*0.998 and long_c >= long_e*0.998):
                             b_idx += 1; continue
                     else:
-                        if not (soxx_c <= soxx_e*1.002):
+                        if not (macro_c <= macro_e*1.002):
                             b_idx += 1; continue
 
                 # ─ Screen 3: 15분봉 눌림목 (VWAP/RSI/BB) ─
-                if gbdt_dir == "LONG_TQQQ":
+                if gbdt_dir == "LONG":
                     vd   = float(row.get("VWAP_Diff", 0.0))
                     rsi  = float(row.get("RSI_14", 50.0))
                     bbl  = float(row.get("BB_Lower", 0.0))
@@ -192,8 +193,8 @@ def run_conf_wfa(df_feat, df_tqqq_feat_idx, df_sqqq_feat_idx,
                     dip  = (vd <= 1.5) and (rsi <= 62.0)
                     if bbl > 0: dip = dip and (cc >= bbl*1.001)
                 else:
-                    if cur_dt in df_sqqq_feat_idx.index:
-                        rs   = df_sqqq_feat_idx.loc[cur_dt]
+                    if cur_dt in df_short_feat_idx.index:
+                        rs   = df_short_feat_idx.loc[cur_dt]
                         vd   = float(rs.get("VWAP_Diff", 0.0))
                         rsi  = float(rs.get("RSI_14", 50.0))
                         bbl  = float(rs.get("BB_Lower", 0.0))
@@ -206,12 +207,12 @@ def run_conf_wfa(df_feat, df_tqqq_feat_idx, df_sqqq_feat_idx,
                     b_idx += 1; continue
 
                 # ─ 진입 ─
-                sym = "TQQQ" if gbdt_dir=="LONG_TQQQ" else "SQQQ"
-                if sym == "TQQQ":
+                sym = config.BASE_ASSET_LONG if gbdt_dir=="LONG" else config.BASE_ASSET_SHORT
+                if sym == config.BASE_ASSET_LONG:
                     base_px = float(row["Close"])
                 else:
-                    if cur_dt in df_sqqq_feat_idx.index:
-                        base_px = float(df_sqqq_feat_idx.loc[cur_dt]["Close"])
+                    if cur_dt in df_short_feat_idx.index:
+                        base_px = float(df_short_feat_idx.loc[cur_dt]["Close"])
                     else:
                         b_idx += 1; continue
                 entry_px = round(base_px + SLIP, 2)
@@ -221,7 +222,7 @@ def run_conf_wfa(df_feat, df_tqqq_feat_idx, df_sqqq_feat_idx,
                     b_idx += 1; continue
 
                 # ─ 5분봉 Path Dissection ─
-                day5 = tqqq_5m_d.get(d_str, pd.DataFrame()) if sym=="TQQQ" else sqqq_5m_d.get(d_str, pd.DataFrame())
+                day5 = long_5m_d.get(d_str, pd.DataFrame()) if sym==config.BASE_ASSET_LONG else short_5m_d.get(d_str, pd.DataFrame())
                 if day5.empty:
                     b_idx += 1; continue
                 post5 = day5[day5["datetime"] > cur_dt]
@@ -294,7 +295,7 @@ def summarize(res):
         yrs.append({"year":y,"ret":round((ye/ys-1)*100,1),"n":len(g),
                     "wr":round(len(g[g["ret"]>0])/len(g)*100,1),
                     "pf":round(gw/gl2,3) if gl2>0 else 99.0,
-                    "L":int((g["sym"]=="TQQQ").sum()),"S":int((g["sym"]=="SQQQ").sum())})
+                    "L":int((g["sym"]==config.BASE_ASSET_LONG).sum()),"S":int((g["sym"]==config.BASE_ASSET_SHORT).sum())})
         ys=ye
     res["yearly"]=yrs
     return res
@@ -313,27 +314,27 @@ def main():
     ml   = MLFeatureEngine()
 
     print("="*90+"\n📦 데이터 로드 중...\n"+"="*90)
-    tqqq_15m = lake.load_candles("TQQQ","15m").sort_values("datetime").reset_index(drop=True)
-    sqqq_15m = lake.load_candles("SQQQ","15m").sort_values("datetime").reset_index(drop=True)
-    tqqq_5m  = lake.load_candles("TQQQ","5m").sort_values("datetime").reset_index(drop=True)
-    sqqq_5m  = lake.load_candles("SQQQ","5m").sort_values("datetime").reset_index(drop=True)
-    soxx_60m = lake.load_candles("SOXX","60m").sort_values("datetime").reset_index(drop=True)
-    tqqq_60m = lake.load_candles("TQQQ","60m").sort_values("datetime").reset_index(drop=True)
-    soxx_15m = lake.load_candles("SOXX","15m").sort_values("datetime").reset_index(drop=True)
+    long_15m = lake.load_candles(config.BASE_ASSET_LONG,"15m").sort_values("datetime").reset_index(drop=True)
+    short_15m = lake.load_candles(config.BASE_ASSET_SHORT,"15m").sort_values("datetime").reset_index(drop=True)
+    long_5m  = lake.load_candles(config.BASE_ASSET_LONG,"5m").sort_values("datetime").reset_index(drop=True)
+    short_5m  = lake.load_candles(config.BASE_ASSET_SHORT,"5m").sort_values("datetime").reset_index(drop=True)
+    macro_60m = lake.load_candles(config.MACRO_TREND_SYMBOL,"60m").sort_values("datetime").reset_index(drop=True)
+    long_60m = lake.load_candles(config.BASE_ASSET_LONG,"60m").sort_values("datetime").reset_index(drop=True)
+    macro_15m = lake.load_candles(config.MACRO_TREND_SYMBOL,"15m").sort_values("datetime").reset_index(drop=True)
     nvda_15m = lake.load_candles("NVDA","15m").sort_values("datetime").reset_index(drop=True)
     qqq_15m  = lake.load_candles("QQQ", "15m").sort_values("datetime").reset_index(drop=True)
     vix_15m  = lake.load_candles("^VIX","15m").sort_values("datetime").reset_index(drop=True)
 
     # 60분봉 EMA20 사전계산
-    soxx_60m["ema20"] = soxx_60m["Close"].ewm(span=20,adjust=False).mean()
-    tqqq_60m["ema20"] = tqqq_60m["Close"].ewm(span=20,adjust=False).mean()
+    macro_60m["ema20"] = macro_60m["Close"].ewm(span=20,adjust=False).mean()
+    long_60m["ema20"] = long_60m["Close"].ewm(span=20,adjust=False).mean()
 
     # datetime 태깅
-    for df in [tqqq_15m,sqqq_15m,soxx_60m,tqqq_60m,nvda_15m,qqq_15m,vix_15m,soxx_15m]:
+    for df in [long_15m,short_15m,macro_60m,long_60m,nvda_15m,qqq_15m,vix_15m,macro_15m]:
         df["datetime_dt"] = pd.to_datetime(df["datetime"])
         df["date_str"]    = df["datetime_dt"].dt.strftime("%Y-%m-%d")
         df["time_str"]    = df["datetime_dt"].dt.strftime("%H:%M")
-    for df in [tqqq_5m,sqqq_5m]:
+    for df in [long_5m,short_5m]:
         df["datetime_dt"] = pd.to_datetime(df["datetime"])
         df["date_str"]    = df["datetime_dt"].dt.strftime("%Y-%m-%d")
         df["time_str"]    = df["datetime_dt"].dt.strftime("%H:%M")
@@ -341,14 +342,14 @@ def main():
     # CrossAsset 방향 사전계산
     print("⏳ CrossAsset 방향 사전계산...")
     nvda_map = nvda_15m.set_index("datetime")["Close"].to_dict()
-    soxx_map = soxx_15m.set_index("datetime")["Close"].to_dict()
+    macro_map = macro_15m.set_index("datetime")["Close"].to_dict()
     qqq_map  = qqq_15m.set_index("datetime")["Close"].to_dict()
     vix_map  = vix_15m.set_index("datetime")["Close"].to_dict()
-    ca_dirs, ca_confs = precompute_cross_dirs(tqqq_15m, nvda_map, soxx_map, qqq_map, vix_map)
+    ca_dirs, ca_confs = precompute_cross_dirs(long_15m, nvda_map, macro_map, qqq_map, vix_map)
 
     # TQQQ 피처 추출
     print("⏳ 피처 추출...")
-    df_feat = ml.extract_features(tqqq_15m)
+    df_feat = ml.extract_features(long_15m)
     df_feat["MACD_Pct"]        = (df_feat["MACD"]/(df_feat["Close"]+1e-9))*100
     df_feat["MACD_Signal_Pct"] = (df_feat["MACD_Signal"]/(df_feat["Close"]+1e-9))*100
     df_feat["MACD_Hist_Pct"]   = (df_feat["MACD_Hist"]/(df_feat["Close"]+1e-9))*100
@@ -362,8 +363,8 @@ def main():
                            df_feat["datetime_dt"].dt.isocalendar().week.astype(str).str.zfill(2))
 
     # SQQQ 피처 (Screen3용)
-    df_sqqq_feat = ml.extract_features(sqqq_15m)
-    df_sqqq_feat_idx = df_sqqq_feat.set_index("datetime", drop=False)
+    df_short_feat = ml.extract_features(short_15m)
+    df_short_feat_idx = df_short_feat.set_index("datetime", drop=False)
 
     # 피처 컬럼 선별
     EX = {"open","high","low","close","volume","Open","High","Low","Close","Volume",
@@ -374,8 +375,8 @@ def main():
     print(f"📊 피처: {len(fcols)}개")
 
     # 5분봉 날짜별 딕셔너리
-    tqqq_5m_d = {d:g for d,g in tqqq_5m.groupby("date_str")}
-    sqqq_5m_d = {d:g for d,g in sqqq_5m.groupby("date_str")}
+    long_5m_d = {d:g for d,g in long_5m.groupby("date_str")}
+    short_5m_d = {d:g for d,g in short_5m.groupby("date_str")}
 
     # 주차 목록
     wks = sorted(df_feat["week_id"].unique())
@@ -387,9 +388,9 @@ def main():
     for conf in CONFS:
         lbl = f"Conf≥{int(conf*100)}%"
         res = run_conf_wfa(df_feat, df_feat.set_index("datetime",drop=False),
-                           df_sqqq_feat_idx,
-                           tqqq_5m_d, sqqq_5m_d,
-                           soxx_60m, tqqq_60m,
+                           df_short_feat_idx,
+                           long_5m_d, short_5m_d,
+                           macro_60m, long_60m,
                            wks, fcols, conf, lbl)
         res = summarize(res); all_res.append(res)
 

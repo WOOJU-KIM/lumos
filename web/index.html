@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="ko">
 <head>
   <meta charset="UTF-8">
@@ -8,6 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Pretendard:wght@400;600;700;800&display=swap" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0"></script>
   <style>
     :root {
       --bg-main: #090d13;
@@ -25,6 +26,13 @@
     .card { background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 12px; padding: 20px; }
     .card-title { font-size: 16px; font-weight: 600; margin-bottom: 15px; text-align: center; color: var(--text-main); }
     .chart-container { position: relative; height: 300px; width: 100%; }
+    .stats-text { margin-top: 15px; font-size: 13px; color: var(--text-muted); text-align: center; font-weight: 600; white-space: pre-line; line-height: 1.4; }
+    
+    .trade-table { width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 12px; color: var(--text-muted); }
+    .trade-table th, .trade-table td { padding: 6px; text-align: center; border-bottom: 1px solid var(--border-subtle); }
+    .trade-table th { font-weight: 600; color: var(--text-main); }
+    .win-text { color: #10b981; }
+    .loss-text { color: #e74c3c; }
   </style>
 </head>
 <body>
@@ -34,19 +42,27 @@
   </div>
   <div class="charts-grid">
     <div class="card">
-      <div class="card-title">월별 성과 (전월 대비)</div>
+      <div class="card-title">월별 성과 (올해 누적)</div>
       <div class="chart-container"><canvas id="chartMonthly"></canvas></div>
+      <div id="statsMonthly" class="stats-text"></div>
+      <table class="trade-table" id="tableMonthly"></table>
     </div>
     <div class="card">
-      <div class="card-title">주별 성과 (전주 대비 / 최근 5주)</div>
+      <div class="card-title">주별 성과 (이번 주 누적 / 최근 5주)</div>
       <div class="chart-container"><canvas id="chartWeekly"></canvas></div>
+      <div id="statsWeekly" class="stats-text"></div>
+      <table class="trade-table" id="tableWeekly"></table>
     </div>
     <div class="card">
-      <div class="card-title">일별 성과 (전일 대비)</div>
+      <div class="card-title">일별 성과 (최근 14일)</div>
       <div class="chart-container"><canvas id="chartDaily"></canvas></div>
+      <div id="statsDaily" class="stats-text"></div>
+      <table class="trade-table" id="tableDaily"></table>
     </div>
   </div>
   <script>
+    Chart.register(ChartDataLabels);
+
     async function fetchCharts() {
       try {
         const res = await fetch('/api/return_charts');
@@ -55,9 +71,22 @@
 
         const commonOptions = {
           responsive: true, maintainAspectRatio: false,
-          plugins: { legend: { position: 'top', labels: { color: '#94a3b8' } } },
+          plugins: { 
+            legend: { position: 'top', labels: { color: '#94a3b8' } },
+            datalabels: {
+              font: { weight: 'bold', size: 10 },
+              formatter: function(value, context) {
+                if (value === null) return '';
+                if(context.dataset.type === 'line') {
+                  return value.toFixed(2) + '%';
+                } else {
+                  return Math.round(value).toLocaleString();
+                }
+              }
+            }
+          },
           scales: {
-            yUsd: { type: 'linear', position: 'left', grid: { color: '#233144' }, ticks: { color: '#38bdf8', callback: v => '$' + v } },
+            yUsd: { type: 'linear', position: 'left', grid: { color: '#233144' }, ticks: { color: '#38bdf8', callback: v => v.toLocaleString() } },
             yPct: { type: 'linear', position: 'right', grid: { display: false }, ticks: { color: '#e74c3c', callback: v => v + '%' } },
             x: { grid: { display: false }, ticks: { color: '#94a3b8' } }
           }
@@ -77,15 +106,27 @@
                   backgroundColor: '#e74c3c',
                   borderWidth: 2,
                   yAxisID: 'yPct',
-                  tension: 0.1
+                  tension: 0.1,
+                  datalabels: {
+                    align: 'bottom',
+                    color: '#e74c3c',
+                    textStrokeColor: '#090d13',
+                    textStrokeWidth: 4
+                  }
                 },
                 {
                   type: 'bar',
                   label: 'Total Balance (USD)',
                   data: chartData.usd,
-                  backgroundColor: chartData.usd.map(v => v >= 0 ? colorBar : '#ef4444'),
+                  backgroundColor: chartData.usd.map(v => (v === null || v >= 0) ? colorBar : '#ef4444'),
                   yAxisID: 'yUsd',
-                  borderRadius: 4
+                  borderRadius: 4,
+                  datalabels: {
+                    align: 'top',
+                    color: '#f1f5f9',
+                    textStrokeColor: '#090d13',
+                    textStrokeWidth: 3
+                  }
                 }
               ]
             },
@@ -95,7 +136,39 @@
 
         createChart('chartMonthly', data.monthly, '#38bdf8');
         createChart('chartWeekly', data.weekly, '#10b981');
-        createChart('chartDaily', data.daily, '#a855f7');
+        createChart('chartDaily', data.daily, '#64748b');
+        
+        if(data.monthly.stats) document.getElementById('statsMonthly').innerText = data.monthly.stats;
+        if(data.weekly.stats) document.getElementById('statsWeekly').innerText = data.weekly.stats;
+        if(data.daily.stats) document.getElementById('statsDaily').innerText = data.daily.stats;
+        
+        const renderTable = (tableId, trades) => {
+            const table = document.getElementById(tableId);
+            if(!trades || trades.length === 0) {
+                table.innerHTML = "";
+                return;
+            }
+            let html = "<tr><th>날짜</th><th>종목</th><th>수량</th><th>승패</th><th>매수가</th><th>매도가</th><th>수익률</th></tr>";
+            trades.forEach(t => {
+                const resClass = t.result === '승' ? 'win-text' : 'loss-text';
+                const pctStr = (t.pct > 0 ? '+' : '') + t.pct.toFixed(2) + '%';
+                html += `<tr>
+                    <td>${t.date}</td>
+                    <td>${t.symbol}</td>
+                    <td>${t.qty}주</td>
+                    <td class="${resClass}">${t.result}</td>
+                    <td>${t.buy.toFixed(2)}</td>
+                    <td>${t.sell.toFixed(2)}</td>
+                    <td class="${resClass}">${pctStr}</td>
+                </tr>`;
+            });
+            table.innerHTML = html;
+        };
+
+        renderTable('tableMonthly', data.monthly.trades);
+        renderTable('tableWeekly', data.weekly.trades);
+        renderTable('tableDaily', data.daily.trades);
+
       } catch (err) { console.error(err); }
     }
     fetchCharts();

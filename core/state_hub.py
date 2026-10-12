@@ -100,8 +100,8 @@ class StateHub:
                 total_trades INTEGER NOT NULL,
                 wins INTEGER NOT NULL,
                 losses INTEGER NOT NULL,
-                tqqq_win_rate_pct REAL NOT NULL,
-                sqqq_win_rate_pct REAL NOT NULL,
+                long_win_rate_pct REAL NOT NULL,
+                short_win_rate_pct REAL NOT NULL,
                 profit_factor REAL NOT NULL,
                 mdd_pct REAL NOT NULL,
                 allocation_pct REAL NOT NULL,
@@ -247,7 +247,7 @@ class StateHub:
             INSERT INTO backtest_runs (
                 run_id, executed_at, initial_capital_krw, final_capital_krw, total_pnl_krw,
                 total_return_pct, win_rate_pct, total_trades, wins, losses,
-                tqqq_win_rate_pct, sqqq_win_rate_pct, profit_factor, mdd_pct,
+                long_win_rate_pct, short_win_rate_pct, profit_factor, mdd_pct,
                 allocation_pct, confidence_threshold, daily_reports_json, weekly_reports_json
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
@@ -261,8 +261,8 @@ class StateHub:
                 run_res.get("total_trades_count", len(trades)),
                 run_res.get("total_wins", 13),
                 run_res.get("total_losses", 7),
-                run_res.get("tqqq_win_rate_pct", 87.5),
-                run_res.get("sqqq_win_rate_pct", 50.0),
+                run_res.get("long_win_rate_pct", 87.5),
+                run_res.get("short_win_rate_pct", 50.0),
                 run_res.get("profit_factor", 3.13),
                 run_res.get("mdd_pct", 3.96),
                 run_res.get("allocation_pct", 1.0),
@@ -315,7 +315,7 @@ class StateHub:
             "timeframe_high": "60m",
             "timeframe_main": "15m",
             "timeframe_low": "3m/5m",
-            "target_tickers": ["TQQQ", "SQQQ"]
+            "target_tickers": [config.BASE_ASSET_LONG, config.BASE_ASSET_SHORT]
         })
 
         if "top_10_features" in run_res:

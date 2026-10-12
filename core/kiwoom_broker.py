@@ -5,6 +5,7 @@ import time
 import urllib.request
 import urllib.error
 import logging
+import re
 from typing import Dict, Any, Optional, List, Tuple
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -35,6 +36,76 @@ if not logger.handlers:
 
 _GLOBAL_KIWOOM_TOKEN_CACHE: Dict[str, Dict[str, Any]] = {}
 
+
+def _mask_sensitive_log(value: Any, secrets: Tuple[str, ...] = ()) -> Any:
+    """Return a masked logging copy; never alter API or event data."""
+    sensitive_keys = {
+        "authorization", "token", "accesstoken", "refreshtoken", "tokenpreview",
+        "appkey", "apikey", "appsecret", "apisecret", "secret", "secretkey", "clientsecret", "password",
+        "cano", "account", "accountno", "fullaccountno", "accountnumber",
+        "accno", "acntno", "계좌번호", "계좌 번호",
+    }
+
+    def sensitive(key):
+        return re.sub(r"[\s_-]", "", str(key)).lower() in sensitive_keys
+
+    if isinstance(value, dict):
+        return {key: "[MASKED]" if sensitive(key) else _mask_sensitive_log(item, secrets)
+                for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        items = [_mask_sensitive_log(item, secrets) for item in value]
+        return tuple(items) if isinstance(value, tuple) else items
+    if not isinstance(value, str):
+        return value
+
+    # Preserve raw JSON formatting when nothing sensitive needs replacing.
+    try:
+        parsed = json.loads(value)
+    except (ValueError, TypeError):
+        parsed = None
+    if isinstance(parsed, (dict, list)):
+        masked = _mask_sensitive_log(parsed, secrets)
+        return value if masked == parsed else json.dumps(masked, ensure_ascii=False)
+
+    # Exception messages may contain JSON after an HTTP/error description.
+    decoder = json.JSONDecoder()
+    parts = []
+    cursor = 0
+    for match in re.finditer(r"[\[{]", value):
+        start = match.start()
+        if start < cursor:
+            continue
+        try:
+            fragment, end = decoder.raw_decode(value, start)
+        except ValueError:
+            continue
+        if not isinstance(fragment, (dict, list)):
+            continue
+        masked = _mask_sensitive_log(fragment, secrets)
+        parts.append(_mask_sensitive_log(value[cursor:start], secrets))
+        parts.append(value[start:end] if masked == fragment else
+                     json.dumps(masked, ensure_ascii=False))
+        cursor = end
+    if cursor:
+        return "".join(parts) + _mask_sensitive_log(value[cursor:], secrets)
+
+    key_pattern = "|".join(
+        "[ _-]*".join(re.escape(char) for char in key.replace(" ", ""))
+        for key in sorted(sensitive_keys, key=len, reverse=True)
+    )
+    # JSON/repr fragments and key=value details in exception messages.
+    pattern = (r"(?<![\w])([\"']?(?:" + key_pattern
+               + r")[\"']?\s*[:=]\s*)(\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|(?:Bearer|Basic)\s+[^\s,;|}\"'\]]+|[^\s,;|}\]]+)")
+    value = re.sub(pattern, lambda match: match.group(1) + "[MASKED]", value,
+                   flags=re.IGNORECASE)
+    value = re.sub(r"\b(Bearer|Basic)\s+[^\s,;\"'}\]]+", r"\1 [MASKED]", value,
+                   flags=re.IGNORECASE)
+    for secret in sorted({item for item in secrets if isinstance(item, str) and item},
+                         key=len, reverse=True):
+        value = value.replace(secret, "[MASKED]")
+    return value
+
+
 class KiwoomBroker:
     """
     [Lumos 키움증권 OpenAPI REST 듀얼 스위칭 브로커]
@@ -43,6 +114,12 @@ class KiwoomBroker:
     3. 국내주식 예수금(kt00001) 및 잔고(kt00018) 통합 지원
     4. OAuth2 토큰 발급 및 만료 전 자동 갱신 메모리 캐싱
     """
+    def _redact_log(self, value: Any) -> Any:
+        return _mask_sensitive_log(value, tuple(
+            getattr(self, name, "") for name in
+            ("_access_token", "app_key", "app_secret", "account_no")
+        ))
+
     def __init__(self, is_simulation: Optional[bool] = None):
         env_sim = os.getenv("KIWOOM_IS_SIMULATION", "1").strip()
         if is_simulation is not None:
@@ -76,7 +153,7 @@ class KiwoomBroker:
         self._token_expires_at: Optional[datetime] = None
         self._virtual_holdings: Dict[str, Dict[str, Any]] = {}
 
-        logger.info(f"🏛 KiwoomBroker 초기화 완료 [모드: {self.mode_str} | Base URL: {self.base_url} | 계좌번호: {self.account_no} | TR 간격: {self._min_request_interval}s]")
+        logger.info(self._redact_log(f"🏛 KiwoomBroker 초기화 완료 [모드: {self.mode_str} | Base URL: {self.base_url} | 계좌번호: {self.account_no} | TR 간격: {self._min_request_interval}s]"))
         if not self.is_simulation:
             logger.warning("⚠️ [주의] 키움증권 실전 매매(REAL) 모드로 설정되어 있습니다. 실제 자금이 집행됩니다.")
 
@@ -153,10 +230,10 @@ class KiwoomBroker:
 
         except urllib.error.HTTPError as e:
             err_msg = e.read().decode("utf-8")
-            logger.error(f"❌ 키움 토큰 발급 HTTP 오류 ({e.code}): {err_msg}")
+            logger.error(self._redact_log(f"❌ 키움 토큰 발급 HTTP 오류 ({e.code}): {self._redact_log(err_msg)}"))
             raise RuntimeError(f"키움 토큰 HTTP {e.code}: {err_msg}")
         except Exception as e:
-            logger.error(f"❌ 키움 토큰 발급 중 예외 발생: {e}")
+            logger.error(self._redact_log(f"❌ 키움 토큰 발급 중 예외 발생: {e}"))
             raise
 
     def _send_tr_request(self, endpoint: str, api_id: str, body_dict: Dict[str, Any], raise_on_error: bool = False, retry_count: int = 0) -> Dict[str, Any]:
@@ -187,8 +264,12 @@ class KiwoomBroker:
         logger.info("\n" + "=" * 80)
         logger.info(f"📡 [REST TR REQUEST 송출] API ID: {api_id} | Endpoint: {endpoint}")
         logger.info(f"   • URL: {url}")
-        logger.info(f"   • Headers: {json.dumps(headers, ensure_ascii=False)}")
-        logger.info(f"   • Body: {json.dumps(body_dict, ensure_ascii=False)}")
+        safe_headers = headers.copy()
+        if "authorization" in safe_headers:
+            token = safe_headers["authorization"].replace("Bearer ", "")
+            safe_headers["authorization"] = "Bearer [MASKED]"
+        logger.info(self._redact_log(f"   • Headers: {json.dumps(self._redact_log(safe_headers), ensure_ascii=False)}"))
+        logger.info(self._redact_log(f"   • Body: {json.dumps(self._redact_log(body_dict), ensure_ascii=False)}"))
         logger.info("=" * 80)
 
         try:
@@ -210,14 +291,14 @@ class KiwoomBroker:
                 
                 # 🔍 수신된 HTTP 상태코드 및 Response Body 전문 Full 출력
                 logger.info(f"📥 [REST TR RESPONSE 수신] HTTP Status: {response.status}")
-                logger.info(f"   • Raw Body: {raw_text}")
+                logger.info(self._redact_log(f"   • Raw Body: {self._redact_log(raw_text)}"))
                 logger.info("=" * 80 + "\n")
 
                 rc = data.get("return_code", 0)
                 rm = data.get("return_msg", "")
                 if raise_on_error and rc != 0:
                     err_msg = f"❌ [TR_ERROR] API_ID={api_id} | Code={rc} | Msg={rm}"
-                    logger.error(err_msg)
+                    logger.error(self._redact_log(err_msg))
                     raise RuntimeError(err_msg)
 
                 return data
@@ -225,9 +306,9 @@ class KiwoomBroker:
         except urllib.error.HTTPError as e:
             err_text = e.read().decode("utf-8")
             logger.info(f"❌ [REST TR HTTP ERROR] HTTP Status: {e.code}")
-            logger.info(f"   • Error Body: {err_text}")
+            logger.info(self._redact_log(f"   • Error Body: {self._redact_log(err_text)}"))
             logger.info("=" * 80 + "\n")
-            logger.error(f"❌ TR 요청 실패 [{api_id}] HTTP {e.code}: {err_text}")
+            logger.error(self._redact_log(f"❌ TR 요청 실패 [{api_id}] HTTP {e.code}: {self._redact_log(err_text)}"))
             
             # 🔁 HTTP 429 (유량 초과) 발생 시 0.6초 백오프 후 1회 자동 재시도
             if e.code == 429 and retry_count < 1:
@@ -240,9 +321,9 @@ class KiwoomBroker:
             return {"return_code": e.code, "return_msg": err_text, "ok": False}
 
         except Exception as e:
-            logger.info(f"❌ [REST TR EXCEPTION] Exception: {e}")
+            logger.info(self._redact_log(f"❌ [REST TR EXCEPTION] Exception: {e}"))
             logger.info("=" * 80 + "\n")
-            logger.error(f"❌ TR 요청 예외 [{api_id}]: {e}")
+            logger.error(self._redact_log(f"❌ TR 요청 예외 [{api_id}]: {e}"))
             if raise_on_error:
                 raise
             return {"return_code": -1, "return_msg": str(e), "ok": False}
@@ -429,19 +510,19 @@ class KiwoomBroker:
 
         return self._cached_summary
 
-    def get_stock_quote(self, symbol: str = "TQQQ", exchange: Optional[str] = None) -> Dict[str, Any]:
+    def get_stock_quote(self, symbol: str = config.BASE_ASSET_LONG, exchange: Optional[str] = None) -> Dict[str, Any]:
         """
         [TR: ust10000 / 실시간 피드] 미국주식 현재가 및 시세 조회
         """
         sym_clean = symbol.upper().strip()
-        stex = exchange or ("NY" if sym_clean in ["SOXL", "SOXS", "SPY", "DIA", "VIXY"] else "ND")
+        stex = exchange or self._resolve_exchange(sym_clean)
         
         # 실시간 백업: yfinance / DataLake 실시간 시세
         import yfinance as yf
         try:
             t = yf.Ticker(sym_clean)
             fi = t.fast_info
-            last_px = round(float(fi.last_price or fi.previous_close or 120.74), 2)
+            last_px = round(float(fi.last_price or fi.previous_close or config.FALLBACK_PRICE), 2)
             return {
                 "ok": True,
                 "symbol": sym_clean,
@@ -457,6 +538,16 @@ class KiwoomBroker:
                 "last_price": 0.0,
                 "msg": f"시세 수신 실패: {e}"
             }
+
+    def _resolve_exchange(self, symbol: str) -> str:
+        """종목 기호에 따른 거래소 코드(NY/ND) 자동 판별"""
+        sym = symbol.upper().strip()
+        # 아멕스/뉴욕(NYSE Arca) 상장 대표 ETF 및 주식
+        ny_symbols = ["SOXL", "SOXS", "SPY", "DIA", "VIXY", "TLT", "TMF", "TMV", "UPRO", "SPXU"]
+        if sym in ny_symbols:
+            return "NY"
+        # 나스닥 상장 (TQQQ, SQQQ, QQQ, NVDA, SOXX, IEF 등)
+        return "ND"
 
     def send_order(
         self,
@@ -478,7 +569,7 @@ class KiwoomBroker:
         sym_clean = symbol.upper().strip()
 
         # 거래소 코드 자동 매핑 (TQQQ/SQQQ: NY, NVDA/QQQ: ND)
-        stex = exchange or ("NY" if sym_clean in ["SOXL", "SOXS", "SPY", "DIA", "VIXY"] else "ND")
+        stex = exchange or self._resolve_exchange(sym_clean)
 
         # 현재가 조회
         quote = self.get_stock_quote(sym_clean, exchange=stex)
@@ -489,7 +580,7 @@ class KiwoomBroker:
             try:
                 self.cancel_all_open_orders(sym_clean)
             except Exception as e:
-                logger.warning(f"⚠️ 매도 전 미체결 주문 취소 시도 예외 (계속 진행): {e}")
+                logger.warning(self._redact_log(f"⚠️ 매도 전 미체결 주문 취소 시도 예외 (계속 진행): {e}"))
 
         # 모의투자는 지정가(00) 필수 규격, 실전투자는 시장가(03) 및 지정가(00) 지원
         if self.is_simulation:
@@ -530,7 +621,7 @@ class KiwoomBroker:
 
         if return_code != 0:
             err_msg = f"❌ [주문 체결 실패] TR: {api_id} | Code: {return_code} | Msg: {return_msg}"
-            logger.error(err_msg)
+            logger.error(self._redact_log(err_msg))
             raise RuntimeError(err_msg)
 
         return {
@@ -559,6 +650,19 @@ class KiwoomBroker:
         bal_res = self.get_overseas_stock_balance()
         open_res = self.get_open_orders()
 
+        # 하위 조회 실패를 정상 원장으로 승격하지 않는다. 정상 수치/계약은 그대로 유지한다.
+        failed_queries = []
+        for name, result, required in (
+            ("deposit", dep_res, ("usd_order_available", "krw_converted")),
+            ("balance", bal_res, ("total_eval_usd", "holdings")),
+            ("open_orders", open_res, ("orders",))
+        ):
+            if not isinstance(result, dict) or result.get("ok") is not True or any(key not in result for key in required):
+                failed_queries.append(name)
+        dep_res = dep_res if isinstance(dep_res, dict) else {}
+        bal_res = bal_res if isinstance(bal_res, dict) else {}
+        open_res = open_res if isinstance(open_res, dict) else {}
+
         avail_usd = float(dep_res.get("usd_order_available", 0.0))
         exrt = float(dep_res.get("krw_converted", 0)) / avail_usd if avail_usd > 0 else 1402.5
         stock_eval_usd = float(bal_res.get("total_eval_usd", 0.0))
@@ -572,8 +676,8 @@ class KiwoomBroker:
         tdy_book_krw = int(bal_res.get("tdy_book_krw", 0))
         tdy_pl_krw = int(bal_res.get("tdy_pl_krw", 0))
 
-        return {
-            "ok": True,
+        report = {
+            "ok": not failed_queries,
             "source": f"키움증권(Kiwoom) {self.mode_str} OpenAPI 정규 통신",
             "account_no": f"{self.account_no}-{self.account_type}",
             "avail_usd": avail_usd,
@@ -588,8 +692,11 @@ class KiwoomBroker:
             "realized_rate_pct": realized_rate_pct,
             "tdy_pl_krw": tdy_pl_krw,
             "executions": open_res.get("orders", []),
-            "msg": "키움 공식 원장 조회 완료"
+            "msg": "키움 공식 원장 조회 완료" if not failed_queries else "키움 공식 원장 조회 실패"
         }
+        if failed_queries:
+            report["failed_queries"] = failed_queries
+        return report
 
     def get_daily_execution_history(self) -> Dict[str, Any]:
         """
@@ -621,7 +728,7 @@ class KiwoomBroker:
                     "msg": res.get("return_msg", "조회 실패")
                 }
         except Exception as e:
-            logger.error(f"체결 내역 조회 중 예외 발생: {e}")
+            logger.error(self._redact_log(f"체결 내역 조회 중 예외 발생: {e}"))
             return {
                 "ok": False,
                 "execution_count": 0,
@@ -663,7 +770,7 @@ class KiwoomBroker:
         - 파라미터: orig_ord_no, stex_tp, stk_cd, ord_qty, ord_uv("0"), trde_tp("00")
         """
         sym_clean = symbol.upper().strip()
-        stex = exchange or ("NY" if sym_clean in ["SOXL", "SOXS", "SPY", "DIA", "VIXY"] else "ND")
+        stex = exchange or self._resolve_exchange(sym_clean)
         
         body = {
             "cano": str(self.account_no),
@@ -700,7 +807,7 @@ class KiwoomBroker:
             ord_sym = str(ord_info.get("stk_cd") or ord_info.get("symb") or "").strip().upper()
             ord_no = str(ord_info.get("ord_no") or ord_info.get("order_no") or "").strip()
             stex_nm = str(ord_info.get("stex_nm") or "NY").strip()
-            stex_tp = "NY" if ("아멕스" in stex_nm or ord_sym in ["SOXL", "SOXS"]) else "ND"
+            stex_tp = self._resolve_exchange(ord_sym)
 
             if symbol and ord_sym and symbol.upper() != ord_sym:
                 continue
@@ -716,7 +823,7 @@ class KiwoomBroker:
 
         return cancel_results
 
-    def test_full_trading_pipeline(self, symbol: str = "TQQQ") -> Dict[str, Any]:
+    def test_full_trading_pipeline(self, symbol: str = config.BASE_ASSET_LONG) -> Dict[str, Any]:
         """
         [키움증권 미국주식 매매 전 주기 6대 파이프라인 E2E 무결성 검증]
         1. OAuth2 인증 및 토큰 발급
@@ -832,6 +939,6 @@ if __name__ == "__main__":
     logger.info("=" * 75)
     logger.info("🚀 [키움증권 미국주식 매매 송수신 전 주기 파이프라인 점검 테스트] 🚀")
     logger.info("=" * 75)
-    res = broker.test_full_trading_pipeline("TQQQ")
-    logger.info(json.dumps(res, indent=2, ensure_ascii=False))
+    res = broker.test_full_trading_pipeline(config.BASE_ASSET_LONG)
+    logger.info(_mask_sensitive_log(json.dumps(res, indent=2, ensure_ascii=False)))
 

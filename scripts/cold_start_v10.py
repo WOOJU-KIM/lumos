@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import joblib
+import config
 import pandas as pd
 import numpy as np
 from pathlib import Path
@@ -70,18 +71,18 @@ def run_cold_start_v10():
 
     # Track 6 대표 의사결정 메타데이터 샘플 적재
     sample_experts = [
-        ("cross_asset", 0.78, 0.65, {"elapsed_min": 45, "vix_level": 16.2, "atr_ratio": 1.15, "cvd_delta": 1.40, "dislocation_lag": 1.25}, "LONG_TQQQ", 28.50, 29.50, "+3.50% TP", 650000),
-        ("orderflow", 0.82, 0.68, {"elapsed_min": 15, "vix_level": 17.1, "atr_ratio": 1.42, "cvd_delta": 1.85, "dislocation_lag": 0.40}, "LONG_TQQQ", 27.80, 28.77, "+3.50% TP", 665000),
-        ("statespace_kalman", 0.75, 0.62, {"elapsed_min": 180, "vix_level": 20.5, "atr_ratio": 0.95, "cvd_delta": -0.80, "dislocation_lag": -0.90}, "SHORT_SQQQ", 22.40, 23.18, "+3.50% TP", 640000),
-        ("tda_topology", 0.70, 0.61, {"elapsed_min": 60, "vix_level": 18.0, "atr_ratio": 1.28, "cvd_delta": 0.95, "dislocation_lag": 0.35}, "LONG_TQQQ", 29.10, 28.52, "-2.00% SL", -380000),
-        ("cross_asset", 0.85, 0.72, {"elapsed_min": 110, "vix_level": 15.8, "atr_ratio": 1.08, "cvd_delta": 1.55, "dislocation_lag": 1.48}, "LONG_TQQQ", 30.20, 31.26, "+3.50% TP", 680000)
+        ("cross_asset", 0.78, 0.65, {"elapsed_min": 45, "vix_level": 16.2, "atr_ratio": 1.15, "cvd_delta": 1.40, "dislocation_lag": 1.25}, "LONG", 28.50, 29.50, "+3.50% TP", 650000),
+        ("orderflow", 0.82, 0.68, {"elapsed_min": 15, "vix_level": 17.1, "atr_ratio": 1.42, "cvd_delta": 1.85, "dislocation_lag": 0.40}, "LONG", 27.80, 28.77, "+3.50% TP", 665000),
+        ("statespace_kalman", 0.75, 0.62, {"elapsed_min": 180, "vix_level": 20.5, "atr_ratio": 0.95, "cvd_delta": -0.80, "dislocation_lag": -0.90}, "SHORT", 22.40, 23.18, "+3.50% TP", 640000),
+        ("tda_topology", 0.70, 0.61, {"elapsed_min": 60, "vix_level": 18.0, "atr_ratio": 1.28, "cvd_delta": 0.95, "dislocation_lag": 0.35}, "LONG", 29.10, 28.52, "-2.00% SL", -380000),
+        ("cross_asset", 0.85, 0.72, {"elapsed_min": 110, "vix_level": 15.8, "atr_ratio": 1.08, "cvd_delta": 1.55, "dislocation_lag": 1.48}, "LONG", 30.20, 31.26, "+3.50% TP", 680000)
     ]
 
     for exp_name, g_wt, exp_conf, reg_snap, direction, p_in, p_out, reason, pnl in sample_experts:
         shadow_sandbox.record_shadow_trade(
             model_id="M-MOE-ORCHESTRATOR",
             track_label="🚀 Track 6: MoE AI 메타 오케스트레이터",
-            ticker="TQQQ" if "TQQQ" in direction else "SQQQ",
+            ticker=config.BASE_ASSET_LONG if config.BASE_ASSET_LONG in direction else config.BASE_ASSET_SHORT,
             entry_price=p_in,
             exit_price=p_out,
             entry_time="22:45:00",
@@ -101,7 +102,7 @@ def run_cold_start_v10():
 
     # 4. KIS IOC 대규모 자금 주문 브로커 점검
     print("\n⏳ [4/5] KIS IOC 스마트 브로커(kis_broker.py) 점검...")
-    test_qty = broker.calculate_safe_order_qty("TQQQ", 30.0, 100000.0, fee_buffer_pct=0.0035)
+    test_qty = broker.calculate_safe_order_qty(config.BASE_ASSET_LONG, 30.0, 100000.0, fee_buffer_pct=0.0035)
     print(f"   ✅ $100,000 USD 전액 운용 시 TQQQ 안전 주문 주수: {test_qty}주 (math.floor 정수 절사)")
 
     # 5. 텔레그램 v10.2 완성형 킥오프 공식 브리핑 발송

@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import sqlite3
+import config
 import pandas as pd
 import numpy as np
 from pathlib import Path
@@ -48,63 +49,63 @@ def run_grid_search():
     print("=" * 110)
 
     # 1. 데이터 로드
-    tqqq_15m = lake.load_candles("TQQQ", "15m")
-    sqqq_15m = lake.load_candles("SQQQ", "15m")
-    tqqq_5m  = lake.load_candles("TQQQ", "5m")
-    sqqq_5m  = lake.load_candles("SQQQ", "5m")
-    soxx_60m = lake.load_candles("SOXX", "60m")
-    tqqq_60m = lake.load_candles("TQQQ", "60m")
-    soxx_15m = lake.load_candles("SOXX", "15m")
+    long_15m = lake.load_candles(config.BASE_ASSET_LONG, "15m")
+    short_15m = lake.load_candles(config.BASE_ASSET_SHORT, "15m")
+    long_5m  = lake.load_candles(config.BASE_ASSET_LONG, "5m")
+    short_5m  = lake.load_candles(config.BASE_ASSET_SHORT, "5m")
+    macro_60m = lake.load_candles(config.MACRO_TREND_SYMBOL, "60m")
+    long_60m = lake.load_candles(config.BASE_ASSET_LONG, "60m")
+    macro_15m = lake.load_candles(config.MACRO_TREND_SYMBOL, "15m")
     nvda_15m = lake.load_candles("NVDA", "15m")
     qqq_15m  = lake.load_candles("QQQ", "15m")
     vix_15m  = lake.load_candles("^VIX", "15m")
 
-    soxx_60m['ema20'] = soxx_60m['Close'].ewm(span=20, adjust=False).mean()
-    tqqq_60m['ema20'] = tqqq_60m['Close'].ewm(span=20, adjust=False).mean()
+    macro_60m['ema20'] = macro_60m['Close'].ewm(span=20, adjust=False).mean()
+    long_60m['ema20'] = long_60m['Close'].ewm(span=20, adjust=False).mean()
 
-    for df in [tqqq_15m, sqqq_15m, tqqq_5m, sqqq_5m, soxx_60m, tqqq_60m, soxx_15m, nvda_15m, qqq_15m, vix_15m]:
+    for df in [long_15m, short_15m, long_5m, short_5m, macro_60m, long_60m, macro_15m, nvda_15m, qqq_15m, vix_15m]:
         df['datetime_dt'] = pd.to_datetime(df['datetime'])
         df['date_str'] = df['datetime_dt'].dt.strftime('%Y-%m-%d')
         df['time_str'] = df['datetime_dt'].dt.strftime('%H:%M')
 
     ml_15m = MLFeatureEngine()
-    tqqq_15m_feat = ml_15m.extract_features(tqqq_15m)
-    tqqq_15m_feat = ml_15m.add_confidence_columns(tqqq_15m_feat)
-    sqqq_15m_feat = ml_15m.extract_features(sqqq_15m)
-    sqqq_15m_feat.set_index('datetime', inplace=True, drop=False)
+    long_15m_feat = ml_15m.extract_features(long_15m)
+    long_15m_feat = ml_15m.add_confidence_columns(long_15m_feat)
+    short_15m_feat = ml_15m.extract_features(short_15m)
+    short_15m_feat.set_index('datetime', inplace=True, drop=False)
 
     cross_mod = CrossAssetDislocationModel(dislocation_z_threshold=1.6)
     nvda_map = nvda_15m.set_index('datetime')['Close'].to_dict()
-    soxx_map = soxx_15m.set_index('datetime')['Close'].to_dict()
+    macro_map = macro_15m.set_index('datetime')['Close'].to_dict()
     qqq_map = qqq_15m.set_index('datetime')['Close'].to_dict()
     vix_map = vix_15m.set_index('datetime')['Close'].to_dict()
-    tqqq_close = tqqq_15m['Close'].values
-    tqqq_dt = tqqq_15m['datetime'].values
+    long_close = long_15m['Close'].values
+    long_dt = long_15m['datetime'].values
 
     cross_dirs = []
     cross_confs = []
-    for i in range(len(tqqq_15m)):
+    for i in range(len(long_15m)):
         if i < 5:
             cross_dirs.append('NONE'); cross_confs.append(0.50); continue
-        c_t, p_t = tqqq_dt[i], tqqq_dt[i-5]
+        c_t, p_t = long_dt[i], long_dt[i-5]
         if c_t in nvda_map and p_t in nvda_map and c_t in qqq_map and p_t in qqq_map and c_t in vix_map and p_t in vix_map:
-            s_r = float(tqqq_close[i]/tqqq_close[i-5] - 1.0)
+            s_r = float(long_close[i]/long_close[i-5] - 1.0)
             n_r = float(nvda_map[c_t]/nvda_map[p_t] - 1.0)
-            sx_r = float(soxx_map[c_t]/soxx_map[p_t] - 1.0) if c_t in soxx_map and p_t in soxx_map else n_r
+            sx_r = float(macro_map[c_t]/macro_map[p_t] - 1.0) if c_t in macro_map and p_t in macro_map else n_r
             q_r = float(qqq_map[c_t]/qqq_map[p_t] - 1.0)
             v_r = float(vix_map[c_t]/vix_map[p_t] - 1.0)
-            code, conf, desc = cross_mod.predict_signal(tqqq_ret=s_r, nvda_ret=n_r, soxx_ret=sx_r, qqq_ret=q_r, vix_ret=v_r, tnx_ret=0.0)
-            c_dir = 'LONG_TQQQ' if code > 0 else ('SHORT_SQQQ' if code < 0 else 'NONE')
+            code, conf, desc = cross_mod.predict_signal(long_ret=s_r, nvda_ret=n_r, macro_ret=sx_r, qqq_ret=q_r, vix_ret=v_r, tnx_ret=0.0)
+            c_dir = "LONG" if code > 0 else ("SHORT" if code < 0 else 'NONE')
             cross_dirs.append(c_dir)
             cross_confs.append(conf)
         else:
             cross_dirs.append('NONE'); cross_confs.append(0.50)
 
-    tqqq_15m_feat['cross_dir'] = cross_dirs
-    tqqq_15m_feat['cross_conf'] = cross_confs
-    tqqq_15m_feat.set_index('datetime', inplace=True, drop=False)
+    long_15m_feat['cross_dir'] = cross_dirs
+    long_15m_feat['cross_conf'] = cross_confs
+    long_15m_feat.set_index('datetime', inplace=True, drop=False)
 
-    unique_dates = sorted(tqqq_15m['date_str'].unique())
+    unique_dates = sorted(long_15m['date_str'].unique())
     num_days = len(unique_dates)
     total_weeks = num_days / 5.0
 
@@ -123,9 +124,9 @@ def run_grid_search():
         daily_stoploss_count = 0
 
         for d_str in unique_dates:
-            day_15 = tqqq_15m_feat[tqqq_15m_feat['date_str'] == d_str]
-            day_5_l = tqqq_5m[tqqq_5m['date_str'] == d_str]
-            day_5_s = sqqq_5m[sqqq_5m['date_str'] == d_str]
+            day_15 = long_15m_feat[long_15m_feat['date_str'] == d_str]
+            day_5_l = long_5m[long_5m['date_str'] == d_str]
+            day_5_s = short_5m[short_5m['date_str'] == d_str]
             if len(day_15) < 5: continue
 
             daily_stoploss_count = 0
@@ -148,61 +149,61 @@ def run_grid_search():
                 chosen_sym = None
                 if mode == "consensus":
                     # [듀얼 합의 AND 로직] 두 모델이 같은 방향 제시 + GBDT>=G AND 크로스에셋>=C
-                    if dir_gbdt == 'LONG_TQQQ' and dir_cross == 'LONG_TQQQ' and conf_gbdt >= g_th and conf_cross >= c_th:
-                        chosen_sym = 'TQQQ'
-                    elif dir_gbdt == 'SHORT_SQQQ' and dir_cross == 'SHORT_SQQQ' and conf_gbdt >= g_th and conf_cross >= c_th:
-                        chosen_sym = 'SQQQ'
+                    if dir_gbdt == "LONG" and dir_cross == "LONG" and conf_gbdt >= g_th and conf_cross >= c_th:
+                        chosen_sym = config.BASE_ASSET_LONG
+                    elif dir_gbdt == "SHORT" and dir_cross == "SHORT" and conf_gbdt >= g_th and conf_cross >= c_th:
+                        chosen_sym = config.BASE_ASSET_SHORT
                 elif mode == "hybrid_gated":
                     # [하이브리드 MoE 점수 게이팅] GBDT>=G, 크로스에셋 반대 Veto 차단 (반대 확신도>=C일 때 Veto), 동방향 시 확인
-                    is_gbdt = (dir_gbdt in ['LONG_TQQQ', 'SHORT_SQQQ']) and (conf_gbdt >= g_th)
+                    is_gbdt = (dir_gbdt in ["LONG", "SHORT"]) and (conf_gbdt >= g_th)
                     is_opposite_veto = (
-                        (dir_gbdt == 'LONG_TQQQ' and dir_cross == 'SHORT_SQQQ' and conf_cross >= c_th) or
-                        (dir_gbdt == 'SHORT_SQQQ' and dir_cross == 'LONG_TQQQ' and conf_cross >= c_th)
+                        (dir_gbdt == "LONG" and dir_cross == "SHORT" and conf_cross >= c_th) or
+                        (dir_gbdt == "SHORT" and dir_cross == "LONG" and conf_cross >= c_th)
                     )
                     if is_gbdt and not is_opposite_veto:
-                        chosen_sym = 'TQQQ' if dir_gbdt == 'LONG_TQQQ' else 'SQQQ'
+                        chosen_sym = config.BASE_ASSET_LONG if dir_gbdt == "LONG" else config.BASE_ASSET_SHORT
 
                 if not chosen_sym:
                     b_idx += 1; continue
 
                 # Screen 1: 60m trend
-                past_soxx = soxx_60m[soxx_60m['datetime'] <= cur_time]
-                past_tqqq = tqqq_60m[tqqq_60m['datetime'] <= cur_time]
-                if len(past_soxx) < 20 or len(past_tqqq) < 20:
+                past_macro = macro_60m[macro_60m['datetime'] <= cur_time]
+                past_long = long_60m[long_60m['datetime'] <= cur_time]
+                if len(past_macro) < 20 or len(past_long) < 20:
                     b_idx += 1; continue
-                soxx_c = past_soxx['Close'].iloc[-1]
-                tqqq_c = past_tqqq['Close'].iloc[-1]
-                soxx_ema = past_soxx['ema20'].iloc[-1]
-                tqqq_ema = past_tqqq['ema20'].iloc[-1]
-                if chosen_sym == 'TQQQ' and not (soxx_c >= soxx_ema * 0.998 and tqqq_c >= tqqq_ema * 0.998):
+                macro_c = past_macro['Close'].iloc[-1]
+                long_c = past_long['Close'].iloc[-1]
+                macro_ema = past_macro['ema20'].iloc[-1]
+                long_ema = past_long['ema20'].iloc[-1]
+                if chosen_sym == config.BASE_ASSET_LONG and not (macro_c >= macro_ema * 0.998 and long_c >= long_ema * 0.998):
                     b_idx += 1; continue
-                elif chosen_sym == 'SQQQ' and not (soxx_c <= soxx_ema * 1.002):
+                elif chosen_sym == config.BASE_ASSET_SHORT and not (macro_c <= macro_ema * 1.002):
                     b_idx += 1; continue
 
                 # Screen 3: Dip filter
-                if chosen_sym == 'TQQQ':
+                if chosen_sym == config.BASE_ASSET_LONG:
                     vd = float(row_15.get('VWAP_Diff', 0.0))
                     r14 = float(row_15.get('RSI_14', 50.0))
                     bbl = float(row_15.get('BB_Lower', 0.0))
                     if not (vd <= 1.5 and r14 <= 62.0 and (bbl <= 0 or float(row_15['Close']) >= bbl * 1.001)):
                         b_idx += 1; continue
                 else:
-                    if cur_time not in sqqq_15m_feat.index:
+                    if cur_time not in short_15m_feat.index:
                         b_idx += 1; continue
-                    rs = sqqq_15m_feat.loc[cur_time]
+                    rs = short_15m_feat.loc[cur_time]
                     vd = float(rs.get('VWAP_Diff', 0.0))
                     r14 = float(rs.get('RSI_14', 50.0))
                     bbl = float(rs.get('BB_Lower', 0.0))
                     if not (vd <= 1.5 and r14 <= 62.0 and (bbl <= 0 or float(rs['Close']) >= bbl * 1.001)):
                         b_idx += 1; continue
 
-                base_px = float(row_15['Close']) if chosen_sym == 'TQQQ' else float(sqqq_15m_feat.loc[cur_time]['Close'])
+                base_px = float(row_15['Close']) if chosen_sym == config.BASE_ASSET_LONG else float(short_15m_feat.loc[cur_time]['Close'])
                 entry_px = round(base_px + SLIPPAGE, 2)
                 shares = int(capital / entry_px)
                 invested = shares * entry_px
                 if shares <= 0: b_idx += 1; continue
 
-                target_5m = day_5_l if chosen_sym == 'TQQQ' else day_5_s
+                target_5m = day_5_l if chosen_sym == config.BASE_ASSET_LONG else day_5_s
                 post_5m = target_5m[target_5m['datetime'] > cur_time]
                 if post_5m.empty: b_idx += 1; continue
 
@@ -269,12 +270,12 @@ def run_grid_search():
         dd = (pk - eq_arr) / pk * 100.0
         mdd = np.max(dd) if len(dd) > 0 else 0.0
 
-        tqqq_tr = [t for t in trades if t['symbol'] == 'TQQQ']
-        sqqq_tr = [t for t in trades if t['symbol'] == 'SQQQ']
-        tqqq_w = [t for t in tqqq_tr if t['ret'] > 0]
-        sqqq_w = [t for t in sqqq_tr if t['ret'] > 0]
-        tqqq_wr = (len(tqqq_w) / len(tqqq_tr) * 100) if tqqq_tr else 0.0
-        sqqq_wr = (len(sqqq_w) / len(sqqq_tr) * 100) if sqqq_tr else 0.0
+        long_tr = [t for t in trades if t['symbol'] == config.BASE_ASSET_LONG]
+        short_tr = [t for t in trades if t['symbol'] == config.BASE_ASSET_SHORT]
+        long_w = [t for t in long_tr if t['ret'] > 0]
+        short_w = [t for t in short_tr if t['ret'] > 0]
+        long_wr = (len(long_w) / len(long_tr) * 100) if long_tr else 0.0
+        short_wr = (len(short_w) / len(short_tr) * 100) if short_tr else 0.0
 
         return {
             "g_th": f"{int(g_th*100)}%",
@@ -284,10 +285,10 @@ def run_grid_search():
             "wins": len(w_tr),
             "losses": len(l_tr),
             "win_rate": wr,
-            "tqqq_trades": len(tqqq_tr),
-            "tqqq_wr": tqqq_wr,
-            "sqqq_trades": len(sqqq_tr),
-            "sqqq_wr": sqqq_wr,
+            "long_trades": len(long_tr),
+            "long_wr": long_wr,
+            "short_trades": len(short_tr),
+            "short_wr": short_wr,
             "cum_return": cum_ret,
             "profit_factor": pf,
             "mdd": mdd,
@@ -339,7 +340,7 @@ if __name__ == "__main__":
         rows_dc.append([
             m["g_th"], m["c_th"], f"{m['total_trades']}회", f"{m['trades_per_week']}회",
             f"{m['wins']}승 {m['losses']}패", f"{m['win_rate']:.1f}%",
-            f"{m['tqqq_trades']}건 ({m['tqqq_wr']:.1f}%)", f"{m['sqqq_trades']}건 ({m['sqqq_wr']:.1f}%)",
+            f"{m['long_trades']}건 ({m['long_wr']:.1f}%)", f"{m['short_trades']}건 ({m['short_wr']:.1f}%)",
             f"{m['cum_return']:+.2f}%", f"{m['profit_factor']:.2f}", f"{m['mdd']:.2f}%", f"${m['final_capital']:,.2f}"
         ])
     print(format_markdown_table(headers_diag, rows_dc, aligns_diag))
@@ -353,7 +354,7 @@ if __name__ == "__main__":
         rows_dh.append([
             m["g_th"], m["c_th"], f"{m['total_trades']}회", f"{m['trades_per_week']}회",
             f"{m['wins']}승 {m['losses']}패", f"{m['win_rate']:.1f}%",
-            f"{m['tqqq_trades']}건 ({m['tqqq_wr']:.1f}%)", f"{m['sqqq_trades']}건 ({m['sqqq_wr']:.1f}%)",
+            f"{m['long_trades']}건 ({m['long_wr']:.1f}%)", f"{m['short_trades']}건 ({m['short_wr']:.1f}%)",
             f"{m['cum_return']:+.2f}%", f"{m['profit_factor']:.2f}", f"{m['mdd']:.2f}%", f"${m['final_capital']:,.2f}"
         ])
     print(format_markdown_table(headers_diag, rows_dh, aligns_diag))

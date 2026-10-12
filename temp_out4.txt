@@ -1,0 +1,3 @@
+{"id": 1790695857187, "timestamp": "00:30:57", "datetime": "2026-09-30 00:30:57", "level": "ERROR", "source": "SellChase", "message": "매도 추격 에러: ❌ [TR_ERROR] API_ID=ust20001 | Code=20 | Msg=[2000](RC4024:모의투자 매도가능수량을 확인하세요.)", "meta": {}}
+{"id": 1790790343954, "timestamp": "02:45:43", "datetime": "2026-10-01 02:45:43", "level": "ERROR", "source": "SellChase", "message": "매도 추격 에러: ❌ [TR_ERROR] API_ID=ust20001 | Code=20 | Msg=[2000](RC4024:모의투자 매도가능수량을 확인하세요.)", "meta": {}}
+{"id": 1790790350988, "timestamp": "02:45:50", "datetime": "2026-10-01 02:45:50", "level": "ERROR", "source": "SellChase", "message": "매도 추격 에러: ❌ [TR_ERROR] API_ID=ust20001 | Code=20 | Msg=[2000](RC4024:모의투자 매도가능수량을 확인하세요.)", "meta": {}}

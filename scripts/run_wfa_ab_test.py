@@ -1,5 +1,6 @@
 import sys
 import numpy as np
+import config
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
@@ -20,50 +21,50 @@ def run_wfa_ab_test():
     print("=" * 80)
 
     lake = MarketDataLake()
-    tqqq_15m = lake.load_candles('TQQQ', '15m')
-    sqqq_15m = lake.load_candles('SQQQ', '15m')
+    long_15m = lake.load_candles(config.BASE_ASSET_LONG, '15m')
+    short_15m = lake.load_candles(config.BASE_ASSET_SHORT, '15m')
     qqq_60m = lake.load_candles('QQQ', '60m')
     nvda_15m = lake.load_candles('NVDA', '15m')
-    soxx_15m = lake.load_candles('SOXX', '15m')
+    macro_15m = lake.load_candles(config.MACRO_TREND_SYMBOL, '15m')
     qqq_15m  = lake.load_candles('QQQ', '15m')
     vixy_15m = lake.load_candles('VIXY', '15m')
     ief_15m  = lake.load_candles('IEF', '15m')
-    tqqq_5m = lake.load_candles('TQQQ', '5m')
-    sqqq_5m = lake.load_candles('SQQQ', '5m')
+    long_5m = lake.load_candles(config.BASE_ASSET_LONG, '5m')
+    short_5m = lake.load_candles(config.BASE_ASSET_SHORT, '5m')
     
     qqq_60m['ema20'] = qqq_60m['Close'].ewm(span=20, adjust=False).mean()
     qqq_60_dt = pd.to_datetime(qqq_60m['datetime'])
     qqq_60m['dt_hr'] = qqq_60_dt.dt.strftime('%Y-%m-%d %H')
     ema_map = qqq_60m.set_index('dt_hr')['ema20'].to_dict()
     
-    tqqq_5m_by_date = {}
-    for d, g in tqqq_5m.groupby(tqqq_5m['datetime'].str.slice(0, 10)):
-        tqqq_5m_by_date[d] = g.sort_values('datetime').reset_index(drop=True)
-    sqqq_5m_by_date = {}
-    for d, g in sqqq_5m.groupby(sqqq_5m['datetime'].str.slice(0, 10)):
-        sqqq_5m_by_date[d] = g.sort_values('datetime').reset_index(drop=True)
+    long_5m_by_date = {}
+    for d, g in long_5m.groupby(long_5m['datetime'].str.slice(0, 10)):
+        long_5m_by_date[d] = g.sort_values('datetime').reset_index(drop=True)
+    short_5m_by_date = {}
+    for d, g in short_5m.groupby(short_5m['datetime'].str.slice(0, 10)):
+        short_5m_by_date[d] = g.sort_values('datetime').reset_index(drop=True)
         
     ml_engine = MLFeatureEngine(confidence_threshold=0.60)
-    tqqq_feat = ml_engine.extract_features(tqqq_15m)
-    labels = ml_engine.compute_triple_barrier_labels(tqqq_feat)
-    tqqq_feat['target'] = labels.map({1: 2, -1: 0, 0: 1}).fillna(1).astype(int)
+    long_feat = ml_engine.extract_features(long_15m)
+    labels = ml_engine.compute_triple_barrier_labels(long_feat)
+    long_feat['target'] = labels.map({1: 2, -1: 0, 0: 1}).fillna(1).astype(int)
     
-    tqqq_feat['datetime_dt'] = pd.to_datetime(tqqq_feat['datetime'])
-    tqqq_feat['date_str'] = tqqq_feat['datetime_dt'].dt.strftime('%Y-%m-%d')
-    tqqq_feat['week_id'] = tqqq_feat['datetime_dt'].dt.isocalendar().year.astype(str) + '-' + tqqq_feat['datetime_dt'].dt.isocalendar().week.astype(str).str.zfill(2)
+    long_feat['datetime_dt'] = pd.to_datetime(long_feat['datetime'])
+    long_feat['date_str'] = long_feat['datetime_dt'].dt.strftime('%Y-%m-%d')
+    long_feat['week_id'] = long_feat['datetime_dt'].dt.isocalendar().year.astype(str) + '-' + long_feat['datetime_dt'].dt.isocalendar().week.astype(str).str.zfill(2)
     
     raw_price_features = {'open', 'high', 'low', 'close', 'volume', 'Open', 'High', 'Low', 'Close', 'Volume',
         'datetime', 'datetime_dt', 'date_str', 'time_str', 'week_id', 'target', 'date', 'year'}
-    feature_cols = [c for c in tqqq_feat.columns if c not in raw_price_features and pd.api.types.is_numeric_dtype(tqqq_feat[c])]
+    feature_cols = [c for c in long_feat.columns if c not in raw_price_features and pd.api.types.is_numeric_dtype(long_feat[c])]
     
     nvda_map = nvda_15m.set_index('datetime')['Close'].to_dict()
-    soxx_map = soxx_15m.set_index('datetime')['Close'].to_dict()
+    macro_map = macro_15m.set_index('datetime')['Close'].to_dict()
     qqq_map  = qqq_15m.set_index('datetime')['Close'].to_dict()
     vix_map  = vixy_15m.set_index('datetime')['Close'].to_dict()
     ief_map  = ief_15m.set_index('datetime')['Close'].to_dict()
     
     cross_mod = CrossAssetDislocationModel(dislocation_z_threshold=1.6)
-    unique_weeks = sorted(tqqq_feat['week_id'].unique())
+    unique_weeks = sorted(long_feat['week_id'].unique())
     ROLLING_WINDOW_WEEKS = 104
     
     print("▶ 1단계: 104주 롤링 WFA 추론 진행 중...")
@@ -71,9 +72,9 @@ def run_wfa_ab_test():
     for w_idx in range(ROLLING_WINDOW_WEEKS, len(unique_weeks)):
         cur_test_week = unique_weeks[w_idx]
         train_weeks = unique_weeks[w_idx - ROLLING_WINDOW_WEEKS : w_idx]
-        train_mask = tqqq_feat['week_id'].isin(train_weeks)
-        X_tr = tqqq_feat.loc[train_mask, feature_cols].fillna(0.0)
-        y_tr = tqqq_feat.loc[train_mask, 'target']
+        train_mask = long_feat['week_id'].isin(train_weeks)
+        X_tr = long_feat.loc[train_mask, feature_cols].fillna(0.0)
+        y_tr = long_feat.loc[train_mask, 'target']
 
         clf = LGBMClassifier(
             objective='multiclass', num_class=3, class_weight='balanced',
@@ -81,8 +82,8 @@ def run_wfa_ab_test():
         )
         clf.fit(X_tr, y_tr)
 
-        cur_w_mask = tqqq_feat['week_id'] == cur_test_week
-        w_test_df = tqqq_feat[cur_w_mask].copy()
+        cur_w_mask = long_feat['week_id'] == cur_test_week
+        w_test_df = long_feat[cur_w_mask].copy()
         if w_test_df.empty: continue
 
         X_te = w_test_df[feature_cols].fillna(0.0)
@@ -94,10 +95,10 @@ def run_wfa_ab_test():
             ps, pn, pl = w_probs[i, 0], w_probs[i, 1], w_probs[i, 2]
             if pl > pn and pl > ps:
                 w_confs[i] = min(0.95, max(0.50, 0.50 + (pl - 0.333) * 1.15))
-                w_dirs[i] = 'LONG_TQQQ'
+                w_dirs[i] = "LONG"
             elif ps > pn and ps > pl:
                 w_confs[i] = min(0.95, max(0.50, 0.50 + (ps - 0.333) * 1.15))
-                w_dirs[i] = 'SHORT_SQQQ'
+                w_dirs[i] = "SHORT"
 
         w_test_df['Confidence'] = w_confs
         w_test_df['Direction'] = w_dirs
@@ -116,8 +117,8 @@ def run_wfa_ab_test():
         
         for d_str in unique_dates:
             day_bars = test_df[test_df['date_str'] == d_str].reset_index(drop=True)
-            day_tqqq_5 = tqqq_5m_by_date.get(d_str, pd.DataFrame())
-            day_sqqq_5 = sqqq_5m_by_date.get(d_str, pd.DataFrame())
+            day_long_5 = long_5m_by_date.get(d_str, pd.DataFrame())
+            day_short_5 = short_5m_by_date.get(d_str, pd.DataFrame())
             
             b_idx = 0
             n_bars = len(day_bars)
@@ -140,14 +141,14 @@ def run_wfa_ab_test():
                     continue
                 
                 entry_approved = True
-                target_sym = "TQQQ" if dir_gbdt == "LONG_TQQQ" else "SQQQ"
+                target_sym = config.BASE_ASSET_LONG if dir_gbdt == "LONG" else config.BASE_ASSET_SHORT
                 
                 if use_safety_nets:
-                    cur_tqqq_close = float(row.get('Close', 1.0))
+                    cur_long_close = float(row.get('Close', 1.0))
                     
                     cross_dir = "NONE"
                     n_px = nvda_map.get(dt_str)
-                    sx_px = soxx_map.get(dt_str)
+                    sx_px = macro_map.get(dt_str)
                     q_px = qqq_map.get(dt_str)
                     v_px = vix_map.get(dt_str)
                     i_px = ief_map.get(dt_str)
@@ -164,33 +165,33 @@ def run_wfa_ab_test():
                     if n_px and sx_px and q_px:
                         prev_dt = day_bars.iloc[b_idx - 5]['datetime']
                         p_n = nvda_map.get(prev_dt, n_px)
-                        p_sx = soxx_map.get(prev_dt, sx_px)
+                        p_sx = macro_map.get(prev_dt, sx_px)
                         p_q = qqq_map.get(prev_dt, q_px)
                         p_v = vix_map.get(prev_dt, v_px) if v_px else None
                         p_i = ief_map.get(prev_dt, i_px) if i_px else None
                         
                         nvda_r = (n_px / p_n - 1.0) if p_n else 0.0
-                        soxx_r = (sx_px / p_sx - 1.0) if p_sx else 0.0
+                        macro_r = (sx_px / p_sx - 1.0) if p_sx else 0.0
                         qqq_r  = (q_px / p_q - 1.0) if p_q else 0.0
                         vix_r  = (v_px / p_v - 1.0) if (v_px and p_v) else 0.0
                         ief_r  = (i_px / p_i - 1.0) if (i_px and p_i) else 0.0
                         
-                        tqqq_r = (cur_tqqq_close / day_bars.iloc[b_idx - 5]['Close']) - 1.0
-                        sig_code, _, _ = cross_mod.predict_signal(tqqq_r, nvda_r, soxx_r, qqq_r, vix_r, -ief_r)
-                        if sig_code > 0: cross_dir = "LONG_TQQQ"
-                        elif sig_code < 0: cross_dir = "SHORT_SQQQ"
+                        long_r = (cur_long_close / day_bars.iloc[b_idx - 5]['Close']) - 1.0
+                        sig_code, _, _ = cross_mod.predict_signal(long_r, nvda_r, macro_r, qqq_r, vix_r, -ief_r)
+                        if sig_code > 0: cross_dir = "LONG"
+                        elif sig_code < 0: cross_dir = "SHORT"
                         
                     entry_approved = False
-                    if dir_gbdt == "LONG_TQQQ" and qqq_60m_bull and cross_dir != "SHORT_SQQQ":
+                    if dir_gbdt == "LONG" and qqq_60m_bull and cross_dir != "SHORT":
                         entry_approved = True
-                    elif dir_gbdt == "SHORT_SQQQ" and qqq_60m_bear and cross_dir != "LONG_TQQQ":
+                    elif dir_gbdt == "SHORT" and qqq_60m_bear and cross_dir != "LONG":
                         entry_approved = True
                         
                 if not entry_approved:
                     b_idx += 1
                     continue
                 
-                post_5m = day_tqqq_5 if target_sym == 'TQQQ' else day_sqqq_5
+                post_5m = day_long_5 if target_sym == config.BASE_ASSET_LONG else day_short_5
                 post_5m = post_5m[post_5m['datetime'].str.slice(11, 16) > entry_time]
                 if post_5m.empty:
                     b_idx += 1

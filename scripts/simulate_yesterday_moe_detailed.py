@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import sqlite3
+import config
 import pandas as pd
 import numpy as np
 from datetime import datetime
@@ -29,16 +30,16 @@ print("🔍 [직전 장(2026-08-17) MoE 메타 오케스트레이터 전수 정�
 print("=" * 80)
 
 data_lake = MarketDataLake()
-tqqq_df = data_lake.load_candles("TQQQ", "15m")
-sqqq_df = data_lake.load_candles("SQQQ", "15m")
+long_df = data_lake.load_candles(config.BASE_ASSET_LONG, "15m")
+short_df = data_lake.load_candles(config.BASE_ASSET_SHORT, "15m")
 nvda_df = data_lake.load_candles("NVDA", "15m")
 qqq_df = data_lake.load_candles("QQQ", "15m")
 vix_df = data_lake.load_candles("^VIX", "15m")
 tnx_df = data_lake.load_candles("^TNX", "15m")
 
 # Filter for yesterday (2026-08-17)
-tqqq_yest = tqqq_df[tqqq_df['datetime'].str.startswith('2026-08-17')].copy().reset_index(drop=True)
-print(f"📊 2026-08-17 TQQQ 15분봉 캔들 수: {len(tqqq_yest)}개 (09:30 ~ 15:45 NYT)")
+long_yest = long_df[long_df['datetime'].str.startswith('2026-08-17')].copy().reset_index(drop=True)
+print(f"📊 2026-08-17 TQQQ 15분봉 캔들 수: {len(long_yest)}개 (09:30 ~ 15:45 NYT)")
 
 moe = MoEMetaOrchestrator()
 sandbox = ShadowSandboxEngine()
@@ -51,8 +52,8 @@ exp_cross = CrossAssetDislocationModel()
 
 evaluations = []
 
-for idx in range(len(tqqq_yest)):
-    row = tqqq_yest.iloc[idx]
+for idx in range(len(long_yest)):
+    row = long_yest.iloc[idx]
     bar_time = row['datetime']
     time_str = bar_time.split(" ")[1][:5]
     close_px = float(row['Close'])
@@ -60,33 +61,33 @@ for idx in range(len(tqqq_yest)):
     low_px = float(row['Low'])
     
     # Sub-dataframe up to current bar for rolling lookback
-    current_tqqq_history = tqqq_df[tqqq_df['datetime'] <= bar_time].tail(60).copy()
-    current_sqqq_history = sqqq_df[sqqq_df['datetime'] <= bar_time].tail(60).copy()
+    current_long_history = long_df[long_df['datetime'] <= bar_time].tail(60).copy()
+    current_short_history = short_df[short_df['datetime'] <= bar_time].tail(60).copy()
     current_nvda_history = nvda_df[nvda_df['datetime'] <= bar_time].tail(60).copy()
     current_qqq_history = qqq_df[qqq_df['datetime'] <= bar_time].tail(60).copy()
     
     # 1. 5대 개별 전문가 확신도 산출
     try:
-        cvd_df = exp_orderflow.compute_cvd(current_tqqq_history)
+        cvd_df = exp_orderflow.compute_cvd(current_long_history)
         _, conf_order_raw, _ = exp_orderflow.predict_signal(cvd_df.iloc[-1])
         conf_order = float(conf_order_raw) * 100
     except Exception:
         conf_order = 52.0
 
     try:
-        _, conf_tda_raw, _ = exp_tda.predict_signal(current_tqqq_history)
+        _, conf_tda_raw, _ = exp_tda.predict_signal(current_long_history)
         conf_tda = float(conf_tda_raw) * 100
     except Exception:
         conf_tda = 50.0
 
     try:
-        _, conf_state_raw, _ = exp_statespace.predict_signal(current_tqqq_history['Close'].values)
+        _, conf_state_raw, _ = exp_statespace.predict_signal(current_long_history['Close'].values)
         conf_state = float(conf_state_raw) * 100
     except Exception:
         conf_state = 54.0
 
     try:
-        _, conf_cross_raw, _ = exp_cross.predict_signal(current_tqqq_history, current_nvda_history, current_qqq_history)
+        _, conf_cross_raw, _ = exp_cross.predict_signal(current_long_history, current_nvda_history, current_qqq_history)
         conf_cross = float(conf_cross_raw) * 100
     except Exception:
         conf_cross = 56.0
@@ -95,7 +96,7 @@ for idx in range(len(tqqq_yest)):
     conf_gbdt = round(52.0 + (float(np.sin(idx * 0.45)) * 6.0), 1)
     
     # 2. MoE Gating Evaluation
-    moe_res = moe.evaluate_dual_filter_signal(current_tqqq_history)
+    moe_res = moe.evaluate_dual_filter_signal(current_long_history)
     top_expert = moe_res.get("expert_desc", "오더플로우 CVD 수급")
     gating_weight = float(moe_res.get("gating_weight", 0.25)) * 100
     expert_conf = float(moe_res.get("expert_confidence", 0.55)) * 100
@@ -120,7 +121,7 @@ for idx in range(len(tqqq_yest)):
             rejection_reason = "⚠️ 2중 게이팅 필터 불일치"
 
     # 4. What-If Forward Simulation (만약 그때 샀다면 사후 6개 봉 결과)
-    future_candles = tqqq_yest.iloc[idx+1 : idx+7]
+    future_candles = long_yest.iloc[idx+1 : idx+7]
     tp_target = close_px * 1.035
     sl_target = close_px * 0.980
     
@@ -238,7 +239,7 @@ with sandbox._get_connection() as conn:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
             """, (
                 sig_id, r['datetime'], "2026-08-17", "M-MOE-ORCHESTRATOR",
-                "Track 6: MoE AI 메타 오케스트레이터", r['top_expert'], "TQQQ",
+                "Track 6: MoE AI 메타 오케스트레이터", r['top_expert'], config.BASE_ASSET_LONG,
                 r['price'], r['expert_conf'], 60.0, r['rejection_reason'],
                 r['hypo_exit_px'], r['hypo_pnl_pct'], pnl_k,
                 r['hypo_exit_reason'], r['hypo_verdict'], 6

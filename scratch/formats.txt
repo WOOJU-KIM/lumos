@@ -1,0 +1,14 @@
+=== Briefing ===
+🤖 <b>[Lumos AI 정기 브리핑]</b>
+⏰ 시간: {ny_dt.strftime('%H:%M')} (뉴욕시간)
+⏰ 시간: {now_dt.strftime('%H:%M')} (한국시간)
+🧭 AI 판독 방향: {dir_str}
+🎯 진입 임계값: {config.GBDT_CONFIDENCE_THRESHOLD * 100:.1f}%
+📈 롱(TQQQ) 확률: {p_long:.1f}%
+📉 숏(SQQQ) 확률: {p_short:.1f}%
+⏸ 관망 확률: {p_none:.1f}%
+🔥 최종 GBDT 확신도: {conf:.1f}%
+🚦 상태: {'진입 승인 🟢' if is_appr else '관망 유지 🟡'}
+
+
+=== Notifier Messages ===

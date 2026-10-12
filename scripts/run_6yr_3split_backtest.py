@@ -7,6 +7,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, Any, List, Tuple
 import requests
+import config
 import pandas as pd
 import numpy as np
 import lightgbm as lgb
@@ -36,7 +37,7 @@ HEADERS = {
     "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY
 }
 
-SYMBOLS = ["TQQQ", "SQQQ", "SOXX", "QQQ", "NVDA", "VIXY", "IEF"]
+SYMBOLS = [config.BASE_ASSET_LONG, config.BASE_ASSET_SHORT, config.MACRO_TREND_SYMBOL, "QQQ", "NVDA", "VIXY", "IEF"]
 
 def fetch_alpaca_bars(symbol: str, start_iso: str, end_iso: str, timeframe: str = "15Min") -> pd.DataFrame:
     """Alpaca IEX API로부터 지정 기간 15분봉 전량 수집 (페이징 지원)"""
@@ -165,11 +166,11 @@ def step2_train_recent_model():
     print("🧠 [2단계] 최근 2년치(2024.09.15 ~ 2026.09.14) 실전 모델 학습 시작 (앞으로 실전에 쓸 최신 모델)")
     print("=" * 100)
     
-    tqqq_15m = lake.load_candles("TQQQ", "15m", start_dt="2024-09-15", end_dt="2026-09-14 16:00:00")
-    print(f"📊 최근 2년 TQQQ 15분봉 데이터: {len(tqqq_15m):,}개 봉")
+    long_15m = lake.load_candles(config.BASE_ASSET_LONG, "15m", start_dt="2024-09-15", end_dt="2026-09-14 16:00:00")
+    print(f"📊 최근 2년 TQQQ 15분봉 데이터: {len(long_15m):,}개 봉")
     
     ml_engine = MLFeatureEngine(confidence_threshold=0.60)
-    df_feat = ml_engine.extract_features(tqqq_15m)
+    df_feat = ml_engine.extract_features(long_15m)
     
     # 모델 학습 및 Top 피처 선별
     model, top_10, top_3 = ml_engine.train_and_select_top_features(df_feat)
@@ -189,35 +190,35 @@ def step3_run_6yr_simulation(ml_engine: MLFeatureEngine):
     print("🚀 [3단계] 6개년(2020.09 ~ 2026.09, 73개월) 백테스트 시뮬레이션 가동 (시작원금: 10,000,000원)")
     print("=" * 100)
     
-    tqqq_15m = lake.load_candles("TQQQ", "15m")
-    sqqq_15m = lake.load_candles("SQQQ", "15m")
-    soxx_60m = lake.load_candles("SOXX", "60m")
+    long_15m = lake.load_candles(config.BASE_ASSET_LONG, "15m")
+    short_15m = lake.load_candles(config.BASE_ASSET_SHORT, "15m")
+    macro_60m = lake.load_candles(config.MACRO_TREND_SYMBOL, "60m")
     nvda_15m = lake.load_candles("NVDA", "15m")
-    soxx_15m = lake.load_candles("SOXX", "15m")
+    macro_15m = lake.load_candles(config.MACRO_TREND_SYMBOL, "15m")
     qqq_15m  = lake.load_candles("QQQ", "15m")
     vixy_15m = lake.load_candles("VIXY", "15m")
     ief_15m  = lake.load_candles("IEF", "15m")
     
-    soxx_60m['ema20'] = soxx_60m['Close'].ewm(span=20, adjust=False).mean()
+    macro_60m['ema20'] = macro_60m['Close'].ewm(span=20, adjust=False).mean()
     
     # 피처 추출 및 GBDT 확신도 산출 (최근 2년 학습 모델 적용)
-    tqqq_feat = ml_engine.extract_features(tqqq_15m)
-    tqqq_feat = ml_engine.add_confidence_columns(tqqq_feat)
+    long_feat = ml_engine.extract_features(long_15m)
+    long_feat = ml_engine.add_confidence_columns(long_feat)
     
     nvda_map = nvda_15m.set_index('datetime')['Close'].to_dict()
-    soxx_map = soxx_15m.set_index('datetime')['Close'].to_dict()
+    macro_map = macro_15m.set_index('datetime')['Close'].to_dict()
     qqq_map  = qqq_15m.set_index('datetime')['Close'].to_dict()
     vix_map  = vixy_15m.set_index('datetime')['Close'].to_dict()
     ief_map  = ief_15m.set_index('datetime')['Close'].to_dict()
     
-    sqqq_15m_dict = sqqq_15m.set_index('datetime').to_dict(orient='index')
+    short_15m_dict = short_15m.set_index('datetime').to_dict(orient='index')
     
     cross_mod = CrossAssetDislocationModel(dislocation_z_threshold=1.6)
     
-    tqqq_feat['date_str'] = pd.to_datetime(tqqq_feat['datetime']).dt.strftime('%Y-%m-%d')
-    tqqq_feat['time_str'] = pd.to_datetime(tqqq_feat['datetime']).dt.strftime('%H:%M')
+    long_feat['date_str'] = pd.to_datetime(long_feat['datetime']).dt.strftime('%Y-%m-%d')
+    long_feat['time_str'] = pd.to_datetime(long_feat['datetime']).dt.strftime('%H:%M')
     
-    unique_dates = sorted(tqqq_feat['date_str'].unique())
+    unique_dates = sorted(long_feat['date_str'].unique())
     print(f"📅 총 거래일수: {len(unique_dates)}일 ({unique_dates[0]} ~ {unique_dates[-1]})")
     
     initial_capital = 10_000_000.0
@@ -231,28 +232,28 @@ def step3_run_6yr_simulation(ml_engine: MLFeatureEngine):
     slippage_rate = 0.0020
     
     for dt_day in unique_dates:
-        day_bars = tqqq_feat[tqqq_feat['date_str'] == dt_day]
+        day_bars = long_feat[long_feat['date_str'] == dt_day]
         
         for idx, row in day_bars.iterrows():
             curr_dt = row['datetime']
             time_str = row['time_str']
-            cur_tqqq_close = float(row['Close'])
-            cur_tqqq_high = float(row['High'])
-            cur_tqqq_low = float(row['Low'])
+            cur_long_close = float(row['Close'])
+            cur_long_high = float(row['High'])
+            cur_long_low = float(row['Low'])
             
-            sqqq_row = sqqq_15m_dict.get(curr_dt)
-            cur_sqqq_close = float(sqqq_row['Close']) if sqqq_row else 0.0
-            cur_sqqq_high = float(sqqq_row['High']) if sqqq_row else 0.0
-            cur_sqqq_low = float(sqqq_row['Low']) if sqqq_row else 0.0
+            short_row = short_15m_dict.get(curr_dt)
+            cur_short_close = float(short_row['Close']) if short_row else 0.0
+            cur_short_high = float(short_row['High']) if short_row else 0.0
+            cur_short_low = float(short_row['Low']) if short_row else 0.0
             
             # 1. 포지션 보유 중인 경우 청산 검사
             if active_pos is not None:
                 active_pos['bars'] += 1
                 sym = active_pos['sym']
                 entry_px = active_pos['entry_px']
-                cur_close = cur_tqqq_close if sym == 'TQQQ' else cur_sqqq_close
-                cur_high = cur_tqqq_high if sym == 'TQQQ' else cur_sqqq_high
-                cur_low = cur_tqqq_low if sym == 'TQQQ' else cur_sqqq_low
+                cur_close = cur_long_close if sym == config.BASE_ASSET_LONG else cur_short_close
+                cur_high = cur_long_high if sym == config.BASE_ASSET_LONG else cur_short_high
+                cur_low = cur_long_low if sym == config.BASE_ASSET_LONG else cur_short_low
                 
                 exit_price = None
                 exit_reason = None
@@ -308,20 +309,20 @@ def step3_run_6yr_simulation(ml_engine: MLFeatureEngine):
                     
             # 2. 포지션 미보유 시 신규 진입 검토
             if active_pos is None and time_str < '14:30':
-                past_soxx_60 = soxx_60m[soxx_60m['datetime'] <= curr_dt]
-                soxx_60m_bull = True
-                soxx_60m_bear = True
-                if len(past_soxx_60) >= 20:
-                    soxx_c = past_soxx_60['Close'].iloc[-1]
-                    soxx_ema20 = past_soxx_60['ema20'].iloc[-1]
-                    soxx_60m_bull = (soxx_c >= soxx_ema20 * 0.998)
-                    soxx_60m_bear = (soxx_c <= soxx_ema20 * 1.002)
+                past_macro_60 = macro_60m[macro_60m['datetime'] <= curr_dt]
+                macro_60m_bull = True
+                macro_60m_bear = True
+                if len(past_macro_60) >= 20:
+                    macro_c = past_macro_60['Close'].iloc[-1]
+                    macro_ema20 = past_macro_60['ema20'].iloc[-1]
+                    macro_60m_bull = (macro_c >= macro_ema20 * 0.998)
+                    macro_60m_bear = (macro_c <= macro_ema20 * 1.002)
                     
                 dir_gbdt = row.get('Direction', 'NONE')
                 conf_gbdt = float(row.get('Confidence', 0.50))
                 
                 n_px = nvda_map.get(curr_dt)
-                sx_px = soxx_map.get(curr_dt)
+                sx_px = macro_map.get(curr_dt)
                 q_px = qqq_map.get(curr_dt)
                 v_px = vix_map.get(curr_dt)
                 i_px = ief_map.get(curr_dt)
@@ -331,44 +332,44 @@ def step3_run_6yr_simulation(ml_engine: MLFeatureEngine):
                 if cur_bar_idx >= 5 and n_px and sx_px and q_px:
                     prev_dt = day_bars.iloc[cur_bar_idx - 5]['datetime']
                     p_n = nvda_map.get(prev_dt, n_px)
-                    p_sx = soxx_map.get(prev_dt, sx_px)
+                    p_sx = macro_map.get(prev_dt, sx_px)
                     p_q = qqq_map.get(prev_dt, q_px)
                     p_v = vix_map.get(prev_dt, v_px) if v_px else None
                     p_i = ief_map.get(prev_dt, i_px) if i_px else None
                     
                     nvda_r = (n_px / p_n - 1.0) if p_n else 0.0
-                    soxx_r = (sx_px / p_sx - 1.0) if p_sx else 0.0
+                    macro_r = (sx_px / p_sx - 1.0) if p_sx else 0.0
                     qqq_r  = (q_px / p_q - 1.0) if p_q else 0.0
                     vix_r  = (v_px / p_v - 1.0) if (v_px and p_v) else 0.0
                     ief_r  = (i_px / p_i - 1.0) if (i_px and p_i) else 0.0
                     tnx_proxy_ret = -ief_r
                     
-                    tqqq_r = (cur_tqqq_close / day_bars.iloc[cur_bar_idx - 5]['Close']) - 1.0
+                    long_r = (cur_long_close / day_bars.iloc[cur_bar_idx - 5]['Close']) - 1.0
                     sig_code, _, _ = cross_mod.predict_signal(
-                        tqqq_ret=tqqq_r,
+                        long_ret=long_r,
                         nvda_ret=nvda_r,
-                        soxx_ret=soxx_r,
+                        macro_ret=macro_r,
                         qqq_ret=qqq_r,
                         vix_ret=vix_r,
                         tnx_ret=tnx_proxy_ret
                     )
                     if sig_code > 0:
-                        cross_dir = "LONG_TQQQ"
+                        cross_dir = "LONG"
                     elif sig_code < 0:
-                        cross_dir = "SHORT_SQQQ"
+                        cross_dir = "SHORT"
                         
-                if dir_gbdt == "LONG_TQQQ" and conf_gbdt >= 0.60 and soxx_60m_bull and cross_dir != "SHORT_SQQQ":
+                if dir_gbdt == "LONG" and conf_gbdt >= 0.60 and macro_60m_bull and cross_dir != "SHORT":
                     active_pos = {
-                        'sym': 'TQQQ',
-                        'entry_px': cur_tqqq_close,
+                        'sym': config.BASE_ASSET_LONG,
+                        'entry_px': cur_long_close,
                         'entry_dt': curr_dt,
                         'bars': 0
                     }
-                elif dir_gbdt == "SHORT_SQQQ" and conf_gbdt >= 0.60 and soxx_60m_bear and cross_dir != "LONG_TQQQ":
-                    if cur_sqqq_close > 0:
+                elif dir_gbdt == "SHORT" and conf_gbdt >= 0.60 and macro_60m_bear and cross_dir != "LONG":
+                    if cur_short_close > 0:
                         active_pos = {
-                            'sym': 'SQQQ',
-                            'entry_px': cur_sqqq_close,
+                            'sym': config.BASE_ASSET_SHORT,
+                            'entry_px': cur_short_close,
                             'entry_dt': curr_dt,
                             'bars': 0
                         }
@@ -399,7 +400,7 @@ def step4_generate_3split_tables(trades: List[Dict[str, Any]], initial_capital: 
         if sub_df.empty:
             return {
                 'trades': 0, 'win_rate': 0.0, 'pf': 0.0, 'pnl': 0, 'ret_pct': 0.0, 'end_cap': int(start_cap),
-                'tqqq_trades': 0, 'sqqq_trades': 0
+                'long_trades': 0, 'short_trades': 0
             }
         wins = sub_df[sub_df['net_ret_pct'] > 0]
         losses = sub_df[sub_df['net_ret_pct'] <= 0]
@@ -417,8 +418,8 @@ def step4_generate_3split_tables(trades: List[Dict[str, Any]], initial_capital: 
             'pnl': int(tot_pnl),
             'ret_pct': round(ret_pct, 1),
             'end_cap': int(end_cap),
-            'tqqq_trades': len(sub_df[sub_df['symbol'] == 'TQQQ']),
-            'sqqq_trades': len(sub_df[sub_df['symbol'] == 'SQQQ'])
+            'long_trades': len(sub_df[sub_df['symbol'] == config.BASE_ASSET_LONG]),
+            'short_trades': len(sub_df[sub_df['symbol'] == config.BASE_ASSET_SHORT])
         }
         
     p1_stats = calc_stats(df_p1, initial_capital)
@@ -443,8 +444,8 @@ def step4_generate_3split_tables(trades: List[Dict[str, Any]], initial_capital: 
             'trades': int(st['trades']),
             'win_rate': float(st['win_rate']),
             'pf': float(st['pf']),
-            'tqqq_cnt': int(st['tqqq_trades']),
-            'sqqq_cnt': int(st['sqqq_trades'])
+            'long_cnt': int(st['long_trades']),
+            'short_cnt': int(st['short_trades'])
         })
         y_start_cap = st['end_cap']
         
@@ -464,8 +465,8 @@ def step4_generate_3split_tables(trades: List[Dict[str, Any]], initial_capital: 
             'trades': int(st['trades']),
             'win_rate': float(st['win_rate']),
             'pf': float(st['pf']),
-            'tqqq_cnt': int(st['tqqq_trades']),
-            'sqqq_cnt': int(st['sqqq_trades'])
+            'long_cnt': int(st['long_trades']),
+            'short_cnt': int(st['short_trades'])
         })
         m_start_cap = st['end_cap']
         
@@ -491,7 +492,7 @@ def step4_generate_3split_tables(trades: List[Dict[str, Any]], initial_capital: 
     print(f"{'기말 잔고':<16} | {p1_stats['end_cap']:>15,}원{'':<10} | {p2_stats['end_cap']:>15,}원{'':<10} | {p3_stats['end_cap']:>15,}원{'':<10}")
     print(f"{'구간 손익':<16} | {p1_stats['pnl']:>+15,}원{'':<10} | {p2_stats['pnl']:>+15,}원{'':<10} | {p3_stats['pnl']:>+15,}원{'':<10}")
     print(f"{'구간 수익률':<16} | {p1_stats['ret_pct']:>+14.1f}%{'':<11} | {p2_stats['ret_pct']:>+14.1f}%{'':<11} | {p3_stats['ret_pct']:>+14.1f}%{'':<11}")
-    print(f"{'거래수 (L/S)':<16} | {p1_stats['trades']}회 (L:{p1_stats['tqqq_trades']}/S:{p1_stats['sqqq_trades']}){'':<10} | {p2_stats['trades']}회 (L:{p2_stats['tqqq_trades']}/S:{p2_stats['sqqq_trades']}){'':<10} | {p3_stats['trades']}회 (L:{p3_stats['tqqq_trades']}/S:{p3_stats['sqqq_trades']}){'':<10}")
+    print(f"{'거래수 (L/S)':<16} | {p1_stats['trades']}회 (L:{p1_stats['long_trades']}/S:{p1_stats['short_trades']}){'':<10} | {p2_stats['trades']}회 (L:{p2_stats['long_trades']}/S:{p2_stats['short_trades']}){'':<10} | {p3_stats['trades']}회 (L:{p3_stats['long_trades']}/S:{p3_stats['short_trades']}){'':<10}")
     print(f"{'승률 (Win Rate)':<16} | {p1_stats['win_rate']:>14.1f}%{'':<11} | {p2_stats['win_rate']:>14.1f}%{'':<11} | {p3_stats['win_rate']:>14.1f}%{'':<11}")
     print(f"{'손익비 (PF)':<16} | {p1_stats['pf']:>14.2f}{'':<12} | {p2_stats['pf']:>14.2f}{'':<12} | {p3_stats['pf']:>14.2f}{'':<12}")
     print("=" * 115)
@@ -502,7 +503,7 @@ def step4_generate_3split_tables(trades: List[Dict[str, Any]], initial_capital: 
     print(f"{'년도':<6} | {'시작 잔고':<16} | {'기말 잔고':<16} | {'연간 손익':<16} | {'수익률':<9} | {'거래수':<6} | {'승률':<7} | {'PF':<6} | {'TQQQ/SQQQ':<10}")
     print("-" * 115)
     for r in yearly_rows:
-        print(f"{r['year']:<6} | {r['start_cap']:>14,}원 | {r['end_cap']:>14,}원 | {r['pnl']:>+14,}원 | {r['ret_pct']:>+7.1f}% | {r['trades']:>4}회 | {r['win_rate']:>5.1f}% | {r['pf']:>5.2f} | {r['tqqq_cnt']:>2}/{r['sqqq_cnt']:<2}회")
+        print(f"{r['year']:<6} | {r['start_cap']:>14,}원 | {r['end_cap']:>14,}원 | {r['pnl']:>+14,}원 | {r['ret_pct']:>+7.1f}% | {r['trades']:>4}회 | {r['win_rate']:>5.1f}% | {r['pf']:>5.2f} | {r['long_cnt']:>2}/{r['short_cnt']:<2}회")
     print("=" * 115)
 
     print("\n" + "=" * 115)
@@ -511,7 +512,7 @@ def step4_generate_3split_tables(trades: List[Dict[str, Any]], initial_capital: 
     print(f"{'연월':<7} | {'시작 잔고':<16} | {'기말 잔고':<16} | {'월간 손익':<16} | {'수익률':<9} | {'거래수':<6} | {'승률':<7} | {'PF':<6} | {'TQQQ/SQQQ':<10}")
     print("-" * 115)
     for r in monthly_rows:
-        print(f"{r['month']:<7} | {r['start_cap']:>14,}원 | {r['end_cap']:>14,}원 | {r['pnl']:>+14,}원 | {r['ret_pct']:>+7.2f}% | {r['trades']:>4}회 | {r['win_rate']:>5.1f}% | {r['pf']:>5.2f} | {r['tqqq_cnt']:>2}/{r['sqqq_cnt']:<2}회")
+        print(f"{r['month']:<7} | {r['start_cap']:>14,}원 | {r['end_cap']:>14,}원 | {r['pnl']:>+14,}원 | {r['ret_pct']:>+7.2f}% | {r['trades']:>4}회 | {r['win_rate']:>5.1f}% | {r['pf']:>5.2f} | {r['long_cnt']:>2}/{r['short_cnt']:<2}회")
     print("=" * 115)
     
     # 파일 저장

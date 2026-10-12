@@ -11,6 +11,14 @@ from sklearn.ensemble import RandomForestClassifier
 
 warnings.filterwarnings('ignore')
 
+
+def _safe_merge_asof(df_left: pd.DataFrame, df_right: pd.DataFrame, on='datetime_dt', direction='backward') -> pd.DataFrame:
+    """Overlapping columns drop & merge_asof utility"""
+    cols_to_drop = [c for c in df_right.columns if c in df_left.columns and c != on]
+    if cols_to_drop:
+        df_left = df_left.drop(columns=cols_to_drop)
+    return pd.merge_asof(df_left.sort_values(on), df_right.sort_values(on), on=on, direction=direction)
+
 class MLFeatureEngine:
     """
     [머신러닝 기반 종합 피처 엔지니어링 및 60% 확신도 선별 엔진]
@@ -33,7 +41,7 @@ class MLFeatureEngine:
         """디스크에 저장된 최신 GBDT 3-Class 모델 자동 로드"""
         import joblib
         from pathlib import Path
-        for fname in ["model_main_data_refresh.pkl", "model_champion.pkl", "model_moe_orchestrator.pkl"]:
+        for fname in ["model_champion.pkl", "model_moe_orchestrator.pkl", "model_main_data_refresh.pkl"]:
             p = Path(__file__).resolve().parent.parent / "models" / fname
             if p.exists():
                 try:
@@ -56,8 +64,9 @@ class MLFeatureEngine:
                         self.top_10_features = []
                         self.top_3_features = []
                         break
-                except Exception:
-                    pass
+                except Exception as e:
+                    import logging
+                    logging.getLogger('Lumos').error(f"❌ [모델 로드 에러] {fname} 로드 실패: {e}")
 
     def extract_features(self, df: pd.DataFrame, live_prices: dict = None) -> pd.DataFrame:
         """15분봉 시세 데이터로부터 종합 피처 풀 자동 생성 (대소문자 정규화 및 데이터 부족 방어)"""
@@ -223,13 +232,10 @@ class MLFeatureEngine:
                 soxx_60m['macro_price_vs_ema20'] = (soxx_60m['Close'] - soxx_60m['ema20']) / (soxx_60m['ema20'] + 1e-9) * 100.0
                 soxx_feat = soxx_60m[['datetime', 'macro_trend_spread', 'macro_ema20_slope', 'macro_price_vs_ema20']].copy()
                 soxx_feat['datetime_dt'] = pd.to_datetime(soxx_feat['datetime']) + pd.Timedelta(minutes=60)
-                
-                df = pd.merge_asof(df.sort_values('datetime_dt'), 
-                                   soxx_feat.sort_values('datetime_dt').drop(columns=['datetime']), 
-                                   on='datetime_dt', direction='backward')
+                df = _safe_merge_asof(df, soxx_feat.drop(columns=['datetime']), on='datetime_dt', direction='backward')
 
             # V4 크로스에셋 종목 (15분봉)
-            for sym in ['NVDA', 'QQQ', 'VIXY', 'IEF']:
+            for sym in [config.BASE_ASSET_SHORT, 'NVDA', 'QQQ', 'VIXY', 'IEF']:
                 lp = live_prices.get(sym, 0.0) if live_prices else 0.0
                 if lp > 0:
                     sym_raw = lake.get_candles_with_live_tick(sym, "15m", live_price=lp)
@@ -237,22 +243,20 @@ class MLFeatureEngine:
                     sym_raw = lake.load_candles(sym, "15m")
                 if not sym_raw.empty:
                     sym_raw['datetime_dt'] = pd.to_datetime(sym_raw['datetime']) + pd.Timedelta(minutes=15)
-                    lower_sym = sym.lower()
+                    lower_sym = 'base_short' if sym == config.BASE_ASSET_SHORT else sym.lower()
                     for p in [1, 3, 5, 20]:
                         sym_raw[f'{lower_sym}_ret_{p}'] = sym_raw['Close'].pct_change(p) * 100.0
                     sym_raw[f'{lower_sym}_dir_1'] = np.sign(sym_raw['Close'].pct_change(1))
                     sym_raw[f'{lower_sym}_momentum'] = sym_raw['Close'].pct_change(1) - sym_raw['Close'].pct_change(5) / 5.0
                     
                     cols_to_merge = ['datetime_dt'] + [c for c in sym_raw.columns if c.startswith(lower_sym)]
-                    df = pd.merge_asof(df.sort_values('datetime_dt'), 
-                                       sym_raw[cols_to_merge].sort_values('datetime_dt'), 
-                                       on='datetime_dt', direction='backward')
+                    df = _safe_merge_asof(df, sym_raw[cols_to_merge], on='datetime_dt', direction='backward')
                     
             # 패닉 시그널 및 상대 강도 파생 변수
-            df['tqqq_ret_20'] = df['Close'].pct_change(20) * 100.0
-            df['tqqq_ret_5'] = df['Close'].pct_change(5) * 100.0
-            df['tqqq_vs_qqq_20'] = df['tqqq_ret_20'] - df.get('qqq_ret_20', pd.Series(0.0, index=df.index)).fillna(0)
-            df['tqqq_vs_qqq_5'] = df['tqqq_ret_5'] - df.get('qqq_ret_5', pd.Series(0.0, index=df.index)).fillna(0)
+            df['base_long_ret_20'] = df['Close'].pct_change(20) * 100.0
+            df['base_long_ret_5'] = df['Close'].pct_change(5) * 100.0
+            df['base_long_vs_qqq_20'] = df['base_long_ret_20'] - df.get('qqq_ret_20', pd.Series(0.0, index=df.index)).fillna(0)
+            df['base_long_vs_qqq_5'] = df['base_long_ret_5'] - df.get('qqq_ret_5', pd.Series(0.0, index=df.index)).fillna(0)
             df['panic_signal'] = (
                 (df.get('vixy_ret_1', pd.Series(0.0, index=df.index)).fillna(0) > 0).astype(int) + 
                 (df.get('ief_ret_1', pd.Series(0.0, index=df.index)).fillna(0) > 0).astype(int)
@@ -274,7 +278,7 @@ class MLFeatureEngine:
     @staticmethod
     def compute_triple_barrier_labels(
         df: pd.DataFrame,
-        take_profit: float = config.MAX_TP_PCT,
+        take_profit: float = getattr(config, "LABEL_TP_PCT", config.MAX_TP_PCT),
         stop_loss: float = config.SL_MIN_PCT,
         horizon: int = int(config.TIME_STOP_MINUTES / 15)
     ) -> pd.Series:
@@ -299,48 +303,106 @@ class MLFeatureEngine:
                 continue
 
             assigned = False
+
+
+            long_alive = True
+
+
+            short_alive = True
+
+
             for j in range(i + 1, end_idx):
+
+
                 h_ret = (highs[j] - p0) / p0
+
+
                 l_ret = (lows[j] - p0) / p0
 
-                # 롱 배리어 (+3.0% TP vs -2.0% SL)
-                hit_long_tp = (h_ret >= take_profit)
-                hit_long_sl = (l_ret <= -stop_loss)
 
-                # 숏 배리어 (-3.0% TP for short vs +2.0% SL for short)
-                hit_short_tp = (l_ret <= -take_profit)
-                hit_short_sl = (h_ret >= stop_loss)
 
-                if hit_long_tp and not hit_long_sl:
-                    labels[i] = 1   # TQQQ 롱 승리
+                if h_ret >= stop_loss:
+
+
+                    short_alive = False
+
+
+                if l_ret <= -stop_loss:
+
+
+                    long_alive = False
+    
+
+
+                if long_alive and h_ret >= take_profit:
+
+
+                    labels[i] = 1
+
+
                     assigned = True
+
+
                     break
-                elif hit_short_tp and not hit_short_sl:
-                    labels[i] = -1  # SQQQ 숏 승리
+
+
+                elif short_alive and l_ret <= -take_profit:
+
+
+                    labels[i] = -1
+
+
                     assigned = True
+
+
                     break
-                elif (hit_long_sl and hit_short_sl) or (hit_long_tp and hit_long_sl) or (hit_short_tp and hit_short_sl):
-                    labels[i] = 0   # 동시 급변동 노이즈
+
+
+                elif not long_alive and not short_alive:
+
+
+                    labels[i] = 0
+
+
                     assigned = True
+
+
                     break
+
+
 
             if not assigned:
+
+
                 labels[i] = 0
 
         return pd.Series(labels, index=df.index, name="Target")
+
+
+    @staticmethod
+    def get_feature_columns(df: pd.DataFrame) -> list:
+        exclude_cols = {
+            'open', 'high', 'low', 'close', 'volume', 
+            'Open', 'High', 'Low', 'Close', 'Volume',
+            'datetime', 'datetime_dt', 'date_str', 'time_str', 'date', 'Datetime',
+            'week_id', 'target', 'Target',
+            'cum_vp', 'vwap', 'EMA_9', 'EMA_21', 'EMA_50', 'EMA_200',
+            'Confidence', 'Signal', 'Direction', 'Prob_Long', 'Prob_Short', 'Prob_Neutral', 'cross_dir'
+        }
+        return [c for c in df.columns if c not in exclude_cols and not str(c).startswith('week_') and pd.api.types.is_numeric_dtype(df[c])]
 
     def train_and_select_top_features(self, df_15m: pd.DataFrame, live_experience_df: Optional[pd.DataFrame] = None) -> Tuple[Any, List[str], List[str]]:
         """3-Class Triple Barrier 기반 LightGBM 다중 분류 모델 학습 및 상위 10대 피처 선별 (실시간 실전 로그 자동 병합 및 가중치 반영)"""
         feat_df = self.extract_features(df_15m)
 
         import pandas as pd
-        feature_cols = [c for c in feat_df.columns if c not in ['datetime', 'Open', 'High', 'Low', 'Close', 'Volume', 'Target', 'cum_vp', 'vwap', 'EMA_9', 'EMA_21', 'EMA_50', 'EMA_200'] and not c.startswith('week_') and pd.api.types.is_numeric_dtype(feat_df[c])]
+        feature_cols = self.get_feature_columns(feat_df)
 
         feat_df['Target'] = self.compute_triple_barrier_labels(
             feat_df,
-            take_profit=0.030,
+            take_profit=getattr(config, "LABEL_TP_PCT", config.MAX_TP_PCT),
             stop_loss=config.SL_MIN_PCT,
-            horizon=6
+            horizon=int(config.TIME_STOP_MINUTES / 15)
         )
 
         clean_data = feat_df[feature_cols + ['Target']].dropna()
@@ -396,12 +458,12 @@ class MLFeatureEngine:
                 except Exception:
                     continue
 
-                sym = str(row.get("symbol", "TQQQ")).upper()
+                sym = str(row.get("symbol", "SOXL")).upper()
                 reason = str(row.get("exit_reason", "")).upper()
                 pnl = float(row.get("pnl_pct", 0.0))
 
                 # 라벨 결정: 2(Long TP), 0(Short TP), 1(중립/타임스탑)
-                if sym == "TQQQ":
+                if sym in ["TQQQ", "SOXL", "UPRO"]:
                     tgt = 2 if ("TP" in reason or pnl >= 2.0) else (0 if ("SL" in reason or pnl <= -1.5) else 1)
                 else:
                     tgt = 0 if ("TP" in reason or pnl >= 2.0) else (2 if ("SL" in reason or pnl <= -1.5) else 1)
@@ -426,22 +488,22 @@ class MLFeatureEngine:
                 num_class=3,
                 class_weight='balanced',
                 n_estimators=config.GBDT_N_ESTIMATORS,
-                max_depth=4,
+                max_depth=config.GBDT_MAX_DEPTH,
                 learning_rate=config.GBDT_LEARNING_RATE,
                 random_state=42,
-                verbosity=-1
+                verbosity=-1,
+                subsample=config.GBDT_FEATURE_FRACTION,
+                colsample_bytree=config.GBDT_FEATURE_FRACTION,
+                subsample_freq=1,
+                deterministic=True,
+                force_col_wise=True
             )
             model.fit(X, y, sample_weight=sample_weights)
             importances = model.feature_importances_
-        except Exception:
-            model = RandomForestClassifier(
-                n_estimators=config.GBDT_N_ESTIMATORS,
-                max_depth=5,
-                class_weight='balanced',
-                random_state=42
-            )
-            model.fit(X, y, sample_weight=sample_weights)
-            importances = model.feature_importances_
+        except Exception as e:
+            import logging
+            logging.getLogger('Lumos').error(f"❌ [LGBM 학습 실패] {e}")
+            raise
 
         self.model = model
         self.feature_names = feature_cols
@@ -484,9 +546,9 @@ class MLFeatureEngine:
                 ps, pn, pl = prob_short[idx], prob_neutral[idx], prob_long[idx]
                 
                 # 모든 방향(Long, Short, Neutral)에 동일한 스케일링 공식 적용
-                calib_pl = min(0.95, max(0.50, 0.50 + (pl - 0.333) * 1.15))
-                calib_ps = min(0.95, max(0.50, 0.50 + (ps - 0.333) * 1.15))
-                calib_pn = min(0.95, max(0.50, 0.50 + (pn - 0.333) * 1.15))
+                calib_pl = min(0.95, max(config.CALIB_BASE, config.CALIB_BASE + (pl - config.CALIB_PIVOT) * config.CALIB_SCALE))
+                calib_ps = min(0.95, max(config.CALIB_BASE, config.CALIB_BASE + (ps - config.CALIB_PIVOT) * config.CALIB_SCALE))
+                calib_pn = min(0.95, max(config.CALIB_BASE, config.CALIB_BASE + (pn - config.CALIB_PIVOT) * config.CALIB_SCALE))
                 
                 # 스케일링된 값으로 원본 확률 덮어쓰기 (텔레그램 및 로그 표출용)
                 prob_long[idx] = calib_pl
@@ -496,11 +558,11 @@ class MLFeatureEngine:
                 if pl > pn and pl > ps:
                     signals[idx] = 1
                     confidences[idx] = calib_pl
-                    directions[idx] = "LONG_TQQQ"
+                    directions[idx] = f"LONG_{config.BASE_ASSET_LONG}"
                 elif ps > pn and ps > pl:
                     signals[idx] = -1
                     confidences[idx] = calib_ps
-                    directions[idx] = "SHORT_SQQQ"
+                    directions[idx] = f"SHORT_{config.BASE_ASSET_SHORT}"
                 else:
                     signals[idx] = 0
                     confidences[idx] = calib_pn
@@ -543,9 +605,9 @@ class MLFeatureEngine:
         p_short = float(last_row.get("Prob_Short", 0.33))
 
         if sig == 1:
-            return 1, conf, f"GBDT 3-Class TQQQ 롱 파형 포착 (P_Long={p_long*100:.1f}%, Conf={conf*100:.1f}%)"
+            return 1, conf, f"GBDT 3-Class {config.BASE_ASSET_LONG} 롱 파형 포착 (P_Long={p_long*100:.1f}%, Conf={conf*100:.1f}%)"
         elif sig == -1:
-            return -1, conf, f"GBDT 3-Class SQQQ 숏 파형 포착 (P_Short={p_short*100:.1f}%, Conf={conf*100:.1f}%)"
+            return -1, conf, f"GBDT 3-Class {config.BASE_ASSET_SHORT} 숏 파형 포착 (P_Short={p_short*100:.1f}%, Conf={conf*100:.1f}%)"
 
         return 0, conf, "GBDT 관망/중립 상태"
 

@@ -1,0 +1,40 @@
+                                                "dynamic_sl_px": round(cur_px * (1.0 - sl_pct/100.0), 2),
+                                                "tp_pct": tp_pct,
+                                                "sl_pct": sl_pct,
+                                                "time_stop_minutes": config.TIME_STOP_MINUTES,
+                                                "strategy_tag": "Lumos V4 Optimal"
+                                            }
+                                            self._execute_buy_with_10s_chase(
+                                                symbol=winner_sym,
+                                                target_qty=order_qty,
+                                                ref_price=cur_px,
+                                                moe_res=moe_res,
+                                                targets=targets
+                                            )
+                        except Exception as e:
+                            system_logger.log("ERROR", "AI", f"AI ? ?? : {e}")
+
+
+                if mkt["is_open"] and not self._is_order_in_progress:
+                    try:
+                        stk_bal = self.broker.get_overseas_stock_balance()
+                        if stk_bal.get("ok") and stk_bal.get("holdings"):
+                            live_p = {
+                                config.TRADE_SYMBOLS[0]: self.ws_streamer.get_latest_price(config.TRADE_SYMBOLS[0], 0.0),
+                                config.TRADE_SYMBOLS[1]: self.ws_streamer.get_latest_price(config.TRADE_SYMBOLS[1], 0.0)
+                            }
+                            if current_session == "EOD_LIQUIDATION":
+                                for h in stk_bal.get("holdings"):
+                                    sym = str(h.get("symbol") or h.get("stk_cd") or "").strip().upper()
+                                    qty = int(float(str(h.get("quantity") or h.get("poss_qty") or 0).replace(",", "")))
+                                    if qty > 0:
+                                        system_logger.log("TRADE", "EOD", f"Executing 15:50 EOD Liquidation for {sym}")
+                                        self._execute_sell_with_10s_chase(
+                                            symbol=sym,
+                                            quantity=qty,
+                                            reason_desc="EOD 15:50 100% Liquidation",
+                                            is_market_order=True
+                                        )
+                            else:
+                                self._manage_open_positions(stk_bal, realtime_px_override=live_p)
+                    except Exception as e:

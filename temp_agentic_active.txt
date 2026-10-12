@@ -1,0 +1,2 @@
+189:         # 1. 활성 포지션 확인 (active_position.json)
+190:         pos_file = DATA_DIR / "active_position.json"

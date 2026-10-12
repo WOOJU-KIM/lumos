@@ -42,7 +42,7 @@ def run_thorough_verification():
 
     # 3. 실시간 시세 조회
     print("\n[Step 3] 주요 종목 실시간 호가/시세 조회")
-    for sym in ["TQQQ", "SQQQ", "NVDA", "QQQ"]:
+    for sym in [config.BASE_ASSET_LONG, config.BASE_ASSET_SHORT, "NVDA", "QQQ"]:
         q = broker.get_stock_quote(sym)
         print(f"   ✅ {sym} 시세: ${q.get('last_price', 0):.2f} (제공: {q.get('msg')})")
 
@@ -69,11 +69,11 @@ def run_thorough_verification():
 
     # 5. 실주문 발주 신호 (매수 ➔ 매도)
     print("\n[Step 5] 1주 시장가 매수 ➔ 1주 시장가 매도 청산 발주 신호 송출")
-    buy_res = broker.send_order("TQQQ", "BUY", 1, price=0.0)
+    buy_res = broker.send_order(config.BASE_ASSET_LONG, "BUY", 1, price=0.0)
     print(f"   ✅ 매수 발주 응답: ok={buy_res.get('ok')}, 주문번호={buy_res.get('order_no')}, 체결단가=${buy_res.get('price'):.2f}")
     
     time.sleep(1)
-    sell_res = broker.send_order("TQQQ", "SELL", 1, price=0.0)
+    sell_res = broker.send_order(config.BASE_ASSET_LONG, "SELL", 1, price=0.0)
     print(f"   ✅ 매도 청산 응답: ok={sell_res.get('ok')}, 주문번호={sell_res.get('order_no')}, 체결단가=${sell_res.get('price'):.2f}")
 
     # 6. USMarketCalendar 장 운영 시간 및 90분 컷오프 로직 검증
@@ -87,8 +87,8 @@ def run_thorough_verification():
     print("\n[Step 7] MoE 7대 모델 및 캔들 평가 파이프라인 무결성 점검")
     data_lake = MarketDataLake()
     moe = MoEMetaOrchestrator()
-    tqqq_15m = data_lake.load_candles("TQQQ", "15m")
-    moe_res = moe.evaluate_dual_filter_signal(tqqq_15m, threshold=0.75)
+    long_15m = data_lake.load_candles(config.BASE_ASSET_LONG, "15m")
+    moe_res = moe.evaluate_dual_filter_signal(long_15m, threshold=0.75)
     print(f"   ✅ MoE 평가 완료: Top-1 모델=[{moe_res.get('expert_desc')}] (확신도: {moe_res.get('gating_confidence', 0)*100:.1f}%), 방향: {moe_res.get('direction')}")
 
     print("\n" + "=" * 90)

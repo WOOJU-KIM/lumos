@@ -1,5 +1,6 @@
 import os
 import sys
+import config
 import pandas as pd
 from pathlib import Path
 
@@ -17,7 +18,7 @@ def main():
     ml_engine = MLFeatureEngine()
     
     # 1. 데이터 로드 (전체)
-    df_all = data_lake.load_candles("TQQQ", "15m")
+    df_all = data_lake.load_candles(config.BASE_ASSET_LONG, "15m")
     df_all['dt'] = pd.to_datetime(df_all['datetime'])
     
     # 어제 날짜 구하기 (2026-09-17)

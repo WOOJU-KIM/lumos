@@ -1,6 +1,7 @@
 import os
 import sys
 import sqlite3
+import config
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta, time as dtime
@@ -39,14 +40,14 @@ def run_cutoff_backtests():
     print("===========================================================================")
     
     data_lake = MarketDataLake()
-    tqqq_15m = data_lake.load_candles("TQQQ", "15m")
-    sqqq_15m = data_lake.load_candles("SQQQ", "15m")
+    long_15m = data_lake.load_candles(config.BASE_ASSET_LONG, "15m")
+    short_15m = data_lake.load_candles(config.BASE_ASSET_SHORT, "15m")
     nvda_15m = data_lake.load_candles("NVDA", "15m")
     qqq_15m = data_lake.load_candles("QQQ", "15m")
-    soxx_60m = data_lake.load_candles("SOXX", "60m")
-    tqqq_60m = data_lake.load_candles("TQQQ", "60m")
+    macro_60m = data_lake.load_candles(config.MACRO_TREND_SYMBOL, "60m")
+    long_60m = data_lake.load_candles(config.BASE_ASSET_LONG, "60m")
     
-    print(f"📊 [데이터 레이크 로드 완료] TQQQ 15m: {len(tqqq_15m)}개, SQQQ 15m: {len(sqqq_15m)}개")
+    print(f"📊 [데이터 레이크 로드 완료] TQQQ 15m: {len(long_15m)}개, SQQQ 15m: {len(short_15m)}개")
 
     # 7대 모델 정의 및 초기 설정
     tracks_definition = [
@@ -181,14 +182,14 @@ def run_cutoff_backtests():
             exit_px = round(entry_px * (1.0 + (ret_pct / 100.0) + FEE_RATE), 2)
 
             exp = np.random.choice(experts_pool)
-            direction = "LONG_TQQQ" if np.random.random() > 0.3 else "SHORT_SQQQ"
+            direction = "LONG" if np.random.random() > 0.3 else "SHORT"
             reason = "TAKE_PROFIT" if is_win else ("STOP_LOSS" if np.random.random() > 0.3 else "TIME_STOP")
 
             all_trades_to_insert.append((
                 f"TRD_{mid}_{i+1:03d}",
                 mid,
                 name,
-                "TQQQ" if "LONG" in direction else "SQQQ",
+                config.BASE_ASSET_LONG if "LONG" in direction else config.BASE_ASSET_SHORT,
                 entry_px,
                 exit_px,
                 entry_time_str,

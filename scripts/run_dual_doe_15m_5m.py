@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import sqlite3
+import config
 import pandas as pd
 import numpy as np
 from pathlib import Path
@@ -53,14 +54,14 @@ def run_comprehensive_dual_doe():
 
     # 1. 데이터 로드
     print("⏳ [1/4] 데이터 레이크에서 전 기간 캔들 로드 중...")
-    tqqq_15m = lake.load_candles("TQQQ", "15m")
-    sqqq_15m = lake.load_candles("SQQQ", "15m")
-    tqqq_5m  = lake.load_candles("TQQQ", "5m")
-    sqqq_5m  = lake.load_candles("SQQQ", "5m")
-    soxx_60m = lake.load_candles("SOXX", "60m")
-    tqqq_60m = lake.load_candles("TQQQ", "60m")
-    soxx_15m = lake.load_candles("SOXX", "15m")
-    soxx_5m  = lake.load_candles("SOXX", "5m")
+    long_15m = lake.load_candles(config.BASE_ASSET_LONG, "15m")
+    short_15m = lake.load_candles(config.BASE_ASSET_SHORT, "15m")
+    long_5m  = lake.load_candles(config.BASE_ASSET_LONG, "5m")
+    short_5m  = lake.load_candles(config.BASE_ASSET_SHORT, "5m")
+    macro_60m = lake.load_candles(config.MACRO_TREND_SYMBOL, "60m")
+    long_60m = lake.load_candles(config.BASE_ASSET_LONG, "60m")
+    macro_15m = lake.load_candles(config.MACRO_TREND_SYMBOL, "15m")
+    macro_5m  = lake.load_candles(config.MACRO_TREND_SYMBOL, "5m")
     nvda_15m = lake.load_candles("NVDA", "15m")
     nvda_5m  = lake.load_candles("NVDA", "5m")
     qqq_15m  = lake.load_candles("QQQ", "15m")
@@ -68,7 +69,7 @@ def run_comprehensive_dual_doe():
     vix_15m  = lake.load_candles("^VIX", "15m")
     vix_5m   = lake.load_candles("^VIX", "5m")
 
-    for df in [tqqq_15m, sqqq_15m, tqqq_5m, sqqq_5m, soxx_60m, tqqq_60m, soxx_15m, soxx_5m, nvda_15m, nvda_5m, qqq_15m, qqq_5m, vix_15m, vix_5m]:
+    for df in [long_15m, short_15m, long_5m, short_5m, macro_60m, long_60m, macro_15m, macro_5m, nvda_15m, nvda_5m, qqq_15m, qqq_5m, vix_15m, vix_5m]:
         if df.empty:
             continue
         if 'datetime' in df.columns:
@@ -80,102 +81,102 @@ def run_comprehensive_dual_doe():
             df['date_str'] = df['datetime_dt'].dt.strftime('%Y-%m-%d')
             df['time_str'] = df['datetime_dt'].dt.strftime('%H:%M')
 
-    unique_dates = sorted(tqqq_15m['date_str'].unique())
+    unique_dates = sorted(long_15m['date_str'].unique())
     num_days = len(unique_dates)
     total_weeks = num_days / 5.0
-    print(f"   • 분석 기간: {tqqq_15m['datetime'].iloc[0]} ~ {tqqq_15m['datetime'].iloc[-1]}")
+    print(f"   • 분석 기간: {long_15m['datetime'].iloc[0]} ~ {long_15m['datetime'].iloc[-1]}")
     print(f"   • 총 거래일: {num_days}일 (약 {total_weeks:.1f}주)")
 
     # 60m 지표
-    soxx_60m['ema20'] = soxx_60m['Close'].ewm(span=20, adjust=False).mean()
-    tqqq_60m['ema20'] = tqqq_60m['Close'].ewm(span=20, adjust=False).mean()
+    macro_60m['ema20'] = macro_60m['Close'].ewm(span=20, adjust=False).mean()
+    long_60m['ema20'] = long_60m['Close'].ewm(span=20, adjust=False).mean()
 
     # 2. 피처 추출 및 사전 계산
     print("\n⏳ [2/4] 피처 엔지니어링 및 인과 괴리 크로스에셋 Veto 신호 계산 중...")
     moe = MoEMetaOrchestrator(confidence_threshold=0.55, gbdt_threshold=0.55, mode="hybrid_v3")
     
     # 15m 피처
-    tqqq_15m_feat = moe.gbdt_engine.extract_features(tqqq_15m)
-    tqqq_15m_feat = moe.gbdt_engine.add_confidence_columns(tqqq_15m_feat)
-    sqqq_15m_feat = moe.gbdt_engine.extract_features(sqqq_15m)
-    sqqq_15m_feat.set_index('datetime', inplace=True, drop=False)
+    long_15m_feat = moe.gbdt_engine.extract_features(long_15m)
+    long_15m_feat = moe.gbdt_engine.add_confidence_columns(long_15m_feat)
+    short_15m_feat = moe.gbdt_engine.extract_features(short_15m)
+    short_15m_feat.set_index('datetime', inplace=True, drop=False)
 
     # 5m 스나이퍼 피처 & 모델
     sniper = PowerHourSniper(confidence_threshold=0.55)
-    feat_5m_tqqq = sniper.ml_engine.extract_features(tqqq_5m)
-    X_5m_vec = feat_5m_tqqq[sniper.feature_cols].fillna(0.0)
+    feat_5m_long = sniper.ml_engine.extract_features(long_5m)
+    X_5m_vec = feat_5m_long[sniper.feature_cols].fillna(0.0)
     probs_5m = sniper.model.predict_proba(X_5m_vec) # [p_short, p_flat, p_long]
-    feat_5m_tqqq['p_short'] = probs_5m[:, 0]
-    feat_5m_tqqq['p_flat'] = probs_5m[:, 1]
-    feat_5m_tqqq['p_long'] = probs_5m[:, 2]
+    feat_5m_long['p_short'] = probs_5m[:, 0]
+    feat_5m_long['p_flat'] = probs_5m[:, 1]
+    feat_5m_long['p_long'] = probs_5m[:, 2]
 
     cross_mod = CrossAssetDislocationModel(dislocation_z_threshold=1.6)
 
     # 15m 크로스에셋 lookup
     nvda_15m_map = nvda_15m.set_index('datetime')['Close'].to_dict()
-    soxx_15m_map = soxx_15m.set_index('datetime')['Close'].to_dict() if not soxx_15m.empty else {}
+    macro_15m_map = macro_15m.set_index('datetime')['Close'].to_dict() if not macro_15m.empty else {}
     qqq_15m_map  = qqq_15m.set_index('datetime')['Close'].to_dict()
     vix_15m_map  = vix_15m.set_index('datetime')['Close'].to_dict()
-    tqqq_15m_close = tqqq_15m['Close'].values
-    tqqq_15m_dt = tqqq_15m['datetime'].values
+    long_15m_close = long_15m['Close'].values
+    long_15m_dt = long_15m['datetime'].values
 
     cross_dirs_15m = []
-    for i in range(len(tqqq_15m)):
+    for i in range(len(long_15m)):
         if i < 5:
             cross_dirs_15m.append("NONE")
             continue
-        cur_t = tqqq_15m_dt[i]
-        past_5_t = tqqq_15m_dt[i-5]
-        s_r = float(tqqq_15m_close[i] / tqqq_15m_close[i-5] - 1.0)
+        cur_t = long_15m_dt[i]
+        past_5_t = long_15m_dt[i-5]
+        s_r = float(long_15m_close[i] / long_15m_close[i-5] - 1.0)
         if (cur_t in nvda_15m_map and past_5_t in nvda_15m_map and
             cur_t in qqq_15m_map and past_5_t in qqq_15m_map and
             cur_t in vix_15m_map and past_5_t in vix_15m_map):
             n_r = float(nvda_15m_map[cur_t] / nvda_15m_map[past_5_t] - 1.0)
-            sx_r = float(soxx_15m_map[cur_t] / soxx_15m_map[past_5_t] - 1.0) if (cur_t in soxx_15m_map and past_5_t in soxx_15m_map) else n_r
+            sx_r = float(macro_15m_map[cur_t] / macro_15m_map[past_5_t] - 1.0) if (cur_t in macro_15m_map and past_5_t in macro_15m_map) else n_r
             q_r = float(qqq_15m_map[cur_t] / qqq_15m_map[past_5_t] - 1.0)
             v_r = float(vix_15m_map[cur_t] / vix_15m_map[past_5_t] - 1.0)
             sig_code, _, _ = cross_mod.predict_signal(
-                tqqq_ret=s_r, nvda_ret=n_r, soxx_ret=sx_r, qqq_ret=q_r, vix_ret=v_r, tnx_ret=0.0
+                long_ret=s_r, nvda_ret=n_r, macro_ret=sx_r, qqq_ret=q_r, vix_ret=v_r, tnx_ret=0.0
             )
-            c_dir = "LONG_TQQQ" if sig_code > 0 else ("SHORT_SQQQ" if sig_code < 0 else "NONE")
+            c_dir = "LONG" if sig_code > 0 else ("SHORT" if sig_code < 0 else "NONE")
         else:
             c_dir = "NONE"
         cross_dirs_15m.append(c_dir)
-    tqqq_15m_feat['cross_dir'] = cross_dirs_15m
-    tqqq_15m_feat.set_index('datetime', inplace=True, drop=False)
+    long_15m_feat['cross_dir'] = cross_dirs_15m
+    long_15m_feat.set_index('datetime', inplace=True, drop=False)
 
     # 5m 크로스에셋 lookup
     nvda_5m_map = nvda_5m.set_index('datetime')['Close'].to_dict()
-    soxx_5m_map = soxx_5m.set_index('datetime')['Close'].to_dict() if not soxx_5m.empty else {}
+    macro_5m_map = macro_5m.set_index('datetime')['Close'].to_dict() if not macro_5m.empty else {}
     qqq_5m_map  = qqq_5m.set_index('datetime')['Close'].to_dict()
     vix_5m_map  = vix_5m.set_index('datetime')['Close'].to_dict()
-    tqqq_5m_close = tqqq_5m['Close'].values
-    tqqq_5m_dt = tqqq_5m['datetime'].values
+    long_5m_close = long_5m['Close'].values
+    long_5m_dt = long_5m['datetime'].values
 
     cross_dirs_5m = []
-    for i in range(len(tqqq_5m)):
+    for i in range(len(long_5m)):
         if i < 5:
             cross_dirs_5m.append("HOLD")
             continue
-        cur_t = tqqq_5m_dt[i]
-        past_5_t = tqqq_5m_dt[i-5]
-        s_r = float(tqqq_5m_close[i] / tqqq_5m_close[i-5] - 1.0)
+        cur_t = long_5m_dt[i]
+        past_5_t = long_5m_dt[i-5]
+        s_r = float(long_5m_close[i] / long_5m_close[i-5] - 1.0)
         if (cur_t in nvda_5m_map and past_5_t in nvda_5m_map and
             cur_t in qqq_5m_map and past_5_t in qqq_5m_map and
             cur_t in vix_5m_map and past_5_t in vix_5m_map):
             n_r = float(nvda_5m_map[cur_t] / nvda_5m_map[past_5_t] - 1.0)
-            sx_r = float(soxx_5m_map[cur_t] / soxx_5m_map[past_5_t] - 1.0) if (cur_t in soxx_5m_map and past_5_t in soxx_5m_map) else n_r
+            sx_r = float(macro_5m_map[cur_t] / macro_5m_map[past_5_t] - 1.0) if (cur_t in macro_5m_map and past_5_t in macro_5m_map) else n_r
             q_r = float(qqq_5m_map[cur_t] / qqq_5m_map[past_5_t] - 1.0)
             v_r = float(vix_5m_map[cur_t] / vix_5m_map[past_5_t] - 1.0)
             sig_code, _, _ = cross_mod.predict_signal(
-                tqqq_ret=s_r, nvda_ret=n_r, soxx_ret=sx_r, qqq_ret=q_r, vix_ret=v_r, tnx_ret=0.0
+                long_ret=s_r, nvda_ret=n_r, macro_ret=sx_r, qqq_ret=q_r, vix_ret=v_r, tnx_ret=0.0
             )
-            c_dir = "LONG_TQQQ" if sig_code > 0 else ("SHORT_SQQQ" if sig_code < 0 else "HOLD")
+            c_dir = "LONG" if sig_code > 0 else ("SHORT" if sig_code < 0 else "HOLD")
         else:
             c_dir = "HOLD"
         cross_dirs_5m.append(c_dir)
-    feat_5m_tqqq['cross_dir'] = cross_dirs_5m
-    feat_5m_tqqq.set_index('datetime', inplace=True, drop=False)
+    feat_5m_long['cross_dir'] = cross_dirs_5m
+    feat_5m_long.set_index('datetime', inplace=True, drop=False)
 
     doe_thresholds = [0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80]
     INITIAL_CAPITAL = 10_000.0
@@ -200,9 +201,9 @@ def run_comprehensive_dual_doe():
         daily_stoploss_count = 0
 
         for d_str in unique_dates:
-            day_15 = tqqq_15m_feat[tqqq_15m_feat['date_str'] == d_str]
-            day_5_l = tqqq_5m[tqqq_5m['date_str'] == d_str]
-            day_5_s = sqqq_5m[sqqq_5m['date_str'] == d_str]
+            day_15 = long_15m_feat[long_15m_feat['date_str'] == d_str]
+            day_5_l = long_5m[long_5m['date_str'] == d_str]
+            day_5_s = short_5m[short_5m['date_str'] == d_str]
             if len(day_15) < 5:
                 continue
 
@@ -223,10 +224,10 @@ def run_comprehensive_dual_doe():
                 conf_gbdt = float(row_15['Confidence'])
                 dir_cross = row_15['cross_dir']
 
-                is_gbdt_trigger = (dir_gbdt in ["LONG_TQQQ", "SHORT_SQQQ"]) and (conf_gbdt >= T)
+                is_gbdt_trigger = (dir_gbdt in ["LONG", "SHORT"]) and (conf_gbdt >= T)
                 is_cross_veto = (
-                    (dir_gbdt == "LONG_TQQQ" and dir_cross == "SHORT_SQQQ") or
-                    (dir_gbdt == "SHORT_SQQQ" and dir_cross == "LONG_TQQQ")
+                    (dir_gbdt == "LONG" and dir_cross == "SHORT") or
+                    (dir_gbdt == "SHORT" and dir_cross == "LONG")
                 )
 
                 if not is_gbdt_trigger or is_cross_veto:
@@ -236,25 +237,25 @@ def run_comprehensive_dual_doe():
                 direction = dir_gbdt
 
                 # Screen 1: 60m trend
-                past_soxx_60 = soxx_60m[soxx_60m['datetime'] <= cur_time]
-                past_tqqq_60 = tqqq_60m[tqqq_60m['datetime'] <= cur_time]
+                past_macro_60 = macro_60m[macro_60m['datetime'] <= cur_time]
+                past_long_60 = long_60m[long_60m['datetime'] <= cur_time]
                 is_60m_ok = True
-                if len(past_soxx_60) >= 20 and len(past_tqqq_60) >= 20:
-                    soxx_c = past_soxx_60['Close'].iloc[-1]
-                    tqqq_c = past_tqqq_60['Close'].iloc[-1]
-                    soxx_ema = past_soxx_60['ema20'].iloc[-1]
-                    tqqq_ema = past_tqqq_60['ema20'].iloc[-1]
-                    if direction == "LONG_TQQQ":
-                        is_60m_ok = (soxx_c >= soxx_ema * 0.998) and (tqqq_c >= tqqq_ema * 0.998)
-                    elif direction == "SHORT_SQQQ":
-                        is_60m_ok = (soxx_c <= soxx_ema * 1.002)
+                if len(past_macro_60) >= 20 and len(past_long_60) >= 20:
+                    macro_c = past_macro_60['Close'].iloc[-1]
+                    long_c = past_long_60['Close'].iloc[-1]
+                    macro_ema = past_macro_60['ema20'].iloc[-1]
+                    long_ema = past_long_60['ema20'].iloc[-1]
+                    if direction == "LONG":
+                        is_60m_ok = (macro_c >= macro_ema * 0.998) and (long_c >= long_ema * 0.998)
+                    elif direction == "SHORT":
+                        is_60m_ok = (macro_c <= macro_ema * 1.002)
 
                 if not is_60m_ok:
                     b_idx += 1
                     continue
 
                 # Screen 3: Dip filter
-                if direction == "LONG_TQQQ":
+                if direction == "LONG":
                     vwap_diff = float(row_15.get("VWAP_Diff", 0.0))
                     rsi_14 = float(row_15.get("RSI_14", 50.0))
                     bb_lower = float(row_15.get("BB_Lower", 0.0))
@@ -263,8 +264,8 @@ def run_comprehensive_dual_doe():
                     if bb_lower > 0:
                         dip_ok = dip_ok and (cur_close >= bb_lower * 1.001)
                 else:
-                    if cur_time in sqqq_15m_feat.index:
-                        row_s = sqqq_15m_feat.loc[cur_time]
+                    if cur_time in short_15m_feat.index:
+                        row_s = short_15m_feat.loc[cur_time]
                         vwap_diff = float(row_s.get("VWAP_Diff", 0.0))
                         rsi_14 = float(row_s.get("RSI_14", 50.0))
                         bb_lower = float(row_s.get("BB_Lower", 0.0))
@@ -279,8 +280,8 @@ def run_comprehensive_dual_doe():
                     b_idx += 1
                     continue
 
-                chosen_sym = "TQQQ" if direction == "LONG_TQQQ" else "SQQQ"
-                base_px = float(row_15['Close']) if chosen_sym == "TQQQ" else (float(sqqq_15m_feat.loc[cur_time]['Close']) if cur_time in sqqq_15m_feat.index else 40.0)
+                chosen_sym = config.BASE_ASSET_LONG if direction == "LONG" else config.BASE_ASSET_SHORT
+                base_px = float(row_15['Close']) if chosen_sym == config.BASE_ASSET_LONG else (float(short_15m_feat.loc[cur_time]['Close']) if cur_time in short_15m_feat.index else 40.0)
                 entry_px = round(base_px + SLIPPAGE, 2)
                 shares = int(capital / entry_px)
                 invested = shares * entry_px
@@ -288,7 +289,7 @@ def run_comprehensive_dual_doe():
                     b_idx += 1
                     continue
 
-                target_5m = day_5_l if chosen_sym == "TQQQ" else day_5_s
+                target_5m = day_5_l if chosen_sym == config.BASE_ASSET_LONG else day_5_s
                 post_5m = target_5m[target_5m['datetime'] > cur_time]
                 if post_5m.empty:
                     b_idx += 1
@@ -377,13 +378,13 @@ def run_comprehensive_dual_doe():
         dd = (pk - eq_arr) / pk * 100.0
         mdd = np.max(dd) if len(dd) > 0 else 0.0
 
-        tqqq_cnt = len([t for t in trades if t['symbol'] == 'TQQQ'])
-        tqqq_w = len([t for t in trades if t['symbol'] == 'TQQQ' and t['ret'] > 0])
-        tqqq_wr = (tqqq_w / tqqq_cnt * 100) if tqqq_cnt > 0 else 0.0
+        long_cnt = len([t for t in trades if t['symbol'] == config.BASE_ASSET_LONG])
+        long_w = len([t for t in trades if t['symbol'] == config.BASE_ASSET_LONG and t['ret'] > 0])
+        long_wr = (long_w / long_cnt * 100) if long_cnt > 0 else 0.0
 
-        sqqq_cnt = len([t for t in trades if t['symbol'] == 'SQQQ'])
-        sqqq_w = len([t for t in trades if t['symbol'] == 'SQQQ' and t['ret'] > 0])
-        sqqq_wr = (sqqq_w / sqqq_cnt * 100) if sqqq_cnt > 0 else 0.0
+        short_cnt = len([t for t in trades if t['symbol'] == config.BASE_ASSET_SHORT])
+        short_w = len([t for t in trades if t['symbol'] == config.BASE_ASSET_SHORT and t['ret'] > 0])
+        short_wr = (short_w / short_cnt * 100) if short_cnt > 0 else 0.0
 
         results_15m.append({
             "threshold": t_str,
@@ -392,10 +393,10 @@ def run_comprehensive_dual_doe():
             "wins": len(w_tr),
             "losses": len(l_tr),
             "win_rate": wr,
-            "tqqq_trades": tqqq_cnt,
-            "tqqq_wr": tqqq_wr,
-            "sqqq_trades": sqqq_cnt,
-            "sqqq_wr": sqqq_wr,
+            "long_trades": long_cnt,
+            "long_wr": long_wr,
+            "short_trades": short_cnt,
+            "short_wr": short_wr,
             "cum_return": cum_ret,
             "profit_factor": pf,
             "mdd": mdd,
@@ -419,8 +420,8 @@ def run_comprehensive_dual_doe():
         equity_curve = [capital]
 
         for d_str in unique_dates:
-            day_5_l = feat_5m_tqqq[feat_5m_tqqq['date_str'] == d_str]
-            day_5_s = sqqq_5m[sqqq_5m['date_str'] == d_str]
+            day_5_l = feat_5m_long[feat_5m_long['date_str'] == d_str]
+            day_5_s = short_5m[short_5m['date_str'] == d_str]
             if len(day_5_l) < 20:
                 continue
 
@@ -447,13 +448,13 @@ def run_comprehensive_dual_doe():
                 direction = "NONE"
                 confidence = p_flat
                 if p_long >= p_short and p_long >= p_flat:
-                    direction = "LONG_TQQQ"
+                    direction = "LONG"
                     confidence = p_long
                 elif p_short >= p_long and p_short >= p_flat:
-                    direction = "SHORT_SQQQ"
+                    direction = "SHORT"
                     confidence = p_short
 
-                is_gbdt_trigger = (direction in ["LONG_TQQQ", "SHORT_SQQQ"]) and (confidence >= T)
+                is_gbdt_trigger = (direction in ["LONG", "SHORT"]) and (confidence >= T)
                 if not is_gbdt_trigger:
                     idx += 1
                     continue
@@ -461,37 +462,37 @@ def run_comprehensive_dual_doe():
                 # Cross-Asset Veto
                 dir_cross = row_5.get('cross_dir', 'HOLD')
                 is_cross_veto = (
-                    (direction == "LONG_TQQQ" and dir_cross == "SHORT_SQQQ") or
-                    (direction == "SHORT_SQQQ" and dir_cross == "LONG_TQQQ")
+                    (direction == "LONG" and dir_cross == "SHORT") or
+                    (direction == "SHORT" and dir_cross == "LONG")
                 )
                 if is_cross_veto:
                     idx += 1
                     continue
 
                 # Screen 1: 60m trend
-                past_soxx = soxx_60m[soxx_60m['datetime'] <= cur_t_str]
-                if len(past_soxx) < 20:
+                past_macro = macro_60m[macro_60m['datetime'] <= cur_t_str]
+                if len(past_macro) < 20:
                     idx += 1
                     continue
-                last_soxx = past_soxx.iloc[-1]
-                if direction == "LONG_TQQQ" and (last_soxx['Close'] < last_soxx['ema20'] * 0.998):
+                last_macro = past_macro.iloc[-1]
+                if direction == "LONG" and (last_macro['Close'] < last_macro['ema20'] * 0.998):
                     idx += 1
                     continue
-                elif direction == "SHORT_SQQQ" and (last_soxx['Close'] > last_soxx['ema20'] * 1.002):
+                elif direction == "SHORT" and (last_macro['Close'] > last_macro['ema20'] * 1.002):
                     idx += 1
                     continue
 
                 # Screen 3: RSI dip
                 rsi_5m = float(row_5.get("RSI_14", 50.0))
-                if direction == "LONG_TQQQ" and rsi_5m > 68.0:
+                if direction == "LONG" and rsi_5m > 68.0:
                     idx += 1
                     continue
-                elif direction == "SHORT_SQQQ" and rsi_5m < 32.0:
+                elif direction == "SHORT" and rsi_5m < 32.0:
                     idx += 1
                     continue
 
-                chosen_sym = "TQQQ" if direction == "LONG_TQQQ" else "SQQQ"
-                base_px = float(row_5['Close']) if chosen_sym == "TQQQ" else float(day_5_s[day_5_s['datetime'] == cur_t_str]['Close'].iloc[0]) if not day_5_s[day_5_s['datetime'] == cur_t_str].empty else 40.0
+                chosen_sym = config.BASE_ASSET_LONG if direction == "LONG" else config.BASE_ASSET_SHORT
+                base_px = float(row_5['Close']) if chosen_sym == config.BASE_ASSET_LONG else float(day_5_s[day_5_s['datetime'] == cur_t_str]['Close'].iloc[0]) if not day_5_s[day_5_s['datetime'] == cur_t_str].empty else 40.0
                 entry_px = round(base_px + SLIPPAGE, 2)
                 shares = int(capital / entry_px)
                 invested = shares * entry_px
@@ -499,7 +500,7 @@ def run_comprehensive_dual_doe():
                     idx += 1
                     continue
 
-                target_day = day_5_l if chosen_sym == "TQQQ" else day_5_s
+                target_day = day_5_l if chosen_sym == config.BASE_ASSET_LONG else day_5_s
                 sub_5m = target_day.iloc[idx:]
                 tp_px = round(entry_px * (1 + TP_5M), 2)
                 sl_px = round(entry_px * (1 + SL_5M), 2)
@@ -574,13 +575,13 @@ def run_comprehensive_dual_doe():
         dd = (pk - eq_arr) / pk * 100.0
         mdd = np.max(dd) if len(dd) > 0 else 0.0
 
-        tqqq_cnt = len([t for t in trades if t['symbol'] == 'TQQQ'])
-        tqqq_w = len([t for t in trades if t['symbol'] == 'TQQQ' and t['ret'] > 0])
-        tqqq_wr = (tqqq_w / tqqq_cnt * 100) if tqqq_cnt > 0 else 0.0
+        long_cnt = len([t for t in trades if t['symbol'] == config.BASE_ASSET_LONG])
+        long_w = len([t for t in trades if t['symbol'] == config.BASE_ASSET_LONG and t['ret'] > 0])
+        long_wr = (long_w / long_cnt * 100) if long_cnt > 0 else 0.0
 
-        sqqq_cnt = len([t for t in trades if t['symbol'] == 'SQQQ'])
-        sqqq_w = len([t for t in trades if t['symbol'] == 'SQQQ' and t['ret'] > 0])
-        sqqq_wr = (sqqq_w / sqqq_cnt * 100) if sqqq_cnt > 0 else 0.0
+        short_cnt = len([t for t in trades if t['symbol'] == config.BASE_ASSET_SHORT])
+        short_w = len([t for t in trades if t['symbol'] == config.BASE_ASSET_SHORT and t['ret'] > 0])
+        short_wr = (short_w / short_cnt * 100) if short_cnt > 0 else 0.0
 
         results_5m.append({
             "threshold": t_str,
@@ -589,10 +590,10 @@ def run_comprehensive_dual_doe():
             "wins": len(w_tr),
             "losses": len(l_tr),
             "win_rate": wr,
-            "tqqq_trades": tqqq_cnt,
-            "tqqq_wr": tqqq_wr,
-            "sqqq_trades": sqqq_cnt,
-            "sqqq_wr": sqqq_wr,
+            "long_trades": long_cnt,
+            "long_wr": long_wr,
+            "short_trades": short_cnt,
+            "short_wr": short_wr,
             "cum_return": cum_ret,
             "profit_factor": pf,
             "mdd": mdd,
@@ -615,7 +616,7 @@ if __name__ == "__main__":
         rows_15.append([
             m["threshold"], f"{m['total_trades']}회", f"{m['trades_per_week']}회",
             f"{m['wins']}승 {m['losses']}패", f"{m['win_rate']:.1f}%",
-            f"{m['tqqq_trades']}건 ({m['tqqq_wr']:.1f}%)", f"{m['sqqq_trades']}건 ({m['sqqq_wr']:.1f}%)",
+            f"{m['long_trades']}건 ({m['long_wr']:.1f}%)", f"{m['short_trades']}건 ({m['short_wr']:.1f}%)",
             f"{m['cum_return']:+.2f}%", f"{m['profit_factor']:.2f}", f"{m['mdd']:.2f}%", f"${m['final_capital']:,.2f}"
         ])
     print(format_markdown_table(headers, rows_15, aligns))
@@ -628,7 +629,7 @@ if __name__ == "__main__":
         rows_5.append([
             m["threshold"], f"{m['total_trades']}회", f"{m['trades_per_week']}회",
             f"{m['wins']}승 {m['losses']}패", f"{m['win_rate']:.1f}%",
-            f"{m['tqqq_trades']}건 ({m['tqqq_wr']:.1f}%)", f"{m['sqqq_trades']}건 ({m['sqqq_wr']:.1f}%)",
+            f"{m['long_trades']}건 ({m['long_wr']:.1f}%)", f"{m['short_trades']}건 ({m['short_wr']:.1f}%)",
             f"{m['cum_return']:+.2f}%", f"{m['profit_factor']:.2f}", f"{m['mdd']:.2f}%", f"${m['final_capital']:,.2f}"
         ])
     print(format_markdown_table(headers, rows_5, aligns))

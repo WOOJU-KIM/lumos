@@ -50,12 +50,12 @@ class SystemLogger:
                 pass
 
         if len(self.ring_buffer) == 0:
-            # 초기 시스템 가동 환영 로그 생성
-            self.log("INFO", "SystemCore", "🚀 Lumos v10.2 자율 트레이딩 통합 시스템 코어 초기화 완료")
-            self.log("KIWOOM", "KiwoomBroker", "🏛 키움 OpenAPI (VIRTUAL 모의투자) 인증 토큰 발급 및 계좌 잔고 동기화 완료")
-            self.log("MOE", "MoEOrchestrator", "🧠 Track 6: MoE AI 메타 오케스트레이터 게이팅 네트워크 활성화 (승률 80.0% / PF 3.12)")
-            self.log("INFO", "MarketGuard", "🛡 장 마감 90분 전 신규 진입 차단 가드 (No-Entry Cutoff: 14:30 NYT) 활성화")
-            self.log("INFO", "LiveRunner", "⏳ 뉴욕 정규장 개장(22:30 KST) 대기 중 - 15초 주기 실시간 관제 루프 가동 중")
+            # Initial log notices do not verify external service or runtime status.
+            self.log("INFO", "SystemCore", "Initial log notices created; system readiness is not verified.")
+            self.log("KIWOOM", "KiwoomBroker", "Broker authentication and account balance synchronization are not verified.")
+            self.log("MOE", "MoEOrchestrator", "AI model loading and activation are not verified.")
+            self.log("INFO", "MarketGuard", "Market guard configuration and activation are not verified.")
+            self.log("INFO", "LiveRunner", "Trading runner readiness and execution status are not verified.")
 
     def log(self, level: str, source: str, message: str, meta: Optional[Dict[str, Any]] = None):
         """

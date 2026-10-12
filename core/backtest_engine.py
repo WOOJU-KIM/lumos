@@ -61,64 +61,64 @@ class GranularBacktestEngine:
         from core.data_lake import MarketDataLake
         data_lake = MarketDataLake()
         
-        tqqq_15m_raw = data_lake.load_candles("TQQQ", "15m")
-        sqqq_15m_raw = data_lake.load_candles("SQQQ", "15m")
-        tqqq_60m_raw = data_lake.load_candles("TQQQ", "60m")
-        sqqq_60m_raw = data_lake.load_candles("SQQQ", "60m")
-        soxx_60m_raw = data_lake.load_candles("SOXX", "60m")
+        long_15m_raw = data_lake.load_candles(config.BASE_ASSET_LONG, "15m")
+        short_15m_raw = data_lake.load_candles(config.BASE_ASSET_SHORT, "15m")
+        long_60m_raw = data_lake.load_candles(config.BASE_ASSET_LONG, "60m")
+        short_60m_raw = data_lake.load_candles(config.BASE_ASSET_SHORT, "60m")
+        macro_60m_raw = data_lake.load_candles(config.MACRO_TREND_SYMBOL, "60m")
 
         # 5분봉 추가 로드 (청산 궤적 추적용)
-        tqqq_5m_raw = data_lake.load_candles("TQQQ", "5m")
-        sqqq_5m_raw = data_lake.load_candles("SQQQ", "5m")
+        long_5m_raw = data_lake.load_candles(config.BASE_ASSET_LONG, "5m")
+        short_5m_raw = data_lake.load_candles(config.BASE_ASSET_SHORT, "5m")
 
-        if len(tqqq_15m_raw) < 100 or len(sqqq_15m_raw) < 100 or len(tqqq_5m_raw) < 100:
+        if len(long_15m_raw) < 100 or len(short_15m_raw) < 100 or len(long_5m_raw) < 100:
             # 야후 파이낸스 백업 로드 로직 (5m 포함)
-            tqqq_15m_raw = yf.Ticker("TQQQ").history(period="60d", interval="15m")
-            sqqq_15m_raw = yf.Ticker("SQQQ").history(period="60d", interval="15m")
-            tqqq_60m_raw = yf.Ticker("TQQQ").history(period="60d", interval="60m")
-            sqqq_60m_raw = yf.Ticker("SQQQ").history(period="60d", interval="60m")
-            soxx_60m_raw = yf.Ticker("SOXX").history(period="60d", interval="60m")
-            tqqq_5m_raw = yf.Ticker("TQQQ").history(period="60d", interval="5m")
-            sqqq_5m_raw = yf.Ticker("SQQQ").history(period="60d", interval="5m")
+            long_15m_raw = yf.Ticker(config.BASE_ASSET_LONG).history(period="60d", interval="15m")
+            short_15m_raw = yf.Ticker(config.BASE_ASSET_SHORT).history(period="60d", interval="15m")
+            long_60m_raw = yf.Ticker(config.BASE_ASSET_LONG).history(period="60d", interval="60m")
+            short_60m_raw = yf.Ticker(config.BASE_ASSET_SHORT).history(period="60d", interval="60m")
+            macro_60m_raw = yf.Ticker(config.MACRO_TREND_SYMBOL).history(period="60d", interval="60m")
+            long_5m_raw = yf.Ticker(config.BASE_ASSET_LONG).history(period="60d", interval="5m")
+            short_5m_raw = yf.Ticker(config.BASE_ASSET_SHORT).history(period="60d", interval="5m")
 
-            if tqqq_15m_raw.empty or sqqq_15m_raw.empty:
+            if long_15m_raw.empty or short_15m_raw.empty:
                 raise RuntimeError("시세 데이터 수집 실패")
             
-            data_lake.insert_candles("TQQQ", "15m", tqqq_15m_raw)
-            data_lake.insert_candles("SQQQ", "15m", sqqq_15m_raw)
-            data_lake.insert_candles("TQQQ", "60m", tqqq_60m_raw)
-            data_lake.insert_candles("SQQQ", "60m", sqqq_60m_raw)
-            data_lake.insert_candles("SOXX", "60m", soxx_60m_raw)
-            data_lake.insert_candles("TQQQ", "5m", tqqq_5m_raw)
-            data_lake.insert_candles("SQQQ", "5m", sqqq_5m_raw)
+            data_lake.insert_candles(config.BASE_ASSET_LONG, "15m", long_15m_raw)
+            data_lake.insert_candles(config.BASE_ASSET_SHORT, "15m", short_15m_raw)
+            data_lake.insert_candles(config.BASE_ASSET_LONG, "60m", long_60m_raw)
+            data_lake.insert_candles(config.BASE_ASSET_SHORT, "60m", short_60m_raw)
+            data_lake.insert_candles(config.MACRO_TREND_SYMBOL, "60m", macro_60m_raw)
+            data_lake.insert_candles(config.BASE_ASSET_LONG, "5m", long_5m_raw)
+            data_lake.insert_candles(config.BASE_ASSET_SHORT, "5m", short_5m_raw)
 
         # 2. 머신러닝 피처 추출 및 중요도 학습 (15분봉)
-        tqqq_15m_feat = self.ml_engine.extract_features(tqqq_15m_raw)
-        sqqq_15m_feat = self.ml_engine.extract_features(sqqq_15m_raw)
+        long_15m_feat = self.ml_engine.extract_features(long_15m_raw)
+        short_15m_feat = self.ml_engine.extract_features(short_15m_raw)
 
         if self.ml_engine.model is None or not self.ml_engine.feature_names:
-            _, top_10_features, top_3_features = self.ml_engine.train_and_select_top_features(tqqq_15m_feat)
+            _, top_10_features, top_3_features = self.ml_engine.train_and_select_top_features(long_15m_feat)
         else:
             top_10_features = self.ml_engine.top_10_features or self.ml_engine.feature_names[:10]
             top_3_features = self.ml_engine.top_3_features or top_10_features[:3]
 
-        tqqq_15m_feat = self.ml_engine.add_confidence_columns(tqqq_15m_feat)
-        sqqq_15m_feat = self.ml_engine.add_confidence_columns(sqqq_15m_feat)
+        long_15m_feat = self.ml_engine.add_confidence_columns(long_15m_feat)
+        short_15m_feat = self.ml_engine.add_confidence_columns(short_15m_feat)
 
-        tqqq_60m = self._compute_60m_trend(tqqq_60m_raw)
-        sqqq_60m = self._compute_60m_trend(sqqq_60m_raw)
-        soxx_60m = self._compute_60m_trend(soxx_60m_raw)
+        long_60m = self._compute_60m_trend(long_60m_raw)
+        short_60m = self._compute_60m_trend(short_60m_raw)
+        macro_60m = self._compute_60m_trend(macro_60m_raw)
 
         # 5분봉 ATR 계산 추가
-        tqqq_5m = self._add_atr(tqqq_5m_raw)
-        sqqq_5m = self._add_atr(sqqq_5m_raw)
+        long_5m = self._add_atr(long_5m_raw)
+        short_5m = self._add_atr(short_5m_raw)
 
-        unique_dates = sorted(list(set(tqqq_15m_feat['date_str']).intersection(set(sqqq_15m_feat['date_str']))))
+        unique_dates = sorted(list(set(long_15m_feat['date_str']).intersection(set(short_15m_feat['date_str']))))
 
         # 3. 3중 타임프레임 스나이퍼 시뮬레이션
         sim_res = self._execute_triple_screen_simulation(
-            tqqq_15m_feat, sqqq_15m_feat, tqqq_60m, sqqq_60m, soxx_60m, 
-            tqqq_5m, sqqq_5m, unique_dates
+            long_15m_feat, short_15m_feat, long_60m, short_60m, macro_60m, 
+            long_5m, short_5m, unique_dates
         )
 
         sim_res["top_10_features"] = top_10_features
@@ -141,8 +141,8 @@ class GranularBacktestEngine:
                     "total_return_pct": sim_res["total_return_pct"],
                     "total_pnl_krw": sim_res["total_pnl_krw"],
                     "win_rate_pct": sim_res["win_rate_pct"],
-                    "tqqq_win_rate_pct": sim_res["tqqq_win_rate_pct"],
-                    "sqqq_win_rate_pct": sim_res["sqqq_win_rate_pct"],
+                    "long_win_rate_pct": sim_res["long_win_rate_pct"],
+                    "short_win_rate_pct": sim_res["short_win_rate_pct"],
                     "mdd_pct": sim_res["mdd_pct"],
                     "profit_factor": sim_res["profit_factor"],
                     "allocation_pct": self.allocation_pct,
@@ -155,13 +155,13 @@ class GranularBacktestEngine:
 
     def _execute_triple_screen_simulation(
         self,
-        tqqq_15m: pd.DataFrame,
-        sqqq_15m: pd.DataFrame,
-        tqqq_60m: pd.DataFrame,
-        sqqq_60m: pd.DataFrame,
-        soxx_60m: pd.DataFrame,
-        tqqq_5m: pd.DataFrame,
-        sqqq_5m: pd.DataFrame,
+        long_15m: pd.DataFrame,
+        short_15m: pd.DataFrame,
+        long_60m: pd.DataFrame,
+        short_60m: pd.DataFrame,
+        macro_60m: pd.DataFrame,
+        long_5m: pd.DataFrame,
+        short_5m: pd.DataFrame,
         unique_dates: List[str]
     ) -> Dict[str, Any]:
         capital = float(self.initial_capital_krw)
@@ -169,18 +169,18 @@ class GranularBacktestEngine:
         daily_reports = []
 
         total_wins, total_losses, total_trades = 0, 0, 0
-        tqqq_wins, tqqq_losses = 0, 0
-        sqqq_wins, sqqq_losses = 0, 0
+        long_wins, long_losses = 0, 0
+        short_wins, short_losses = 0, 0
 
         all_closed_trades = []
         all_trade_records = []
         trade_id_seq = 1
 
         for date_str in unique_dates:
-            day_tqqq_15m = tqqq_15m[tqqq_15m['date_str'] == date_str]
-            day_sqqq_15m = sqqq_15m[sqqq_15m['date_str'] == date_str]
+            day_long_15m = long_15m[long_15m['date_str'] == date_str]
+            day_short_15m = short_15m[short_15m['date_str'] == date_str]
             
-            if len(day_tqqq_15m) < 5 or len(day_sqqq_15m) < 5:
+            if len(day_long_15m) < 5 or len(day_short_15m) < 5:
                 continue
 
             day_start_capital = capital
@@ -201,13 +201,13 @@ class GranularBacktestEngine:
             bars_held_5m = 0
             max_bars_held_5m = self.time_stop_bars * (15 // 5) # 90 minutes = 18 5m bars
 
-            num_bars_15m = min(len(day_tqqq_15m), len(day_sqqq_15m))
+            num_bars_15m = min(len(day_long_15m), len(day_short_15m))
 
             last_exit_time = pd.Timestamp.min
 
             for b_idx in range(num_bars_15m):
-                row_l_15m = day_tqqq_15m.iloc[b_idx]
-                row_s_15m = day_sqqq_15m.iloc[b_idx]
+                row_l_15m = day_long_15m.iloc[b_idx]
+                row_s_15m = day_short_15m.iloc[b_idx]
                 current_15m_time = row_l_15m.name
 
                 if current_15m_time <= last_exit_time:
@@ -218,35 +218,35 @@ class GranularBacktestEngine:
                         continue
 
                     # 60m Trend Check
-                    past_soxx = soxx_60m[soxx_60m.index <= current_15m_time]
-                    past_tqqq_60 = tqqq_60m[tqqq_60m.index <= current_15m_time]
-                    past_sqqq_60 = sqqq_60m[sqqq_60m.index <= current_15m_time]
+                    past_macro = macro_60m[macro_60m.index <= current_15m_time]
+                    past_long_60 = long_60m[long_60m.index <= current_15m_time]
+                    past_short_60 = short_60m[short_60m.index <= current_15m_time]
 
                     is_60m_bull, is_60m_bear = False, False
-                    if len(past_soxx) >= 20 and len(past_tqqq_60) >= 20:
-                        last_soxx = past_soxx.iloc[-1]
-                        last_l60 = past_tqqq_60.iloc[-1]
-                        last_s60 = past_sqqq_60.iloc[-1] if len(past_sqqq_60) >= 20 else last_l60
+                    if len(past_macro) >= 20 and len(past_long_60) >= 20:
+                        last_macro = past_macro.iloc[-1]
+                        last_l60 = past_long_60.iloc[-1]
+                        last_s60 = past_short_60.iloc[-1] if len(past_short_60) >= 20 else last_l60
 
-                        soxx_bull = (last_soxx['Close'] >= last_soxx['ema20'] * 0.998)
-                        tqqq_bull = (last_l60['Close'] >= last_l60['ema20'] * 0.998) and (last_l60['macd'] >= last_l60['macd_signal'] * 0.98)
-                        is_60m_bull = soxx_bull and tqqq_bull
+                        macro_bull = (last_macro['Close'] >= last_macro['ema20'] * 0.998)
+                        long_bull = (last_l60['Close'] >= last_l60['ema20'] * 0.998) and (last_l60['macd'] >= last_l60['macd_signal'] * 0.98)
+                        is_60m_bull = macro_bull and long_bull
 
-                        soxx_bear = (last_soxx['Close'] <= last_soxx['ema20'] * 1.002)
-                        sqqq_bull = (last_s60['Close'] >= last_s60['ema20'] * 0.998) and (last_s60['macd'] >= last_s60['macd_signal'] * 0.98)
-                        is_60m_bear = soxx_bear and sqqq_bull
+                        macro_bear = (last_macro['Close'] <= last_macro['ema20'] * 1.002)
+                        short_bull = (last_s60['Close'] >= last_s60['ema20'] * 0.998) and (last_s60['macd'] >= last_s60['macd_signal'] * 0.98)
+                        is_60m_bear = macro_bear and short_bull
 
-                    conf_tqqq = float(row_l_15m.get('Confidence', 0.50))
-                    conf_sqqq = float(row_s_15m.get('Confidence', 0.50))
+                    conf_long = float(row_l_15m.get('Confidence', 0.50))
+                    conf_short = float(row_s_15m.get('Confidence', 0.50))
 
-                    tqqq_dip_ok = (row_l_15m['VWAP_Diff'] <= 1.5) and (row_l_15m['RSI_14'] <= 62.0) and (row_l_15m['Close'] >= row_l_15m['BB_Lower'] * 1.001)
-                    sqqq_dip_ok = (row_s_15m['VWAP_Diff'] <= 1.5) and (row_s_15m['RSI_14'] <= 62.0) and (row_s_15m['Close'] >= row_s_15m['BB_Lower'] * 1.001)
+                    long_dip_ok = (row_l_15m['VWAP_Diff'] <= 1.5) and (row_l_15m['RSI_14'] <= 62.0) and (row_l_15m['Close'] >= row_l_15m['BB_Lower'] * 1.001)
+                    short_dip_ok = (row_s_15m['VWAP_Diff'] <= 1.5) and (row_s_15m['RSI_14'] <= 62.0) and (row_s_15m['Close'] >= row_s_15m['BB_Lower'] * 1.001)
 
-                    if is_60m_bull and (conf_tqqq >= self.confidence_threshold) and tqqq_dip_ok:
-                        current_pos = "TQQQ"
+                    if is_60m_bull and (conf_long >= self.confidence_threshold) and long_dip_ok:
+                        current_pos = config.BASE_ASSET_LONG
                         entry_price = float(row_l_15m['Close'])
-                    elif is_60m_bear and (conf_sqqq >= self.confidence_threshold) and sqqq_dip_ok:
-                        current_pos = "SQQQ"
+                    elif is_60m_bear and (conf_short >= self.confidence_threshold) and short_dip_ok:
+                        current_pos = config.BASE_ASSET_SHORT
                         entry_price = float(row_s_15m['Close'])
                     
                     if current_pos != "NONE":
@@ -254,7 +254,7 @@ class GranularBacktestEngine:
                         pos_capital = capital * self.allocation_pct
                         
                         # 5m ATR 계산 및 동적 SL 설정 (Rule 3)
-                        df_5m_ref = tqqq_5m if current_pos == "TQQQ" else sqqq_5m
+                        df_5m_ref = long_5m if current_pos == config.BASE_ASSET_LONG else short_5m
                         past_5m = df_5m_ref[df_5m_ref.index <= current_15m_time]
                         if not past_5m.empty and not pd.isna(past_5m.iloc[-1].get('ATR_14')):
                             atr_val = past_5m.iloc[-1]['ATR_14']
@@ -336,13 +336,13 @@ class GranularBacktestEngine:
                             if actual_ret >= 0:
                                 day_wins += 1
                                 total_wins += 1
-                                if current_pos == "TQQQ": tqqq_wins += 1
-                                else: sqqq_wins += 1
+                                if current_pos == config.BASE_ASSET_LONG: long_wins += 1
+                                else: short_wins += 1
                             else:
                                 day_losses += 1
                                 total_losses += 1
-                                if current_pos == "TQQQ": tqqq_losses += 1
-                                else: sqqq_losses += 1
+                                if current_pos == config.BASE_ASSET_LONG: long_losses += 1
+                                else: short_losses += 1
 
                             all_trade_records.append({
                                 "trade_id": f"TRD_{trade_id_seq:04d}",
@@ -395,10 +395,10 @@ class GranularBacktestEngine:
         
         win_rate_pct = round((total_wins / (total_wins + total_losses) * 100), 1) if (total_wins + total_losses) > 0 else 0.0
 
-        tqqq_total = tqqq_wins + tqqq_losses
-        sqqq_total = sqqq_wins + sqqq_losses
-        tqqq_win_rate_pct = round((tqqq_wins / tqqq_total * 100), 1) if tqqq_total > 0 else 0.0
-        sqqq_win_rate_pct = round((sqqq_wins / sqqq_total * 100), 1) if sqqq_total > 0 else 0.0
+        long_total = long_wins + long_losses
+        short_total = short_wins + short_losses
+        long_win_rate_pct = round((long_wins / long_total * 100), 1) if long_total > 0 else 0.0
+        short_win_rate_pct = round((short_wins / short_total * 100), 1) if short_total > 0 else 0.0
 
         gross_profit = float(np.sum(wins_arr)) if len(wins_arr) > 0 else 0.001
         gross_loss = float(abs(np.sum(losses_arr))) if len(losses_arr) > 0 else 0.001
@@ -414,12 +414,12 @@ class GranularBacktestEngine:
             "total_wins": total_wins,
             "total_losses": total_losses,
             "win_rate_pct": win_rate_pct,
-            "tqqq_wins": tqqq_wins,
-            "tqqq_losses": tqqq_losses,
-            "tqqq_win_rate_pct": tqqq_win_rate_pct,
-            "sqqq_wins": sqqq_wins,
-            "sqqq_losses": sqqq_losses,
-            "sqqq_win_rate_pct": sqqq_win_rate_pct,
+            "long_wins": long_wins,
+            "long_losses": long_losses,
+            "long_win_rate_pct": long_win_rate_pct,
+            "short_wins": short_wins,
+            "short_losses": short_losses,
+            "short_win_rate_pct": short_win_rate_pct,
             "profit_factor": profit_factor,
             "daily_reports": daily_reports,
             "weekly_reports": weekly_reports,

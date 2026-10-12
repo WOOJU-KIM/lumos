@@ -1,5 +1,6 @@
 import sys
 import os
+import config
 import json
 import time
 from pathlib import Path
@@ -53,13 +54,13 @@ def execute_live_interactive_test():
     time.sleep(3.0)
 
     # 3. 실시간 가격 확인
-    tqqq_price = streamer.get_latest_price("TQQQ")
-    print(f"\n[Step 3] 스트리머로부터 획득한 TQQQ 실시간 체결가: ${tqqq_price:.2f}")
+    long_price = streamer.get_latest_price(config.BASE_ASSET_LONG)
+    print(f"\n[Step 3] 스트리머로부터 획득한 TQQQ 실시간 체결가: ${long_price:.2f}")
 
     # 4. 실시간 시세 기반 1주 시장가 매수 발주 집행
     print("\n[Step 4] 실시간 가격 기반 TQQQ 1주 시장가 매수 발주 송출 (TR: tt80010)")
     buy_order = broker.send_order(
-        symbol="TQQQ",
+        symbol=config.BASE_ASSET_LONG,
         order_type="BUY",
         quantity=1,
         price=0.0  # 시장가
@@ -82,7 +83,7 @@ def execute_live_interactive_test():
     print("\n[Step 6] 2초 대기 후 보유 TQQQ 1주 전량 시장가 매도 청산 송출 (TR: tt80011)")
     time.sleep(2.0)
     sell_order = broker.send_order(
-        symbol="TQQQ",
+        symbol=config.BASE_ASSET_LONG,
         order_type="SELL",
         quantity=1,
         price=0.0  # 시장가 청산

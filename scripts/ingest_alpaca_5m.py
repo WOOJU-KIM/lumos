@@ -3,6 +3,7 @@ import sys
 import time
 import sqlite3
 import requests
+import config
 import pandas as pd
 from pathlib import Path
 from dotenv import load_dotenv
@@ -24,7 +25,7 @@ HEADERS = {
     "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY
 }
 
-SYMBOLS = ["TQQQ", "SQQQ", "SOXX", "QQQ", "NVDA", "VIXY", "IEF"]
+SYMBOLS = [config.BASE_ASSET_LONG, config.BASE_ASSET_SHORT, config.MACRO_TREND_SYMBOL, "QQQ", "NVDA", "VIXY", "IEF"]
 
 def fetch_alpaca_5m(symbol: str, start_iso: str, end_iso: str) -> pd.DataFrame:
     url = f"https://data.alpaca.markets/v2/stocks/{symbol}/bars"

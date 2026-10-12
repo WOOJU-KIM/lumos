@@ -1,4 +1,5 @@
 import os
+import config
 import sys
 import json
 import time
@@ -60,7 +61,7 @@ def run_master_e2e_test():
 
     if ws.is_connected:
         print(f"   • WebSocket 연결 상태: ✅ CONNECTED ({ws.ws_url})")
-        print(f"   • 구독 종목: {getattr(ws, 'target_symbols', ['TQQQ', 'SQQQ', 'NVDA', 'QQQ'])}")
+        print(f"   • 구독 종목: {getattr(ws, 'target_symbols', [config.BASE_ASSET_LONG, config.BASE_ASSET_SHORT, 'NVDA', 'QQQ'])}")
         test_summary["2_WebSocket"] = "✅ PASS"
     else:
         print("   • ❌ WebSocket 연결 실패!")
@@ -107,14 +108,14 @@ def run_master_e2e_test():
     print("\n[5/7] 🎯 주문 송출 시 슬리피지 방어(+0.03$ / -0.03$) 및 매도 전 자동취소 검증...")
     try:
         # 매수 주문 신호 송출 테스트
-        b_res = broker.send_order(symbol="TQQQ", order_type="BUY", quantity=1, price=0.0)
+        b_res = broker.send_order(symbol=config.BASE_ASSET_LONG, order_type="BUY", quantity=1, price=0.0)
         print(f"   • 매수 주문 신호 송출: {b_res.get('msg')}")
     except Exception as be:
         print(f"   • 매수 주문 신호 송출 결과 (증권사 수신): {be}")
 
     try:
         # 매도 주문 신호 송출 테스트 (-0.03$ 및 자동 취소 연동)
-        s_res = broker.send_order(symbol="SQQQ", order_type="SELL", quantity=1, price=0.0)
+        s_res = broker.send_order(symbol=config.BASE_ASSET_SHORT, order_type="SELL", quantity=1, price=0.0)
         print(f"   • 매도 주문 신호 송출: {s_res.get('msg')}")
     except Exception as se:
         print(f"   • 매도 주문 신호 송출 결과 (증권사 수신): {se}")
@@ -132,7 +133,7 @@ def run_master_e2e_test():
         "ok": True,
         "holdings_count": 1,
         "holdings": [{
-            "symbol": "SQQQ",
+            "symbol": config.BASE_ASSET_SHORT,
             "quantity": 1972,
             "purchase_price": 47.533
         }]
@@ -161,10 +162,10 @@ def run_master_e2e_test():
     # =========================================================================
     print("\n[7/7] 🧠 MoE 6대 AI 전문가 모델 실시간 추론 및 Sigmoid 게이팅 검증...")
     data_lake = MarketDataLake()
-    tqqq_15m = data_lake.get_candles_with_live_tick("TQQQ", "15m", live_price=120.0)
+    long_15m = data_lake.get_candles_with_live_tick(config.BASE_ASSET_LONG, "15m", live_price=120.0)
     
     moe = MoEMetaOrchestrator()
-    moe_res = moe.evaluate_dual_filter_signal(tqqq_15m, threshold=0.75)
+    moe_res = moe.evaluate_dual_filter_signal(long_15m, threshold=0.75)
     
     print(f"   • Top-1 선정 모델: [{moe_res.get('expert_desc')}]")
     print(f"   • Sigmoid 절대 확신도: {moe_res.get('gating_confidence', 0)*100:.1f}점 (승인 기준 75점)")

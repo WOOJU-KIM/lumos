@@ -1,0 +1,20 @@
+            }
+            account_mode = "VIRTUAL (모의투자)"
+
+        # 1. 활성 포지션 확인 (active_position.json)
+        pos_file = DATA_DIR / "active_position.json"
+        pos_desc = "현재 보유 주식 없음 (100% 외화 현금 대기 중)"
+        if pos_file.exists():
+            try:
+                with open(pos_file, "r", encoding="utf-8") as f:
+                    pos_data = json.load(f)
+                    if pos_data and pos_data.get("quantity", 0) > 0:
+                        pos_desc = (
+                            f"보유 중: {pos_data.get('symbol')} {pos_data.get('quantity')}주 @ ${pos_data.get('price', 0):.2f} "
+                            f"(진입: {pos_data.get('buy_time')}, TP: ${pos_data.get('tp_px', 0):.2f}, SL: ${pos_data.get('sl_px', 0):.2f})"
+                        )
+            except Exception:
+                pass
+
+        # 2. 일일 서킷 브레이커 상태 확인 (daily_circuit_breaker_state.json)
+        cb_file = DATA_DIR / "daily_circuit_breaker_state.json"

@@ -2,6 +2,7 @@ import json
 import logging
 import time
 from typing import Callable, Dict, Any, List, Optional
+import config
 import pandas as pd
 from datetime import datetime, timedelta
 import threading
@@ -23,14 +24,14 @@ class MockKiwoomFeeder:
             self.target_date = target_date
         else:
             conn = sqlite3.connect("data/market_data.db")
-            df_date = pd.read_sql("SELECT date(datetime) as dt FROM market_candles WHERE symbol='TQQQ' ORDER BY datetime DESC LIMIT 1", conn)
+            df_date = pd.read_sql("SELECT date(datetime) as dt FROM market_candles WHERE symbol=config.BASE_ASSET_LONG ORDER BY datetime DESC LIMIT 1", conn)
             self.target_date = df_date.iloc[0]['dt']
             conn.close()
 
         self._callbacks: List[Callable[[str, float, Dict[str, Any]], None]] = []
         self._execution_callbacks: List[Callable[[Dict[str, Any]], None]] = []
         
-        self.subscribed_symbols = ["TQQQ", "SQQQ", "SOXX", "QQQ", "NVDA", "VIXY", "IEF"]
+        self.subscribed_symbols = [config.BASE_ASSET_LONG, config.BASE_ASSET_SHORT, config.MACRO_TREND_SYMBOL, "QQQ", "NVDA", "VIXY", "IEF"]
         self.data_lake = MarketDataLake()
         
         self.current_mock_time: Optional[datetime] = None

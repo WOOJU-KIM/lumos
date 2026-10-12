@@ -39,10 +39,10 @@ print(f"   • 공식 리포트 생성: ✅ 총자산 ${rep.get('total_eval_usd'
 
 # 2. 주문 발주 및 슬리피지 테스트
 print("\n[2/4] 키움 주문 발주 및 슬리피지 방어 체계 점검:")
-order_res = broker.send_order("TQQQ", "BUY", 1, price=0.0)
+order_res = broker.send_order(config.BASE_ASSET_LONG, "BUY", 1, price=0.0)
 print(f"   • 1주 매수 발주 결과: ok={order_res.get('ok')}, 주문단가=${order_res.get('price'):.2f}, 주문번호={order_res.get('order_no')}")
 
-sell_res = broker.send_order("TQQQ", "SELL", 1, price=0.0)
+sell_res = broker.send_order(config.BASE_ASSET_LONG, "SELL", 1, price=0.0)
 print(f"   • 1주 매도 청산 결과: ok={sell_res.get('ok')}, 주문단가=${sell_res.get('price'):.2f}, 주문번호={sell_res.get('order_no')}")
 
 # 3. WebSocket 스트리머 점검

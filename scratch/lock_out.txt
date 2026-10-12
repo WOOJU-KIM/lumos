@@ -1,0 +1,3 @@
+                            is_appr = moe_res.get('is_approved', False)
+🚦 상태: {'진입 승인 🟢' if is_appr else '관망 유지 🟡'}
+                            if is_appr and not active_pos :

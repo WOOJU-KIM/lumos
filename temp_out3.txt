@@ -1,0 +1,8 @@
+{"id": 1790782259944, "timestamp": "00:30:59", "datetime": "2026-10-01 00:30:59", "level": "TRADE", "source": "Liquidation", "message": "? [? [?? ?] 100% ? ? ?] SQQQ 1762? | ?: ??120?????? (120?) |  ?: -1.63%", "meta": {}}
+{"id": 1790783127414, "timestamp": "00:45:27", "datetime": "2026-10-01 00:45:27", "level": "TRADE", "source": "AI", "message": "V3 AI  ? ?! SQQQ 1721? ?", "meta": {}}
+{"id": 1790783128144, "timestamp": "00:45:28", "datetime": "2026-10-01 00:45:28", "level": "TRADE", "source": "AutoExecution", "message": "?? [키움증권(Kiwoom) SQQQ 1? ] 1721?@ $33.94 (???68.2%)", "meta": {}}
+{"id": 1790790365448, "timestamp": "02:46:05", "datetime": "2026-10-01 02:46:05", "level": "TRADE", "source": "Liquidation", "message": "? [? [?? ?] 100% ? ? ?] SQQQ 1585? | ?: ??120?????? (120?) |  ?: +0.09%", "meta": {}}
+{"id": 1790791226685, "timestamp": "03:00:26", "datetime": "2026-10-01 03:00:26", "level": "TRADE", "source": "AI", "message": "V3 AI  ? ?! SQQQ 1692? ?", "meta": {}}
+{"id": 1790791227418, "timestamp": "03:00:27", "datetime": "2026-10-01 03:00:27", "level": "TRADE", "source": "AutoExecution", "message": "?? [키움증권(Kiwoom) SQQQ 1? ] 1692?@ $33.87 (???76.6%)", "meta": {}}
+{"id": 1790797804624, "timestamp": "04:50:04", "datetime": "2026-10-01 04:50:04", "level": "TRADE", "source": "EOD", "message": "Executing 15:50 EOD Liquidation for SQQQ", "meta": {}}
+{"id": 1790797814159, "timestamp": "04:50:14", "datetime": "2026-10-01 04:50:14", "level": "TRADE", "source": "Liquidation", "message": "? [? [?? ?] 100% ? ? ?] SQQQ 1692? | ?: EOD 15:50 100% Liquidation |  ?: +0.54%", "meta": {}}

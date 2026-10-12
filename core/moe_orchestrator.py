@@ -241,7 +241,7 @@ class MoEMetaOrchestrator:
             
             n_c = _get_c("NVDA")
             q_c = _get_c("QQQ")
-            v_c = _get_c("VIX")
+            v_c = _get_c(getattr(config, "VIX_SYMBOL", "VIXY"))
             s_c = _get_c(config.TRADE_SYMBOLS[0])
             macro_c = _get_c(config.MACRO_TREND_SYMBOL)
             

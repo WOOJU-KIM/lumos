@@ -1,5 +1,6 @@
 import sys
 import os
+import config
 import json
 import time
 import asyncio
@@ -55,11 +56,11 @@ try:
 
     # 1-4. 1주 매수 ➔ 매도 발주 테스트 (tt80010 / tt80011)
     print("   • [4. 1주 매수 발주 테스트 (tt80010)]")
-    b_res = kb_mock.send_order("TQQQ", "BUY", 1, price=0.0)
+    b_res = kb_mock.send_order(config.BASE_ASSET_LONG, "BUY", 1, price=0.0)
     print(f"     ➔ 결과: ok={b_res.get('ok')}, 주문번호: {b_res.get('order_no')}, msg: {b_res.get('msg')}")
     
     print("   • [5. 1주 매도 발주 테스트 (tt80011)]")
-    s_res = kb_mock.send_order("TQQQ", "SELL", 1, price=0.0)
+    s_res = kb_mock.send_order(config.BASE_ASSET_LONG, "SELL", 1, price=0.0)
     print(f"     ➔ 결과: ok={s_res.get('ok')}, 주문번호: {s_res.get('order_no')}, msg: {s_res.get('msg')}")
     results["mock_orders"] = b_res.get("ok") and s_res.get("ok")
 
@@ -98,7 +99,7 @@ try:
 
     # 2-4. 실전 매매 발주 신호 테스트 (잔고 0원이므로 예수금 부족 또는 정상 거부 응답 코드 확인)
     print("   • [4. 실전 발주 신호 전송 테스트 (tt80010 - 매수 1주)]")
-    real_order_res = kb_real.send_order("TQQQ", "BUY", 1, price=0.0)
+    real_order_res = kb_real.send_order(config.BASE_ASSET_LONG, "BUY", 1, price=0.0)
     print(f"     ➔ 결과: ok={real_order_res.get('ok')}, return_code={real_order_res.get('return_code')}, msg: {real_order_res.get('msg')}")
     results["real_order_test"] = real_order_res
 

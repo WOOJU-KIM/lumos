@@ -1,6 +1,7 @@
 import os
 import sys
 import sqlite3
+import config
 import pandas as pd
 import numpy as np
 from pathlib import Path
@@ -31,79 +32,79 @@ def run_volatility_sniper_backtest():
     lake = MarketDataLake()
     print("⏳ [1/4] Loading multi-timeframe market candles from DataLake...")
 
-    tqqq_15m = lake.load_candles("TQQQ", "15m")
-    sqqq_15m = lake.load_candles("SQQQ", "15m")
-    tqqq_5m  = lake.load_candles("TQQQ", "5m")
-    sqqq_5m  = lake.load_candles("SQQQ", "5m")
-    soxx_60m = lake.load_candles("SOXX", "60m")
-    tqqq_60m = lake.load_candles("TQQQ", "60m")
-    soxx_15m = lake.load_candles("SOXX", "15m")
+    long_15m = lake.load_candles(config.BASE_ASSET_LONG, "15m")
+    short_15m = lake.load_candles(config.BASE_ASSET_SHORT, "15m")
+    long_5m  = lake.load_candles(config.BASE_ASSET_LONG, "5m")
+    short_5m  = lake.load_candles(config.BASE_ASSET_SHORT, "5m")
+    macro_60m = lake.load_candles(config.MACRO_TREND_SYMBOL, "60m")
+    long_60m = lake.load_candles(config.BASE_ASSET_LONG, "60m")
+    macro_15m = lake.load_candles(config.MACRO_TREND_SYMBOL, "15m")
     nvda_15m = lake.load_candles("NVDA", "15m")
     qqq_15m  = lake.load_candles("QQQ", "15m")
     vix_15m  = lake.load_candles("^VIX", "15m")
 
     # Screen 1 EMA20 precalculation on 60m
-    soxx_60m['ema20'] = soxx_60m['Close'].ewm(span=20, adjust=False).mean()
-    tqqq_60m['ema20'] = tqqq_60m['Close'].ewm(span=20, adjust=False).mean()
+    macro_60m['ema20'] = macro_60m['Close'].ewm(span=20, adjust=False).mean()
+    long_60m['ema20'] = long_60m['Close'].ewm(span=20, adjust=False).mean()
 
-    for df in [tqqq_15m, sqqq_15m, tqqq_5m, sqqq_5m, soxx_60m, tqqq_60m, soxx_15m, nvda_15m, qqq_15m, vix_15m]:
+    for df in [long_15m, short_15m, long_5m, short_5m, macro_60m, long_60m, macro_15m, nvda_15m, qqq_15m, vix_15m]:
         df['datetime_dt'] = pd.to_datetime(df['datetime'])
         df['date_str'] = df['datetime_dt'].dt.strftime('%Y-%m-%d')
         df['time_str'] = df['datetime_dt'].dt.strftime('%H:%M')
 
     print("⏳ [2/4] Pre-processing Phase 1 ML GBDT & Cross-Asset Causal Vectors...")
     ml_15m = MLFeatureEngine()
-    tqqq_15m_feat = ml_15m.extract_features(tqqq_15m)
-    tqqq_15m_feat = ml_15m.add_confidence_columns(tqqq_15m_feat)
-    sqqq_15m_feat = ml_15m.extract_features(sqqq_15m)
-    sqqq_15m_feat.set_index('datetime', inplace=True, drop=False)
+    long_15m_feat = ml_15m.extract_features(long_15m)
+    long_15m_feat = ml_15m.add_confidence_columns(long_15m_feat)
+    short_15m_feat = ml_15m.extract_features(short_15m)
+    short_15m_feat.set_index('datetime', inplace=True, drop=False)
 
     cross_mod = CrossAssetDislocationModel(dislocation_z_threshold=1.6)
     nvda_map = nvda_15m.set_index('datetime')['Close'].to_dict()
-    soxx_map = soxx_15m.set_index('datetime')['Close'].to_dict()
+    macro_map = macro_15m.set_index('datetime')['Close'].to_dict()
     qqq_map = qqq_15m.set_index('datetime')['Close'].to_dict()
     vix_map = vix_15m.set_index('datetime')['Close'].to_dict()
-    tqqq_close = tqqq_15m['Close'].values
-    tqqq_dt = tqqq_15m['datetime'].values
+    long_close = long_15m['Close'].values
+    long_dt = long_15m['datetime'].values
 
     cross_dirs = []
     cross_confs = []
-    for i in range(len(tqqq_15m)):
+    for i in range(len(long_15m)):
         if i < 5:
             cross_dirs.append('NONE'); cross_confs.append(0.50); continue
-        c_t, p_t = tqqq_dt[i], tqqq_dt[i-5]
+        c_t, p_t = long_dt[i], long_dt[i-5]
         if c_t in nvda_map and p_t in nvda_map and c_t in qqq_map and p_t in qqq_map and c_t in vix_map and p_t in vix_map:
-            s_r = float(tqqq_close[i]/tqqq_close[i-5] - 1.0)
+            s_r = float(long_close[i]/long_close[i-5] - 1.0)
             n_r = float(nvda_map[c_t]/nvda_map[p_t] - 1.0)
-            sx_r = float(soxx_map[c_t]/soxx_map[p_t] - 1.0) if c_t in soxx_map and p_t in soxx_map else n_r
+            sx_r = float(macro_map[c_t]/macro_map[p_t] - 1.0) if c_t in macro_map and p_t in macro_map else n_r
             q_r = float(qqq_map[c_t]/qqq_map[p_t] - 1.0)
             v_r = float(vix_map[c_t]/vix_map[p_t] - 1.0)
-            code, conf, _ = cross_mod.predict_signal(tqqq_ret=s_r, nvda_ret=n_r, soxx_ret=sx_r, qqq_ret=q_r, vix_ret=v_r, tnx_ret=0.0)
-            c_dir = 'LONG_TQQQ' if code > 0 else ('SHORT_SQQQ' if code < 0 else 'NONE')
+            code, conf, _ = cross_mod.predict_signal(long_ret=s_r, nvda_ret=n_r, macro_ret=sx_r, qqq_ret=q_r, vix_ret=v_r, tnx_ret=0.0)
+            c_dir = "LONG" if code > 0 else ("SHORT" if code < 0 else 'NONE')
             cross_dirs.append(c_dir); cross_confs.append(conf)
         else:
             cross_dirs.append('NONE'); cross_confs.append(0.50)
 
-    tqqq_15m_feat['cross_dir'] = cross_dirs
-    tqqq_15m_feat['cross_conf'] = cross_confs
+    long_15m_feat['cross_dir'] = cross_dirs
+    long_15m_feat['cross_conf'] = cross_confs
 
     print("⏳ [3/4] Engineering Rolling Intraday VWAP, Daily High/Low, and Volume Accelerators...")
     # Real-time Daily Cumulative VWAP, Daily High, Daily Low resetting every day at 09:30
-    tqqq_15m_feat['cum_vol'] = tqqq_15m_feat.groupby('date_str')['Volume'].cumsum()
-    tqqq_15m_feat['cum_pv'] = tqqq_15m_feat.groupby('date_str').apply(lambda x: (x['Close'] * x['Volume']).cumsum()).reset_index(level=0, drop=True)
-    tqqq_15m_feat['intraday_vwap'] = tqqq_15m_feat['cum_pv'] / (tqqq_15m_feat['cum_vol'] + 1e-6)
+    long_15m_feat['cum_vol'] = long_15m_feat.groupby('date_str')['Volume'].cumsum()
+    long_15m_feat['cum_pv'] = long_15m_feat.groupby('date_str').apply(lambda x: (x['Close'] * x['Volume']).cumsum()).reset_index(level=0, drop=True)
+    long_15m_feat['intraday_vwap'] = long_15m_feat['cum_pv'] / (long_15m_feat['cum_vol'] + 1e-6)
 
     # Intraday cumulative High and Low (rolling from 09:30 open up to the current 15m bar)
-    tqqq_15m_feat['daily_high'] = tqqq_15m_feat.groupby('date_str')['High'].cummax()
-    tqqq_15m_feat['daily_low'] = tqqq_15m_feat.groupby('date_str')['Low'].cummin()
+    long_15m_feat['daily_high'] = long_15m_feat.groupby('date_str')['High'].cummax()
+    long_15m_feat['daily_low'] = long_15m_feat.groupby('date_str')['Low'].cummin()
 
     # Prior 3-candle rolling average volume (momentum accelerator)
     # Using shift(1) to avoid lookahead bias
-    tqqq_15m_feat['vol_ma3_prior'] = tqqq_15m_feat.groupby('date_str')['Volume'].shift(1).rolling(3, min_periods=1).mean()
+    long_15m_feat['vol_ma3_prior'] = long_15m_feat.groupby('date_str')['Volume'].shift(1).rolling(3, min_periods=1).mean()
 
-    tqqq_15m_feat.set_index('datetime', inplace=True, drop=False)
+    long_15m_feat.set_index('datetime', inplace=True, drop=False)
 
-    unique_dates = sorted(tqqq_15m['date_str'].unique())
+    unique_dates = sorted(long_15m['date_str'].unique())
 
     # Execution Constants
     SLIPPAGE = 0.03
@@ -125,9 +126,9 @@ def run_volatility_sniper_backtest():
         daily_stoploss_count = 0
 
         for d_str in unique_dates:
-            day_15 = tqqq_15m_feat[tqqq_15m_feat['date_str'] == d_str]
-            day_5_l = tqqq_5m[tqqq_5m['date_str'] == d_str]
-            day_5_s = sqqq_5m[sqqq_5m['date_str'] == d_str]
+            day_15 = long_15m_feat[long_15m_feat['date_str'] == d_str]
+            day_5_l = long_5m[long_5m['date_str'] == d_str]
+            day_5_s = short_5m[short_5m['date_str'] == d_str]
             if len(day_15) < 5:
                 continue
 
@@ -164,42 +165,42 @@ def run_volatility_sniper_backtest():
                     dir_cross = row_15['cross_dir']
                     conf_cross = float(row_15['cross_conf'])
 
-                    is_gbdt = (dir_gbdt in ['LONG_TQQQ', 'SHORT_SQQQ']) and (conf_gbdt >= 0.60)
+                    is_gbdt = (dir_gbdt in ["LONG", "SHORT"]) and (conf_gbdt >= 0.60)
                     is_opposite_veto = (
-                        (dir_gbdt == 'LONG_TQQQ' and dir_cross == 'SHORT_SQQQ' and conf_cross >= 0.60) or
-                        (dir_gbdt == 'SHORT_SQQQ' and dir_cross == 'LONG_TQQQ' and conf_cross >= 0.60)
+                        (dir_gbdt == "LONG" and dir_cross == "SHORT" and conf_cross >= 0.60) or
+                        (dir_gbdt == "SHORT" and dir_cross == "LONG" and conf_cross >= 0.60)
                     )
 
                     if not (is_gbdt and not is_opposite_veto):
                         b_idx += 1; continue
 
-                    chosen_sym = 'TQQQ' if dir_gbdt == 'LONG_TQQQ' else 'SQQQ'
+                    chosen_sym = config.BASE_ASSET_LONG if dir_gbdt == "LONG" else config.BASE_ASSET_SHORT
 
                     # Screen 1: 60m trend
-                    past_soxx = soxx_60m[soxx_60m['datetime'] <= cur_time]
-                    past_tqqq = tqqq_60m[tqqq_60m['datetime'] <= cur_time]
-                    if len(past_soxx) < 20 or len(past_tqqq) < 20:
+                    past_macro = macro_60m[macro_60m['datetime'] <= cur_time]
+                    past_long = long_60m[long_60m['datetime'] <= cur_time]
+                    if len(past_macro) < 20 or len(past_long) < 20:
                         b_idx += 1; continue
-                    soxx_c = past_soxx['Close'].iloc[-1]
-                    tqqq_c = past_tqqq['Close'].iloc[-1]
-                    soxx_ema = past_soxx['ema20'].iloc[-1]
-                    tqqq_ema = past_tqqq['ema20'].iloc[-1]
-                    if chosen_sym == 'TQQQ' and not (soxx_c >= soxx_ema * 0.998 and tqqq_c >= tqqq_ema * 0.998):
+                    macro_c = past_macro['Close'].iloc[-1]
+                    long_c = past_long['Close'].iloc[-1]
+                    macro_ema = past_macro['ema20'].iloc[-1]
+                    long_ema = past_long['ema20'].iloc[-1]
+                    if chosen_sym == config.BASE_ASSET_LONG and not (macro_c >= macro_ema * 0.998 and long_c >= long_ema * 0.998):
                         b_idx += 1; continue
-                    elif chosen_sym == 'SQQQ' and not (soxx_c <= soxx_ema * 1.002):
+                    elif chosen_sym == config.BASE_ASSET_SHORT and not (macro_c <= macro_ema * 1.002):
                         b_idx += 1; continue
 
                     # Screen 3: Dip filter
-                    if chosen_sym == 'TQQQ':
+                    if chosen_sym == config.BASE_ASSET_LONG:
                         vd = float(row_15.get('VWAP_Diff', 0.0))
                         r14 = float(row_15.get('RSI_14', 50.0))
                         bbl = float(row_15.get('BB_Lower', 0.0))
                         if not (vd <= 1.5 and r14 <= 62.0 and (bbl <= 0 or float(row_15['Close']) >= bbl * 1.001)):
                             b_idx += 1; continue
                     else:
-                        if cur_time not in sqqq_15m_feat.index:
+                        if cur_time not in short_15m_feat.index:
                             b_idx += 1; continue
-                        rs = sqqq_15m_feat.loc[cur_time]
+                        rs = short_15m_feat.loc[cur_time]
                         vd = float(rs.get('VWAP_Diff', 0.0))
                         r14 = float(rs.get('RSI_14', 50.0))
                         bbl = float(rs.get('BB_Lower', 0.0))
@@ -225,17 +226,17 @@ def run_volatility_sniper_backtest():
                     vol_surge = (cur_vol > vol_ma3) if vol_ma3 > 0 else True
 
                     # 1. TQQQ (롱 돌파): Spot > VWAP AND Spot >= Daily_High * 0.99 AND Volume > MA3
-                    cond_tqqq = (spot_px > vwap_px) and (spot_px >= d_high * 0.99) and vol_surge
+                    cond_long = (spot_px > vwap_px) and (spot_px >= d_high * 0.99) and vol_surge
 
                     # 2. SQQQ (숏 돌파): Spot < VWAP AND Spot <= Daily_Low * 1.01 AND Volume > MA3
-                    cond_sqqq = (spot_px < vwap_px) and (spot_px <= d_low * 1.01) and vol_surge
+                    cond_short = (spot_px < vwap_px) and (spot_px <= d_low * 1.01) and vol_surge
 
-                    if cond_tqqq and not cond_sqqq:
-                        chosen_sym = 'TQQQ'
+                    if cond_long and not cond_short:
+                        chosen_sym = config.BASE_ASSET_LONG
                         phase_tag = "Phase 2 (Vol Sniper)"
                         trigger_desc = f"High Breakout (P={spot_px:.2f} >= {d_high*0.99:.2f}, V={cur_vol/vol_ma3:.1f}x)"
-                    elif cond_sqqq and not cond_tqqq:
-                        chosen_sym = 'SQQQ'
+                    elif cond_short and not cond_long:
+                        chosen_sym = config.BASE_ASSET_SHORT
                         phase_tag = "Phase 2 (Vol Sniper)"
                         trigger_desc = f"Low Breakdown (P={spot_px:.2f} <= {d_low*1.01:.2f}, V={cur_vol/vol_ma3:.1f}x)"
                     else:
@@ -245,14 +246,14 @@ def run_volatility_sniper_backtest():
                     b_idx += 1; continue
 
                 # Position Entry
-                base_px = float(row_15['Close']) if chosen_sym == 'TQQQ' else float(sqqq_15m_feat.loc[cur_time]['Close'])
+                base_px = float(row_15['Close']) if chosen_sym == config.BASE_ASSET_LONG else float(short_15m_feat.loc[cur_time]['Close'])
                 entry_px = round(base_px + SLIPPAGE, 2)
                 shares = int(capital / entry_px)
                 invested = shares * entry_px
                 if shares <= 0:
                     b_idx += 1; continue
 
-                target_5m = day_5_l if chosen_sym == 'TQQQ' else day_5_s
+                target_5m = day_5_l if chosen_sym == config.BASE_ASSET_LONG else day_5_s
                 post_5m = target_5m[target_5m['datetime'] > cur_time]
                 if post_5m.empty:
                     b_idx += 1; continue

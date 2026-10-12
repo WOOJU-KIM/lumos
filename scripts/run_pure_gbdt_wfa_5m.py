@@ -11,6 +11,7 @@
 import os, sys, json, time
 from pathlib import Path
 import numpy as np
+import config
 import pandas as pd
 from lightgbm import LGBMClassifier
 
@@ -89,10 +90,10 @@ def run_conf_wfa_5m(df_feat, unique_weeks, fcols, conf_thr, label):
         for i in range(len(dts_wk)):
             ps, pn, pl = p_s[i], p_n[i], p_l[i]
             if pl > pn and pl > ps:
-                gbdt_dirs.append("LONG_TQQQ")
+                gbdt_dirs.append("LONG")
                 gbdt_confs.append(min(0.95, max(0.50, 0.50+(pl-0.333)*1.15)))
             elif ps > pn and ps > pl:
-                gbdt_dirs.append("SHORT_SQQQ")
+                gbdt_dirs.append("SHORT")
                 gbdt_confs.append(min(0.95, max(0.50, 0.50+(ps-0.333)*1.15)))
             else:
                 gbdt_dirs.append("NONE"); gbdt_confs.append(0.50)
@@ -119,12 +120,12 @@ def run_conf_wfa_5m(df_feat, unique_weeks, fcols, conf_thr, label):
                 gbdt_dir  = row["gbdt_dir"]
                 gbdt_conf = float(row["gbdt_conf"])
 
-                if gbdt_dir not in ("LONG_TQQQ","SHORT_SQQQ") or gbdt_conf < conf_thr:
+                if gbdt_dir not in ("LONG","SHORT") or gbdt_conf < conf_thr:
                     b_idx += 1; continue
 
-                sym = "TQQQ" if gbdt_dir=="LONG_TQQQ" else "SQQQ"
+                sym = config.BASE_ASSET_LONG if gbdt_dir=="LONG" else config.BASE_ASSET_SHORT
                 # SQQQ 진입가 역산 (여기서는 편의상 TQQQ의 가격에서 수익률을 뒤집는 방식을 쓰거나
-                # 정확히 하려면 sqqq_5m_d 가 필요하지만, 속도와 정확성을 위해 TQQQ 5m의 이후 경로를 직접 평가)
+                # 정확히 하려면 short_5m_d 가 필요하지만, 속도와 정확성을 위해 TQQQ 5m의 이후 경로를 직접 평가)
                 entry_px = float(row["Close"])
                 shares = int(cap / entry_px)
                 if shares <= 0:
@@ -148,7 +149,7 @@ def run_conf_wfa_5m(df_feat, unique_weeks, fcols, conf_thr, label):
                     o_ret = (float(c5["Open"]) - entry_px) / entry_px
 
                     # 방향에 맞게 수익률 치환
-                    if sym == "LONG_TQQQ":
+                    if sym == "LONG":
                         h_pct = hr; l_pct = lr; c_pct = c_ret; o_pct = o_ret
                     else:
                         h_pct = -lr; l_pct = -hr; c_pct = -c_ret; o_pct = -o_ret # 인버스
@@ -173,7 +174,7 @@ def run_conf_wfa_5m(df_feat, unique_weeks, fcols, conf_thr, label):
                 if ex_ts == "":
                     last = post5.iloc[-1]
                     c_ret = (float(last["Close"]) - entry_px) / entry_px
-                    net_ret = (c_ret if sym=="LONG_TQQQ" else -c_ret) - FEE_RATE - (SLIP/entry_px)*2
+                    net_ret = (c_ret if sym=="LONG" else -c_ret) - FEE_RATE - (SLIP/entry_px)*2
                     ex_ts = last["time_str"]
 
                 pnl  = cap * net_ret
@@ -240,15 +241,15 @@ def main():
     ml   = MLFeatureEngine() # 5분봉도 처리 가능
 
     print("="*90+"\n📦 데이터 로드 및 피처 추출 (순수 GBDT 5분봉 기반)\n"+"="*90)
-    tqqq_5m = lake.load_candles("TQQQ","5m").sort_values("datetime").reset_index(drop=True)
+    long_5m = lake.load_candles(config.BASE_ASSET_LONG,"5m").sort_values("datetime").reset_index(drop=True)
 
     # 5분봉 데이터 정리
-    tqqq_5m["datetime_dt"] = pd.to_datetime(tqqq_5m["datetime"])
-    tqqq_5m["date_str"]    = tqqq_5m["datetime_dt"].dt.strftime("%Y-%m-%d")
-    tqqq_5m["time_str"]    = tqqq_5m["datetime_dt"].dt.strftime("%H:%M")
+    long_5m["datetime_dt"] = pd.to_datetime(long_5m["datetime"])
+    long_5m["date_str"]    = long_5m["datetime_dt"].dt.strftime("%Y-%m-%d")
+    long_5m["time_str"]    = long_5m["datetime_dt"].dt.strftime("%H:%M")
 
     print("⏳ MLFeatureEngine 피처 추출 중 (5분봉 기반)...")
-    df_feat = ml.extract_features(tqqq_5m)
+    df_feat = ml.extract_features(long_5m)
     df_feat["datetime_dt"] = pd.to_datetime(df_feat["datetime"])
     df_feat["date_str"] = df_feat["datetime_dt"].dt.strftime("%Y-%m-%d")
     df_feat["time_str"] = df_feat["datetime_dt"].dt.strftime("%H:%M")

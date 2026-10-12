@@ -44,16 +44,16 @@ for ex in execs:
 # 2. 새벽 장세 분석 및 AI 능동 의사결정 (TQQQ vs SQQQ)
 print("\n2. 🧠 [새벽 장세 국면 및 AI 능동 SQQQ/TQQQ 스캔 분석]")
 lake = MarketDataLake()
-tqqq_15m = lake.load_candles("TQQQ", "15m")
-sqqq_15m = lake.load_candles("SQQQ", "15m")
+long_15m = lake.load_candles(config.BASE_ASSET_LONG, "15m")
+short_15m = lake.load_candles(config.BASE_ASSET_SHORT, "15m")
 
 moe = MoEMetaOrchestrator(confidence_threshold=0.75)
-tqqq_eval = moe.evaluate_dual_filter_signal(tqqq_15m, threshold=0.75)
-sqqq_eval = moe.evaluate_dual_filter_signal(sqqq_15m, threshold=0.75)
+long_eval = moe.evaluate_dual_filter_signal(long_15m, threshold=0.75)
+short_eval = moe.evaluate_dual_filter_signal(short_15m, threshold=0.75)
 
 print(f"• 현재 MoE 게이팅 스캔 결과:")
-print(f"  - TQQQ 스캔: 지목 [{tqqq_eval.get('expert_desc')}] | 확신도: {tqqq_eval.get('gating_confidence', 0)*100:.1f}점 | 방향: {tqqq_eval.get('direction')} | 승인: {tqqq_eval.get('is_approved')}")
-print(f"  - SQQQ 스캔: 지목 [{sqqq_eval.get('expert_desc')}] | 확신도: {sqqq_eval.get('gating_confidence', 0)*100:.1f}점 | 방향: {sqqq_eval.get('direction')} | 승인: {sqqq_eval.get('is_approved')}")
+print(f"  - TQQQ 스캔: 지목 [{long_eval.get('expert_desc')}] | 확신도: {long_eval.get('gating_confidence', 0)*100:.1f}점 | 방향: {long_eval.get('direction')} | 승인: {long_eval.get('is_approved')}")
+print(f"  - SQQQ 스캔: 지목 [{short_eval.get('expert_desc')}] | 확신도: {short_eval.get('gating_confidence', 0)*100:.1f}점 | 방향: {short_eval.get('direction')} | 승인: {short_eval.get('is_approved')}")
 
 # 3. 섀도우 원장 DB 조회
 print("\n3. 💾 [DB 적재 의사결정 및 체결 내역]")

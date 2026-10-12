@@ -1,0 +1,20 @@
+        # 22~24 모델 사전 학습 (2022-09-15 ~ 2024-09-14)
+        train_mask_22_24 = (tqqq_feat['date_str'] >= '2022-09-15') & (tqqq_feat['date_str'] <= '2024-09-14')
+        clf_22_24 = LGBMClassifier(
+            objective='multiclass',
+            num_class=3,
+            class_weight='balanced',
+            n_estimators=100,
+            max_depth=5,
+            learning_rate=0.03,
+            random_state=42,
+            verbosity=-1,
+            n_jobs=-1
+        )
+        clf_22_24.fit(tqqq_feat.loc[train_mask_22_24, feature_cols].fillna(0.0), tqqq_feat.loc[train_mask_22_24, 'target'])
+        print("   🧠 [2022~2024 고정 모델 학습 완료]")
+
+        test_mask = tqqq_feat['date_str'] >= '2022-09-15'
+        test_df = tqqq_feat[test_mask].copy()
+
+        X_all = test_df[feature_cols].fillna(0.0)

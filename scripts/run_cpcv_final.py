@@ -1,5 +1,6 @@
 import sys
 import numpy as np
+import config
 import pandas as pd
 from pathlib import Path
 import itertools
@@ -18,52 +19,52 @@ def run_cpcv_final():
     print('=' * 80)
 
     lake = MarketDataLake()
-    tqqq_15m = lake.load_candles('TQQQ', '15m')
-    sqqq_15m = lake.load_candles('SQQQ', '15m')
-    soxx_60m = lake.load_candles('SOXX', '60m')
+    long_15m = lake.load_candles(config.BASE_ASSET_LONG, '15m')
+    short_15m = lake.load_candles(config.BASE_ASSET_SHORT, '15m')
+    macro_60m = lake.load_candles(config.MACRO_TREND_SYMBOL, '60m')
     nvda_15m = lake.load_candles('NVDA', '15m')
-    soxx_15m = lake.load_candles('SOXX', '15m')
+    macro_15m = lake.load_candles(config.MACRO_TREND_SYMBOL, '15m')
     qqq_15m  = lake.load_candles('QQQ', '15m')
     vixy_15m = lake.load_candles('VIXY', '15m')
     ief_15m  = lake.load_candles('IEF', '15m')
-    tqqq_5m = lake.load_candles('TQQQ', '5m')
-    sqqq_5m = lake.load_candles('SQQQ', '5m')
+    long_5m = lake.load_candles(config.BASE_ASSET_LONG, '5m')
+    short_5m = lake.load_candles(config.BASE_ASSET_SHORT, '5m')
     
-    soxx_60m['ema20'] = soxx_60m['Close'].ewm(span=20, adjust=False).mean()
+    macro_60m['ema20'] = macro_60m['Close'].ewm(span=20, adjust=False).mean()
     
-    tqqq_5m_by_date = {}
-    for d, g in tqqq_5m.groupby(tqqq_5m['datetime'].str.slice(0, 10)):
-        tqqq_5m_by_date[d] = g.sort_values('datetime').reset_index(drop=True)
-    sqqq_5m_by_date = {}
-    for d, g in sqqq_5m.groupby(sqqq_5m['datetime'].str.slice(0, 10)):
-        sqqq_5m_by_date[d] = g.sort_values('datetime').reset_index(drop=True)
+    long_5m_by_date = {}
+    for d, g in long_5m.groupby(long_5m['datetime'].str.slice(0, 10)):
+        long_5m_by_date[d] = g.sort_values('datetime').reset_index(drop=True)
+    short_5m_by_date = {}
+    for d, g in short_5m.groupby(short_5m['datetime'].str.slice(0, 10)):
+        short_5m_by_date[d] = g.sort_values('datetime').reset_index(drop=True)
         
     ml_engine = MLFeatureEngine(confidence_threshold=0.60)
-    tqqq_feat = ml_engine.extract_features(tqqq_15m)
-    labels = ml_engine.compute_triple_barrier_labels(tqqq_feat)
-    tqqq_feat['target'] = labels.map({1: 2, -1: 0, 0: 1}).fillna(1).astype(int)
+    long_feat = ml_engine.extract_features(long_15m)
+    labels = ml_engine.compute_triple_barrier_labels(long_feat)
+    long_feat['target'] = labels.map({1: 2, -1: 0, 0: 1}).fillna(1).astype(int)
     
-    tqqq_feat['datetime_dt'] = pd.to_datetime(tqqq_feat['datetime'])
-    tqqq_feat['date_str'] = tqqq_feat['datetime_dt'].dt.strftime('%Y-%m-%d')
+    long_feat['datetime_dt'] = pd.to_datetime(long_feat['datetime'])
+    long_feat['date_str'] = long_feat['datetime_dt'].dt.strftime('%Y-%m-%d')
     
-    tqqq_feat['ATR_Pct'] = (tqqq_feat['ATR_14'] / (tqqq_feat['Close'] + 1e-9)) * 100.0
-    tqqq_feat['MACD_Pct'] = (tqqq_feat['MACD'] / (tqqq_feat['Close'] + 1e-9)) * 100.0
+    long_feat['ATR_Pct'] = (long_feat['ATR_14'] / (long_feat['Close'] + 1e-9)) * 100.0
+    long_feat['MACD_Pct'] = (long_feat['MACD'] / (long_feat['Close'] + 1e-9)) * 100.0
     
     raw_price_features = {'open', 'high', 'low', 'close', 'volume', 'Open', 'High', 'Low', 'Close', 'Volume',
         'datetime', 'datetime_dt', 'date_str', 'time_str', 'week_id', 'target', 'date', 'year',
         'cum_vp', 'vwap', 'EMA_9', 'EMA_21', 'EMA_50', 'EMA_200',
         'BB_Upper', 'BB_Lower', 'KC_Upper', 'KC_Lower', 'ATR_14', 'MACD', 'MACD_Signal', 'MACD_Hist'}
-    feature_cols = [c for c in tqqq_feat.columns if c not in raw_price_features and pd.api.types.is_numeric_dtype(tqqq_feat[c])]
+    feature_cols = [c for c in long_feat.columns if c not in raw_price_features and pd.api.types.is_numeric_dtype(long_feat[c])]
     
     nvda_map = nvda_15m.set_index('datetime')['Close'].to_dict()
-    soxx_map = soxx_15m.set_index('datetime')['Close'].to_dict()
+    macro_map = macro_15m.set_index('datetime')['Close'].to_dict()
     qqq_map  = qqq_15m.set_index('datetime')['Close'].to_dict()
     vix_map  = vixy_15m.set_index('datetime')['Close'].to_dict()
     ief_map  = ief_15m.set_index('datetime')['Close'].to_dict()
     
     cross_mod = CrossAssetDislocationModel(dislocation_z_threshold=1.6)
     
-    unique_dates = sorted(tqqq_feat['date_str'].unique())
+    unique_dates = sorted(long_feat['date_str'].unique())
     n_splits = 6
     split_size = len(unique_dates) // n_splits
     folds = [unique_dates[i*split_size : (i+1)*split_size if i<n_splits-1 else len(unique_dates)] for i in range(n_splits)]
@@ -76,17 +77,17 @@ def run_cpcv_final():
         train_dates = [d for i in train_fold_indices for d in folds[i]]
         test_dates = [d for i in test_fold_indices for d in folds[i]]
         
-        train_mask = tqqq_feat['date_str'].isin(train_dates)
-        test_mask = tqqq_feat['date_str'].isin(test_dates)
+        train_mask = long_feat['date_str'].isin(train_dates)
+        test_mask = long_feat['date_str'].isin(test_dates)
         
         clf = LGBMClassifier(
             objective='multiclass', num_class=3, class_weight='balanced',
             n_estimators=80, max_depth=4, learning_rate=0.03, random_state=42, verbosity=-1, n_jobs=-1
         )
-        clf.fit(tqqq_feat.loc[train_mask, feature_cols].fillna(0.0), tqqq_feat.loc[train_mask, 'target'])
+        clf.fit(long_feat.loc[train_mask, feature_cols].fillna(0.0), long_feat.loc[train_mask, 'target'])
         
-        w_probs = clf.predict_proba(tqqq_feat.loc[test_mask, feature_cols].fillna(0.0))
-        test_df = tqqq_feat[test_mask].copy()
+        w_probs = clf.predict_proba(long_feat.loc[test_mask, feature_cols].fillna(0.0))
+        test_df = long_feat[test_mask].copy()
         
         w_confs = np.full(len(test_df), 0.50, dtype=float)
         w_dirs = ['NONE'] * len(test_df)
@@ -94,10 +95,10 @@ def run_cpcv_final():
             ps, pn, pl = w_probs[i, 0], w_probs[i, 1], w_probs[i, 2]
             if pl > pn and pl > ps:
                 w_confs[i] = min(0.95, max(0.50, 0.50 + (pl - 0.333) * 1.15))
-                w_dirs[i] = 'LONG_TQQQ'
+                w_dirs[i] = "LONG"
             elif ps > pn and ps > pl:
                 w_confs[i] = min(0.95, max(0.50, 0.50 + (ps - 0.333) * 1.15))
-                w_dirs[i] = 'SHORT_SQQQ'
+                w_dirs[i] = "SHORT"
                 
         test_df['Confidence'] = w_confs
         test_df['Direction'] = w_dirs
@@ -106,8 +107,8 @@ def run_cpcv_final():
         
         for d_str in test_dates:
             day_bars_15 = test_df[test_df['date_str'] == d_str].reset_index(drop=True)
-            day_tqqq_5 = tqqq_5m_by_date.get(d_str, pd.DataFrame())
-            day_sqqq_5 = sqqq_5m_by_date.get(d_str, pd.DataFrame())
+            day_long_5 = long_5m_by_date.get(d_str, pd.DataFrame())
+            day_short_5 = short_5m_by_date.get(d_str, pd.DataFrame())
             
             for b_idx in range(len(day_bars_15)):
                 if b_idx < 5: continue
@@ -120,25 +121,25 @@ def run_cpcv_final():
                 conf_gbdt = row['Confidence']
                 if dir_gbdt == 'NONE' or conf_gbdt < 0.60: continue
                 
-                cur_tqqq_close = float(row.get('Close', 1.0))
-                cur_sqqq_close = 1.0
+                cur_long_close = float(row.get('Close', 1.0))
+                cur_short_close = 1.0
                 
                 d_date = dt_str[:10]
-                soxx_day = soxx_60m[soxx_60m['datetime'].str.startswith(d_date)]
-                soxx_60m_bull = True
-                soxx_60m_bear = True
-                if not soxx_day.empty:
-                    last_soxx = soxx_day.iloc[-1]
-                    s_close = float(last_soxx['Close'])
-                    s_ema = float(last_soxx['ema20'])
+                macro_day = macro_60m[macro_60m['datetime'].str.startswith(d_date)]
+                macro_60m_bull = True
+                macro_60m_bear = True
+                if not macro_day.empty:
+                    last_macro = macro_day.iloc[-1]
+                    s_close = float(last_macro['Close'])
+                    s_ema = float(last_macro['ema20'])
                     if s_ema > 0:
-                        if s_close < s_ema: soxx_60m_bull = False
-                        if s_close > s_ema: soxx_60m_bear = False
+                        if s_close < s_ema: macro_60m_bull = False
+                        if s_close > s_ema: macro_60m_bear = False
                 
                 # Cross Asset Veto
                 cross_dir = "NONE"
                 n_px = nvda_map.get(dt_str)
-                sx_px = soxx_map.get(dt_str)
+                sx_px = macro_map.get(dt_str)
                 q_px = qqq_map.get(dt_str)
                 v_px = vix_map.get(dt_str)
                 i_px = ief_map.get(dt_str)
@@ -146,37 +147,37 @@ def run_cpcv_final():
                 if n_px and sx_px and q_px:
                     prev_dt = day_bars_15.iloc[b_idx - 5]['datetime']
                     p_n = nvda_map.get(prev_dt, n_px)
-                    p_sx = soxx_map.get(prev_dt, sx_px)
+                    p_sx = macro_map.get(prev_dt, sx_px)
                     p_q = qqq_map.get(prev_dt, q_px)
                     p_v = vix_map.get(prev_dt, v_px) if v_px else None
                     p_i = ief_map.get(prev_dt, i_px) if i_px else None
                     
                     nvda_r = (n_px / p_n - 1.0) if p_n else 0.0
-                    soxx_r = (sx_px / p_sx - 1.0) if p_sx else 0.0
+                    macro_r = (sx_px / p_sx - 1.0) if p_sx else 0.0
                     qqq_r  = (q_px / p_q - 1.0) if p_q else 0.0
                     vix_r  = (v_px / p_v - 1.0) if (v_px and p_v) else 0.0
                     ief_r  = (i_px / p_i - 1.0) if (i_px and p_i) else 0.0
                     tnx_proxy_ret = -ief_r
                     
-                    tqqq_r = (cur_tqqq_close / day_bars_15.iloc[b_idx - 5]['Close']) - 1.0
+                    long_r = (cur_long_close / day_bars_15.iloc[b_idx - 5]['Close']) - 1.0
                     sig_code, _, _ = cross_mod.predict_signal(
-                        tqqq_ret=tqqq_r, nvda_ret=nvda_r, soxx_ret=soxx_r,
+                        long_ret=long_r, nvda_ret=nvda_r, macro_ret=macro_r,
                         qqq_ret=qqq_r, vix_ret=vix_r, tnx_ret=tnx_proxy_ret
                     )
-                    if sig_code > 0: cross_dir = "LONG_TQQQ"
-                    elif sig_code < 0: cross_dir = "SHORT_SQQQ"
+                    if sig_code > 0: cross_dir = "LONG"
+                    elif sig_code < 0: cross_dir = "SHORT"
                 
                 entry_approved = False
                 target_sym = None
                 
-                if dir_gbdt == "LONG_TQQQ" and soxx_60m_bull and cross_dir != "SHORT_SQQQ":
-                    entry_approved = True; target_sym = "TQQQ"
-                elif dir_gbdt == "SHORT_SQQQ" and soxx_60m_bear and cross_dir != "LONG_TQQQ":
-                    entry_approved = True; target_sym = "SQQQ"
+                if dir_gbdt == "LONG" and macro_60m_bull and cross_dir != "SHORT":
+                    entry_approved = True; target_sym = config.BASE_ASSET_LONG
+                elif dir_gbdt == "SHORT" and macro_60m_bear and cross_dir != "LONG":
+                    entry_approved = True; target_sym = config.BASE_ASSET_SHORT
                     
                 if not entry_approved: continue
                 
-                post_5m = day_tqqq_5 if target_sym == 'TQQQ' else day_sqqq_5
+                post_5m = day_long_5 if target_sym == config.BASE_ASSET_LONG else day_short_5
                 post_5m = post_5m[post_5m['datetime'].str.slice(11, 16) > entry_time]
                 if post_5m.empty: continue
                 

@@ -1,5 +1,6 @@
 import sqlite3
 import sys
+import config
 import pandas as pd
 import numpy as np
 
@@ -9,7 +10,7 @@ if sys.platform.startswith('win'):
 
 def test_vwap_filter_1530():
     conn = sqlite3.connect('data/market_data.db')
-    df_5m = pd.read_sql_query("SELECT symbol, datetime, open, high, low, close, volume FROM market_candles WHERE timeframe='5m' AND symbol IN ('TQQQ', 'SQQQ')", conn)
+    df_5m = pd.read_sql_query("SELECT symbol, datetime, open, high, low, close, volume FROM market_candles WHERE timeframe='5m' AND symbol IN (config.BASE_ASSET_LONG, config.BASE_ASSET_SHORT)", conn)
     df_5m['datetime'] = pd.to_datetime(df_5m['datetime'])
     df_5m['date'] = df_5m['datetime'].dt.strftime('%Y-%m-%d')
     df_5m['time'] = df_5m['datetime'].dt.strftime('%H:%M')
@@ -23,8 +24,8 @@ def test_vwap_filter_1530():
     FEE = 0.0020
 
     for d in days:
-        sub_l = df_5m[(df_5m['date'] == d) & (df_5m['symbol'] == 'TQQQ')].sort_values('time').copy()
-        sub_s = df_5m[(df_5m['date'] == d) & (df_5m['symbol'] == 'SQQQ')].sort_values('time').copy()
+        sub_l = df_5m[(df_5m['date'] == d) & (df_5m['symbol'] == config.BASE_ASSET_LONG)].sort_values('time').copy()
+        sub_s = df_5m[(df_5m['date'] == d) & (df_5m['symbol'] == config.BASE_ASSET_SHORT)].sort_values('time').copy()
         if len(sub_l) < 50 or len(sub_s) < 50: continue
 
         # Compute intraday VWAP for TQQQ
@@ -61,7 +62,7 @@ def test_vwap_filter_1530():
                     exit_px = sl_px - SLIP; reason = "SL -1.0%"; break
             net_ret = (exit_px - e_px) / e_px * 100 - (FEE * 100)
             trades.append({
-                'date': d, 'sym': 'TQQQ', 'vol_ratio': round(vol_ratio, 1), 'bar_ret': round(bar_ret, 2),
+                'date': d, 'sym': config.BASE_ASSET_LONG, 'vol_ratio': round(vol_ratio, 1), 'bar_ret': round(bar_ret, 2),
                 'vwap_diff': round(vwap_diff, 2), 'vwap_aligned': vwap_diff > 0,
                 'net_ret': round(net_ret, 2), 'reason': reason
             })
@@ -80,7 +81,7 @@ def test_vwap_filter_1530():
                     exit_px = sl_px - SLIP; reason = "SL -1.0%"; break
             net_ret = (exit_px - e_px) / e_px * 100 - (FEE * 100)
             trades.append({
-                'date': d, 'sym': 'SQQQ', 'vol_ratio': round(vol_ratio, 1), 'bar_ret': round(bar_ret, 2),
+                'date': d, 'sym': config.BASE_ASSET_SHORT, 'vol_ratio': round(vol_ratio, 1), 'bar_ret': round(bar_ret, 2),
                 'vwap_diff': round(vwap_diff, 2), 'vwap_aligned': vwap_diff < 0,
                 'net_ret': round(net_ret, 2), 'reason': reason
             })

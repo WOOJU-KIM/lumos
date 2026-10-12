@@ -12,6 +12,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+import config
 
 import websockets
 from core.kiwoom_broker import KiwoomBroker
@@ -41,7 +42,7 @@ class KiwoomWebSocketStreamer:
         else:
             self.ws_url = "wss://api.kiwoom.com:10000/api/us/websocket"
 
-        self.subscribed_symbols: List[str] = ["SOXL", "SOXS", "TQQQ", "SQQQ", "SOXX", "NVDA", "QQQ", "VIXY", "IEF"]
+        self.subscribed_symbols: List[str] = ["SOXL", "SOXS", config.BASE_ASSET_LONG, config.BASE_ASSET_SHORT, config.MACRO_TREND_SYMBOL, "NVDA", "QQQ", "VIXY", "IEF"]
         self.latest_prices: Dict[str, float] = {}
         self.latest_ticks: Dict[str, Dict[str, Any]] = {}
         self.ws_tick_received: Dict[str, bool] = {}     # 실제 WebSocket 틱 수신 여부 {symbol: bool}
@@ -198,7 +199,7 @@ class KiwoomWebSocketStreamer:
                 
                 # A. 실시간 체결 통보 검출 (단일/루트 레벨)
                 if any(k in data for k in ["odno", "ord_no", "order_no", "tot_che_qty", "acc_filled_qty", "ft_tot_ccld_qty", "che_qty", "ft_ccld_qty"]):
-                    logger.info(f"🔔 [WebSocket 실시간 체결 통보 포착 (JSON 루트)]: {data}")
+                    logger.info(f"🔔 [WebSocket 실시간 체결 통보 포착 (JSON 루트)]: {self.broker._redact_log(data)}")
                     self._dispatch_execution_event(data)
                     return
 
@@ -211,7 +212,7 @@ class KiwoomWebSocketStreamer:
                         # 체결 통보 (0C, CHEG, ORDER 또는 주문번호/체결수량 필드 보유 시)
                         # ※ 주의: FT는 해외주식 10단계 호가(Ask/Bid) 시세 패킷이므로 체결 통보에서 반드시 제외
                         if (real_type in ["0C", "CHEG", "ORDER"] and real_type != "FT") or any(k in vals for k in ["odno", "ord_no", "order_no", "ft_tot_ccld_qty", "acc_filled_qty"]):
-                            logger.info(f"🔔 [WebSocket 실시간 체결 통보 포착 (배열)]: {vals}")
+                            logger.info(f"🔔 [WebSocket 실시간 체결 통보 포착 (배열)]: {self.broker._redact_log(vals)}")
                             self._dispatch_execution_event(vals)
                             continue
 

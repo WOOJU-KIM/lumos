@@ -9,6 +9,7 @@
 import os, sys, json, time
 from pathlib import Path
 import numpy as np
+import config
 import pandas as pd
 from lightgbm import LGBMClassifier
 
@@ -77,7 +78,7 @@ def labels_atr(df, h=HORIZON):
             elif (hr>=tp and lr<=-sl) or (lr<=-tp and hr>=sl): L[i]=0; break
     return pd.Series(L, index=df.index)
 
-def run_wfa(df, fcols, weeks, sqqq_d, name, tp=0.030, sl=0.020, atr=False):
+def run_wfa(df, fcols, weeks, short_d, name, tp=0.030, sl=0.020, atr=False):
     print(f"\n{'='*90}\n[{name}] WFA 시작\n{'='*90}")
     t0=time.time(); cap=INIT_CAP; peak=INIT_CAP; mdd=0.0
     trd=[]; tid=0; n_wks=len(weeks)-ROLL_WKS
@@ -102,9 +103,9 @@ def run_wfa(df, fcols, weeks, sqqq_d, name, tp=0.030, sl=0.020, atr=False):
         cf=np.full(len(dts),0.50); dr=["NONE"]*len(dts)
         for i in range(len(dts)):
             if pl[i]>pn[i] and pl[i]>ps[i]:
-                cf[i]=min(0.95,max(0.50,0.50+(pl[i]-0.333)*1.15)); dr[i]="LONG_TQQQ"
+                cf[i]=min(0.95,max(0.50,0.50+(pl[i]-0.333)*1.15)); dr[i]="LONG"
             elif ps[i]>pn[i] and ps[i]>pl[i]:
-                cf[i]=min(0.95,max(0.50,0.50+(ps[i]-0.333)*1.15)); dr[i]="SHORT_SQQQ"
+                cf[i]=min(0.95,max(0.50,0.50+(ps[i]-0.333)*1.15)); dr[i]="SHORT"
         dts=dts.copy(); dts["Conf"]=cf; dts["Dir"]=dr
         ap=None
         for ds in sorted(dts["date_str"].unique()):
@@ -113,16 +114,16 @@ def run_wfa(df, fcols, weeks, sqqq_d, name, tp=0.030, sl=0.020, atr=False):
                 cdt=row["datetime"]; ts=row["time_str"]
                 sc=float(row["Close"]); sh=float(row["High"]); sl2=float(row["Low"])
                 av=float(row.get("ATR_14",sc*0.018))
-                sr=sqqq_d.get(cdt)
+                sr=short_d.get(cdt)
                 xc=float(sr["Close"]) if sr else 0.0
                 xh=float(sr["High"])  if sr else 0.0
                 xl=float(sr["Low"])   if sr else 0.0
                 if ap is not None:
                     ap["bars"]+=1
                     sym=ap["sym"]; ep=ap["entry_px"]
-                    cc=sc if sym=="TQQQ" else xc
-                    ch=sh if sym=="TQQQ" else xh
-                    cl=sl2 if sym=="TQQQ" else xl
+                    cc=sc if sym==config.BASE_ASSET_LONG else xc
+                    ch=sh if sym==config.BASE_ASSET_LONG else xh
+                    cl=sl2 if sym==config.BASE_ASSET_LONG else xl
                     if atr:
                         ea=ap.get("eAtr",ep*0.018); ap2=ea/ep
                         tpu=max(0.02,min(0.05,1.5*ap2)); slu=max(0.01,min(0.03,1.0*ap2))
@@ -152,10 +153,10 @@ def run_wfa(df, fcols, weeks, sqqq_d, name, tp=0.030, sl=0.020, atr=False):
                 if ap is None and slc<3 and ts<CUT_ENTRY:
                     gd=row.get("Dir","NONE"); gc=float(row.get("Conf",0.50))
                     if gc>=CONF:
-                        if gd=="LONG_TQQQ" and sc>0:
-                            ap={"sym":"TQQQ","entry_px":sc,"entry_dt":cdt,"bars":0,"conf":gc,"eAtr":av}
-                        elif gd=="SHORT_SQQQ" and xc>0:
-                            ap={"sym":"SQQQ","entry_px":xc,"entry_dt":cdt,"bars":0,"conf":gc,"eAtr":av}
+                        if gd=="LONG" and sc>0:
+                            ap={"sym":config.BASE_ASSET_LONG,"entry_px":sc,"entry_dt":cdt,"bars":0,"conf":gc,"eAtr":av}
+                        elif gd=="SHORT" and xc>0:
+                            ap={"sym":config.BASE_ASSET_SHORT,"entry_px":xc,"entry_dt":cdt,"bars":0,"conf":gc,"eAtr":av}
 
         wn=wi-ROLL_WKS+1
         if wn%30==0 or wn==n_wks:
@@ -183,7 +184,7 @@ def summarize(res):
         yrs.append({"year":y,"ret":round((ye/ys-1)*100,1),"n":len(g),
                     "wr":round(len(g[g["ret_pct"]>0])/len(g)*100,1),
                     "pf":round(gw/gl2,3) if gl2>0 else 99.0,
-                    "L":int((g["sym"]=="TQQQ").sum()),"S":int((g["sym"]=="SQQQ").sum())})
+                    "L":int((g["sym"]==config.BASE_ASSET_LONG).sum()),"S":int((g["sym"]==config.BASE_ASSET_SHORT).sum())})
         ys=ye
     res["yearly"]=yrs
     return res
@@ -198,9 +199,9 @@ def san(o):
 def main():
     lake=MarketDataLake(); ml=MLFeatureEngine(confidence_threshold=CONF)
     print("="*90+"\n📦 데이터 로드 중...\n"+"="*90)
-    s15=lake.load_candles("TQQQ","15m").sort_values("datetime").reset_index(drop=True)
-    x15=lake.load_candles("SQQQ","15m").sort_values("datetime").reset_index(drop=True)
-    o60=lake.load_candles("SOXX","60m").sort_values("datetime").reset_index(drop=True)
+    s15=lake.load_candles(config.BASE_ASSET_LONG,"15m").sort_values("datetime").reset_index(drop=True)
+    x15=lake.load_candles(config.BASE_ASSET_SHORT,"15m").sort_values("datetime").reset_index(drop=True)
+    o60=lake.load_candles(config.MACRO_TREND_SYMBOL,"60m").sort_values("datetime").reset_index(drop=True)
     n15=lake.load_candles("NVDA","15m").sort_values("datetime").reset_index(drop=True)
     q15=lake.load_candles("QQQ","15m").sort_values("datetime").reset_index(drop=True)
     v15=lake.load_candles("VIXY","15m").sort_values("datetime").reset_index(drop=True)
@@ -231,10 +232,10 @@ def main():
                          mk_ca(rd,nm).sort_values("datetime_dt"),
                          on="datetime_dt",direction="backward")
 
-    dm["tqqq_ret_20"]=dm["Close"].pct_change(20)*100
-    dm["tqqq_ret_5"]=dm["Close"].pct_change(5)*100
-    dm["tqqq_vs_qqq_20"]=dm["tqqq_ret_20"]-dm.get("qqq_ret_20",pd.Series(0.0,index=dm.index)).fillna(0)
-    dm["tqqq_vs_qqq_5"]=dm["tqqq_ret_5"]-dm.get("qqq_ret_5",pd.Series(0.0,index=dm.index)).fillna(0)
+    dm["long_ret_20"]=dm["Close"].pct_change(20)*100
+    dm["long_ret_5"]=dm["Close"].pct_change(5)*100
+    dm["long_vs_qqq_20"]=dm["long_ret_20"]-dm.get("qqq_ret_20",pd.Series(0.0,index=dm.index)).fillna(0)
+    dm["long_vs_qqq_5"]=dm["long_ret_5"]-dm.get("qqq_ret_5",pd.Series(0.0,index=dm.index)).fillna(0)
     dm["panic"]=(
         (dm.get("vixy_ret_1",pd.Series(0.0,index=dm.index)).fillna(0)>0).astype(int)+
         (dm.get("ief_ret_1",pd.Series(0.0,index=dm.index)).fillna(0)>0).astype(int)

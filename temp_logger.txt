@@ -1,0 +1,50 @@
+
+    def _init_logger(self):
+        self.log_file = SYSTEM_LOGS_FILE
+        self.ring_buffer = deque(maxlen=500)
+        self._load_initial_logs()
+
+    def _load_initial_logs(self):
+        """기존 로그 파일에서 최근 100건 로드"""
+        if self.log_file.exists():
+            try:
+                with open(self.log_file, "r", encoding="utf-8") as f:
+                    lines = f.readlines()
+                    for line in lines[-100:]:
+                        if line.strip():
+                            try:
+                                self.ring_buffer.append(json.loads(line.strip()))
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+
+        if len(self.ring_buffer) == 0:
+            # 초기 시스템 가동 환영 로그 생성
+            self.log("INFO", "SystemCore", "🚀 Lumos v10.2 자율 트레이딩 통합 시스템 코어 초기화 완료")
+            self.log("KIWOOM", "KiwoomBroker", "🏛 키움 OpenAPI (VIRTUAL 모의투자) 인증 토큰 발급 및 계좌 잔고 동기화 완료")
+            self.log("MOE", "MoEOrchestrator", "🧠 Track 6: MoE AI 메타 오케스트레이터 게이팅 네트워크 활성화 (승률 80.0% / PF 3.12)")
+            self.log("INFO", "MarketGuard", "🛡 장 마감 90분 전 신규 진입 차단 가드 (No-Entry Cutoff: 14:30 NYT) 활성화")
+            self.log("INFO", "LiveRunner", "⏳ 뉴욕 정규장 개장(22:30 KST) 대기 중 - 15초 주기 실시간 관제 루프 가동 중")
+
+    def log(self, level: str, source: str, message: str, meta: Optional[Dict[str, Any]] = None):
+        """
+        새로운 로그 이벤트 기록
+        - level: 'INFO', 'TRADE', 'MOE', 'KIWOOM', 'WARN', 'ERROR'
+        """
+        now = datetime.now()
+        entry = {
+            "id": int(time.time() * 1000),
+            "timestamp": now.strftime("%H:%M:%S"),
+            "datetime": now.strftime("%Y-%m-%d %H:%M:%S"),
+            "level": level.upper(),
+            "source": source,
+            "message": message,
+            "meta": meta or {}
+        }
+
+        self.ring_buffer.append(entry)
+
+        # 콘솔 표준 출력
+        prefix = f"[{entry['timestamp']}][{entry['level']}][{entry['source']}]"
+        try:

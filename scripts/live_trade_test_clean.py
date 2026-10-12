@@ -1,4 +1,4 @@
-﻿import os
+import os
 import sys
 import time
 import json
@@ -22,7 +22,8 @@ def main():
     print("🚀 시작: 매매 테스트 (최근 1주일 / 5일 롤링)")
     
     conn = sqlite3.connect(DATA_DIR / "market_data.db")
-    df_dates = pd.read_sql("SELECT DISTINCT date(datetime) as dt FROM market_candles WHERE symbol='TQQQ' ORDER BY datetime DESC LIMIT 5", conn)
+    query = f"SELECT DISTINCT date(datetime) as dt FROM market_candles WHERE symbol='{config.BASE_ASSET_LONG}' ORDER BY datetime DESC LIMIT 5"
+    df_dates = pd.read_sql(query, conn)
     target_dates = sorted(df_dates['dt'].tolist())
     conn.close()
     
@@ -65,7 +66,7 @@ def main():
                 if last_eval_time != current_time:
                     last_eval_time = current_time
                     
-                    df_15m = data_lake.load_candles("TQQQ", "15m")
+                    df_15m = data_lake.load_candles(config.BASE_ASSET_LONG, "15m")
                     if df_15m.empty:
                         continue
                         

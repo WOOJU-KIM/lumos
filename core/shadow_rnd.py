@@ -1,4 +1,5 @@
 import json
+import config
 import pandas as pd
 import numpy as np
 import yfinance as yf
@@ -69,24 +70,24 @@ class ShadowRndEngine:
         """과거 데이터에 대해 모든 후보 로직을 동시 백테스팅하여 랭킹 도출"""
         
         if historical_data is None:
-            tqqq_df = yf.Ticker("TQQQ").history(period=self.lookback_period)
-            sqqq_df = yf.Ticker("SQQQ").history(period=self.lookback_period)
+            long_df = yf.Ticker(config.BASE_ASSET_LONG).history(period=self.lookback_period)
+            short_df = yf.Ticker(config.BASE_ASSET_SHORT).history(period=self.lookback_period)
             vix_df = yf.Ticker("^VIX").history(period=self.lookback_period)
         else:
-            tqqq_df = historical_data.get("TQQQ")
-            sqqq_df = historical_data.get("SQQQ")
+            long_df = historical_data.get(config.BASE_ASSET_LONG)
+            short_df = historical_data.get(config.BASE_ASSET_SHORT)
             vix_df = historical_data.get("VIX")
 
         # 공통 일자 인덱스 정렬
-        common_index = tqqq_df.index.intersection(sqqq_df.index).intersection(vix_df.index)
-        tqqq_close = tqqq_df.loc[common_index, 'Close']
-        sqqq_close = sqqq_df.loc[common_index, 'Close']
+        common_index = long_df.index.intersection(short_df.index).intersection(vix_df.index)
+        long_close = long_df.loc[common_index, 'Close']
+        short_close = short_df.loc[common_index, 'Close']
         vix_close = vix_df.loc[common_index, 'Close']
         
         candidates_results = []
 
         for candidate in self.CANDIDATE_POOL:
-            res = self._simulate_single_logic(candidate, tqqq_close, sqqq_close, vix_close)
+            res = self._simulate_single_logic(candidate, long_close, short_close, vix_close)
             candidates_results.append(res)
 
         # 복합 점수(Sharpe * 40 + WinRate * 30 + ProfitFactor * 20 + Return * 10) 기준 정렬
@@ -118,41 +119,41 @@ class ShadowRndEngine:
         hedge_switch = logic_cfg["hedge_switch_pct"] / 100.0
         take_profit = logic_cfg["take_profit_pct"] / 100.0
 
-        tqqq_ret = tqqq.pct_change().fillna(0).values
-        sqqq_ret = sqqq.pct_change().fillna(0).values
+        long_ret = tqqq.pct_change().fillna(0).values
+        short_ret = sqqq.pct_change().fillna(0).values
         vix_vals = vix.values
 
         trades = []
         equity_curve = [1.0]
         
-        in_pos = "NONE" # "TQQQ", "SQQQ", "NONE"
-        entry_price_tqqq = 0.0
-        entry_price_sqqq = 0.0
+        in_pos = "NONE" # config.BASE_ASSET_LONG, config.BASE_ASSET_SHORT, "NONE"
+        entry_price_long = 0.0
+        entry_price_short = 0.0
         current_equity = 1.0
 
-        for i in range(1, len(tqqq_ret)):
-            day_ret_tqqq = tqqq_ret[i]
-            day_ret_sqqq = sqqq_ret[i]
+        for i in range(1, len(long_ret)):
+            day_ret_long = long_ret[i]
+            day_ret_short = short_ret[i]
             
             # 포지션이 없는 경우
             if in_pos == "NONE":
                 # TQQQ 눌림목 진입 조건
-                if day_ret_tqqq <= dip_buy and vix_vals[i] < 28.0:
-                    in_pos = "TQQQ"
-                    entry_price_tqqq = tqqq.iloc[i]
-                elif day_ret_tqqq <= hedge_switch or vix_vals[i] >= 28.0:
-                    in_pos = "SQQQ"
-                    entry_price_sqqq = sqqq.iloc[i]
+                if day_ret_long <= dip_buy and vix_vals[i] < 28.0:
+                    in_pos = config.BASE_ASSET_LONG
+                    entry_price_long = tqqq.iloc[i]
+                elif day_ret_long <= hedge_switch or vix_vals[i] >= 28.0:
+                    in_pos = config.BASE_ASSET_SHORT
+                    entry_price_short = sqqq.iloc[i]
             
             # TQQQ 보유 중
-            elif in_pos == "TQQQ":
-                current_pnl = day_ret_tqqq
+            elif in_pos == config.BASE_ASSET_LONG:
+                current_pnl = day_ret_long
                 # 칼손절 및 헤지 스위칭 검사
                 if current_pnl <= stop_loss or current_pnl <= hedge_switch:
                     # 손절 후 즉시 SQQQ 헤지 스위칭
                     current_equity *= (1.0 + current_pnl)
                     trades.append(current_pnl)
-                    in_pos = "SQQQ" if current_pnl <= hedge_switch else "NONE"
+                    in_pos = config.BASE_ASSET_SHORT if current_pnl <= hedge_switch else "NONE"
                 elif current_pnl >= take_profit:
                     # 익절 청산
                     current_equity *= (1.0 + current_pnl)
@@ -162,8 +163,8 @@ class ShadowRndEngine:
                     current_equity *= (1.0 + current_pnl * 0.8) # 일부 보유
             
             # SQQQ 보유 중
-            elif in_pos == "SQQQ":
-                current_pnl = day_ret_sqqq
+            elif in_pos == config.BASE_ASSET_SHORT:
+                current_pnl = day_ret_short
                 if current_pnl <= stop_loss:
                     current_equity *= (1.0 + current_pnl)
                     trades.append(current_pnl)

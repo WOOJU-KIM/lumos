@@ -1,6 +1,7 @@
 import os
 import sys
 import numpy as np
+import config
 import pandas as pd
 from typing import Dict, Any, List, Tuple, Optional
 from pathlib import Path
@@ -26,8 +27,8 @@ SLIPPAGE = 0.03       # $0.03 per share
 FEE_RATE = 0.0020     # 0.20% roundtrip fee
 
 def simulate_strategy(
-    df_tqqq: pd.DataFrame,
-    df_sqqq: pd.DataFrame,
+    df_long: pd.DataFrame,
+    df_short: pd.DataFrame,
     mode: str,                   # 'rule_only', 'rule_gbdt', 'gbdt_only'
     exit_type: str,              # 'fixed_5m', 'fixed_10m', 'fixed_15m', 'tp_sl_1.5_1.0', 'tp_sl_2.0_1.0'
     engine: PowerHourQuantEngine,
@@ -42,16 +43,16 @@ def simulate_strategy(
     equity_curve = [capital]
 
     # Pre-map SQQQ prices by datetime
-    sqqq_map_c = df_sqqq.set_index('datetime')['Close'].to_dict()
-    sqqq_map_h = df_sqqq.set_index('datetime')['High'].to_dict()
-    sqqq_map_l = df_sqqq.set_index('datetime')['Low'].to_dict()
-    sqqq_map_o = df_sqqq.set_index('datetime')['Open'].to_dict()
+    short_map_c = df_short.set_index('datetime')['Close'].to_dict()
+    short_map_h = df_short.set_index('datetime')['High'].to_dict()
+    short_map_l = df_short.set_index('datetime')['Low'].to_dict()
+    short_map_o = df_short.set_index('datetime')['Open'].to_dict()
 
-    n_bars = len(df_tqqq)
+    n_bars = len(df_long)
     b_idx = 0
 
     while b_idx < n_bars:
-        row = df_tqqq.iloc[b_idx]
+        row = df_long.iloc[b_idx]
         cur_time = row['datetime']
         t_str = row['time_str']
 
@@ -83,8 +84,8 @@ def simulate_strategy(
             continue
 
         # 매매 대상 심볼 및 진입 가격 결정
-        chosen_sym = 'TQQQ' if action == 'LONG' else 'SQQQ'
-        base_px = float(row['Close']) if chosen_sym == 'TQQQ' else float(sqqq_map_c.get(cur_time, 0.0))
+        chosen_sym = config.BASE_ASSET_LONG if action == 'LONG' else config.BASE_ASSET_SHORT
+        base_px = float(row['Close']) if chosen_sym == config.BASE_ASSET_LONG else float(short_map_c.get(cur_time, 0.0))
         if base_px <= 0:
             b_idx += 1
             continue
@@ -107,19 +108,19 @@ def simulate_strategy(
         if exit_type in ['fixed_5m', 'fixed_10m', 'fixed_15m']:
             hold_target = 1 if exit_type == 'fixed_5m' else (2 if exit_type == 'fixed_10m' else 3)
             target_idx = min(b_idx + hold_target, n_bars - 1)
-            exit_row = df_tqqq.iloc[target_idx]
+            exit_row = df_long.iloc[target_idx]
             exit_t = exit_row['datetime']
             exit_time_str = exit_row['time_str']
 
             # 만약 날짜가 바뀌었거나 장마감(15:55)을 넘어선 경우 당일 마지막 봉으로 청산
             if exit_row['date_str'] != row['date_str'] or exit_time_str > '15:55':
-                same_day_bars = df_tqqq[(df_tqqq['date_str'] == row['date_str']) & (df_tqqq.index > b_idx)]
+                same_day_bars = df_long[(df_long['date_str'] == row['date_str']) & (df_long.index > b_idx)]
                 if not same_day_bars.empty:
                     exit_row = same_day_bars.iloc[-1]
                     exit_t = exit_row['datetime']
                     exit_time_str = exit_row['time_str']
 
-            px_out = float(exit_row['Close']) if chosen_sym == 'TQQQ' else float(sqqq_map_c.get(exit_t, base_px))
+            px_out = float(exit_row['Close']) if chosen_sym == config.BASE_ASSET_LONG else float(short_map_c.get(exit_t, base_px))
             exit_px = round(px_out - SLIPPAGE, 2)
             exit_reason = f"Fixed_{hold_target*5}m"
             bars_held = max(1, target_idx - b_idx)
@@ -135,7 +136,7 @@ def simulate_strategy(
             sl_px = round(entry_px * (1 + sl_pct), 2)
 
             max_eval_bars = 12  # 최대 60분
-            eval_slice = df_tqqq.iloc[b_idx + 1 : min(b_idx + 1 + max_eval_bars, n_bars)]
+            eval_slice = df_long.iloc[b_idx + 1 : min(b_idx + 1 + max_eval_bars, n_bars)]
 
             for k in range(len(eval_slice)):
                 c_bar = eval_slice.iloc[k]
@@ -149,13 +150,13 @@ def simulate_strategy(
 
                 bars_held = k + 1
 
-                if chosen_sym == 'TQQQ':
+                if chosen_sym == config.BASE_ASSET_LONG:
                     c_h, c_l, c_c, c_o = float(c_bar['High']), float(c_bar['Low']), float(c_bar['Close']), float(c_bar['Open'])
                 else:
-                    c_h = float(sqqq_map_h.get(c_dt, base_px))
-                    c_l = float(sqqq_map_l.get(c_dt, base_px))
-                    c_c = float(sqqq_map_c.get(c_dt, base_px))
-                    c_o = float(sqqq_map_o.get(c_dt, base_px))
+                    c_h = float(short_map_h.get(c_dt, base_px))
+                    c_l = float(short_map_l.get(c_dt, base_px))
+                    c_c = float(short_map_c.get(c_dt, base_px))
+                    c_o = float(short_map_o.get(c_dt, base_px))
 
                 hit_tp = (c_h >= tp_px)
                 hit_sl = (c_l <= sl_px)
@@ -293,27 +294,27 @@ def run_comprehensive_power_hour_backtest():
 
     lake = MarketDataLake()
     print("⏳ [1/5] Loading 5m candles for TQQQ & SQQQ from DataLake...")
-    df_tqqq = lake.load_candles("TQQQ", "5m")
-    df_sqqq = lake.load_candles("SQQQ", "5m")
+    df_long = lake.load_candles(config.BASE_ASSET_LONG, "5m")
+    df_short = lake.load_candles(config.BASE_ASSET_SHORT, "5m")
 
     # Align by common timestamps
-    common_dt = sorted(list(set(df_tqqq['datetime']).intersection(set(df_sqqq['datetime']))))
-    df_tqqq = df_tqqq[df_tqqq['datetime'].isin(common_dt)].sort_values('datetime').reset_index(drop=True)
-    df_sqqq = df_sqqq[df_sqqq['datetime'].isin(common_dt)].sort_values('datetime').reset_index(drop=True)
+    common_dt = sorted(list(set(df_long['datetime']).intersection(set(df_short['datetime']))))
+    df_long = df_long[df_long['datetime'].isin(common_dt)].sort_values('datetime').reset_index(drop=True)
+    df_short = df_short[df_short['datetime'].isin(common_dt)].sort_values('datetime').reset_index(drop=True)
 
-    print(f"   ✓ Aligned 5m Candles: {len(df_tqqq)} bars ({df_tqqq['datetime'].iloc[0]} ~ {df_tqqq['datetime'].iloc[-1]})")
+    print(f"   ✓ Aligned 5m Candles: {len(df_long)} bars ({df_long['datetime'].iloc[0]} ~ {df_long['datetime'].iloc[-1]})")
 
-    for df in [df_tqqq, df_sqqq]:
+    for df in [df_long, df_short]:
         df['datetime_dt'] = pd.to_datetime(df['datetime'])
         df['date_str'] = df['datetime_dt'].dt.strftime('%Y-%m-%d')
         df['time_str'] = df['datetime_dt'].dt.strftime('%H:%M')
 
     print("⏳ [2/5] Engineering Volatility Expansion, Breakout, Volume Surge & VWAP Features...")
     engine = PowerHourQuantEngine(n_breakout_bars=6)
-    feat_tqqq = engine.compute_features(df_tqqq)
+    feat_long = engine.compute_features(df_long)
 
     # Chronological Train/Test Split (70% Train, 30% Test)
-    unique_dates = sorted(feat_tqqq['date_str'].unique())
+    unique_dates = sorted(feat_long['date_str'].unique())
     n_total_days = len(unique_dates)
     n_train_days = int(n_total_days * 0.70)
     train_dates = set(unique_dates[:n_train_days])
@@ -324,12 +325,12 @@ def run_comprehensive_power_hour_backtest():
     print(f"   • Train Days (70%): {len(train_dates)} days ({unique_dates[0]} ~ {unique_dates[n_train_days-1]})")
     print(f"   • Test Days (30% Out-of-Sample): {len(test_dates)} days ({unique_dates[n_train_days]} ~ {unique_dates[-1]})")
 
-    train_tqqq = feat_tqqq[feat_tqqq['date_str'].isin(train_dates)].reset_index(drop=True)
-    test_tqqq  = feat_tqqq[feat_tqqq['date_str'].isin(test_dates)].reset_index(drop=True)
-    test_sqqq  = df_sqqq[df_sqqq['date_str'].isin(test_dates)].reset_index(drop=True)
+    train_long = feat_long[feat_long['date_str'].isin(train_dates)].reset_index(drop=True)
+    test_long  = feat_long[feat_long['date_str'].isin(test_dates)].reset_index(drop=True)
+    test_short  = df_short[df_short['date_str'].isin(test_dates)].reset_index(drop=True)
 
     print("⏳ [4/5] Training Power Hour Dedicated GBDT Models on Train Split...")
-    engine.train_models(train_tqqq)
+    engine.train_models(train_long)
     print("   ✓ LightGBM Meta-Labeling Model (Long/Short) & Direct Model Trained Successfully.")
 
     # 3 Strategy Modes to Compare
@@ -352,8 +353,8 @@ def run_comprehensive_power_hour_backtest():
     for mode in modes:
         for exit_code, exit_label in exit_structures:
             res = simulate_strategy(
-                df_tqqq=test_tqqq,
-                df_sqqq=test_sqqq,
+                df_long=test_long,
+                df_short=test_short,
                 mode=mode,
                 exit_type=exit_code,
                 engine=engine,
@@ -403,9 +404,9 @@ def run_comprehensive_power_hour_backtest():
 
     wf_rows = []
     for fname, tr_d, te_d in wf_folds:
-        tr_df = feat_tqqq[feat_tqqq['date_str'].isin(tr_d)].reset_index(drop=True)
-        te_l = feat_tqqq[feat_tqqq['date_str'].isin(te_d)].reset_index(drop=True)
-        te_s = df_sqqq[df_sqqq['date_str'].isin(te_d)].reset_index(drop=True)
+        tr_df = feat_long[feat_long['date_str'].isin(tr_d)].reset_index(drop=True)
+        te_l = feat_long[feat_long['date_str'].isin(te_d)].reset_index(drop=True)
+        te_s = df_short[df_short['date_str'].isin(te_d)].reset_index(drop=True)
 
         eng = PowerHourQuantEngine(n_breakout_bars=6)
         eng.train_models(tr_df)

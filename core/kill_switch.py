@@ -6,19 +6,19 @@ class BlackSwanKillSwitch:
     장중 VIX 급등(+15% 이상), 지수 급락(-7% 이상) 또는 극단적 이상 징후 발생 시
     모든 포지션을 즉시 전량 청산하고 당일 매매를 원천 중단하는 킬스위치 로직을 수행합니다.
     """
-    def __init__(self, vix_spike_limit: float = 15.0, tqqq_drop_limit: float = -7.0, vix_absolute_extreme: float = 35.0):
+    def __init__(self, vix_spike_limit: float = 15.0, long_drop_limit: float = -7.0, vix_absolute_extreme: float = 35.0):
         self.vix_spike_limit = vix_spike_limit
-        self.tqqq_drop_limit = tqqq_drop_limit
+        self.long_drop_limit = long_drop_limit
         self.vix_absolute_extreme = vix_absolute_extreme
 
     def evaluate(self, market_data: Dict[str, Any]) -> Dict[str, Any]:
         """실시간 시세를 스캔하여 블랙스완 킬스위치 발동 여부 검사"""
         vix = market_data.get("vix", {})
-        tqqq = market_data.get("assets", {}).get("TQQQ", {})
+        tqqq = market_data.get("assets", {}).get(config.BASE_ASSET_LONG, {})
         
         vix_price = float(vix.get("current_price", 0.0))
         vix_change_pct = float(vix.get("change_pct", 0.0))
-        tqqq_change_pct = float(tqqq.get("change_pct", 0.0))
+        long_change_pct = float(tqqq.get("change_pct", 0.0))
         
         reasons = []
         triggered = False
@@ -34,9 +34,9 @@ class BlackSwanKillSwitch:
             reasons.append(f"VIX 절대 수치 극단적 공포 영역 진입 ({vix_price} pt >= {self.vix_absolute_extreme} pt)")
             
         # 3. TQQQ 당일 -7% 이상 급락
-        if tqqq_change_pct <= self.tqqq_drop_limit:
+        if long_change_pct <= self.long_drop_limit:
             triggered = True
-            reasons.append(f"TQQQ 3x 레버리지 당일 폭락 감지 ({tqqq_change_pct:+.2f}% <= {self.tqqq_drop_limit}%)")
+            reasons.append(f"TQQQ 3x 레버리지 당일 폭락 감지 ({long_change_pct:+.2f}% <= {self.long_drop_limit}%)")
             
         if triggered:
             return {
@@ -50,7 +50,7 @@ class BlackSwanKillSwitch:
                 "metrics": {
                     "vix_price": vix_price,
                     "vix_change_pct": vix_change_pct,
-                    "tqqq_change_pct": tqqq_change_pct
+                    "long_change_pct": long_change_pct
                 }
             }
             
@@ -65,6 +65,6 @@ class BlackSwanKillSwitch:
             "metrics": {
                 "vix_price": vix_price,
                 "vix_change_pct": vix_change_pct,
-                "tqqq_change_pct": tqqq_change_pct
+                "long_change_pct": long_change_pct
             }
         }

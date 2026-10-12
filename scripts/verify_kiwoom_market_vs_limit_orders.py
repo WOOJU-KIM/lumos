@@ -23,7 +23,7 @@ broker = KiwoomBroker(is_simulation=True)
 # 1. 시장가(Market) 매수 & 매도 주문 검증 (price=0.0)
 print("\n[STEP 1/2] 🔥 키움 해외주식 '시장가(Market)' 주문 검증 (ord_dv='01', ord_unpr='0'):")
 print("• 1-1. TQQQ 1주 시장가 매수 발주:")
-m_buy = broker.send_order(symbol="TQQQ", order_type="BUY", quantity=1, price=0.0)
+m_buy = broker.send_order(symbol=config.BASE_ASSET_LONG, order_type="BUY", quantity=1, price=0.0)
 print(f"  ➔ 결과: ok={m_buy.get('ok')}, 모드={m_buy.get('order_mode')}, 체결단가=${m_buy.get('price'):.2f}, 주문번호={m_buy.get('order_no')}, msg={m_buy.get('msg')}")
 
 # 잔고 반영 확인
@@ -33,7 +33,7 @@ print(f"  ➔ 원장 반영: 보유 {bal1.get('holdings_count')}개 (평가: ${b
 time.sleep(1)
 
 print("\n• 1-2. TQQQ 1주 시장가 매도 청산 발주:")
-m_sell = broker.send_order(symbol="TQQQ", order_type="SELL", quantity=1, price=0.0)
+m_sell = broker.send_order(symbol=config.BASE_ASSET_LONG, order_type="SELL", quantity=1, price=0.0)
 print(f"  ➔ 결과: ok={m_sell.get('ok')}, 모드={m_sell.get('order_mode')}, 체결단가=${m_sell.get('price'):.2f}, 주문번호={m_sell.get('order_no')}, msg={m_sell.get('msg')}")
 
 # 잔고 현금화 확인
@@ -43,13 +43,13 @@ print(f"  ➔ 원장 반영: 보유 {bal2.get('holdings_count')}개 (100% 현금
 # 2. 지정가(Limit) 매수 & 매도 주문 검증 (price=125.00)
 print("\n[STEP 2/2] 🎯 키움 해외주식 '지정가(Limit)' 주문 검증 (ord_dv='00', ord_unpr='125.00'):")
 print("• 2-1. TQQQ 1주 지정가 매수 발주 ($125.00):")
-l_buy = broker.send_order(symbol="TQQQ", order_type="BUY", quantity=1, price=125.00)
+l_buy = broker.send_order(symbol=config.BASE_ASSET_LONG, order_type="BUY", quantity=1, price=125.00)
 print(f"  ➔ 결과: ok={l_buy.get('ok')}, 모드={l_buy.get('order_mode')}, 지정단가=${l_buy.get('price'):.2f}, 주문번호={l_buy.get('order_no')}, msg={l_buy.get('msg')}")
 
 time.sleep(1)
 
 print("\n• 2-2. TQQQ 1주 지정가 매도 청산 발주 ($129.38 - 익절 +3.5%):")
-l_sell = broker.send_order(symbol="TQQQ", order_type="SELL", quantity=1, price=129.38)
+l_sell = broker.send_order(symbol=config.BASE_ASSET_LONG, order_type="SELL", quantity=1, price=129.38)
 print(f"  ➔ 결과: ok={l_sell.get('ok')}, 모드={l_sell.get('order_mode')}, 지정단가=${l_sell.get('price'):.2f}, 주문번호={l_sell.get('order_no')}, msg={l_sell.get('msg')}")
 
 print("\n" + "=" * 85)

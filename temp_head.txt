@@ -1,0 +1,50 @@
+def run_v5_rolling_backtest():
+    print("=" * 90)
+    print("🚀 [Lumos V5 Walk-Forward Backtest (Ultra-Fast Vectorized)]")
+    print("=" * 90)
+
+    t_start = time.time()
+    print("⏳ [1/4] 전체 데이터 메모리 캐싱 및 패치 중...")
+    
+    dl = MarketDataLake()
+    symbols = list(set(["TQQQ", "SQQQ", "NVDA", "QQQ", "VIXY", "IEF", config.MACRO_TREND_SYMBOL]))
+    all_data = {"15m": {}, "60m": {}, "5m": {}}
+
+    for s in symbols:
+        for tf in ["15m", "60m", "5m"]:
+            df = dl.load_candles(s, tf).reset_index()
+            if 'datetime' in df.columns and 'Datetime' not in df.columns:
+                df.rename(columns={'datetime': 'Datetime'}, inplace=True)
+            df['Datetime'] = pd.to_datetime(df['Datetime'])
+            df.set_index('Datetime', inplace=True, drop=False)
+            all_data[tf][s] = df
+
+    # 1차 몽키패치: MarketDataLake가 메모리 캐시에서 즉시 반환하도록 함 (SQLite 접근 원천 차단)
+    def fast_load_candles(self, symbol, timeframe, start_dt=None, end_dt=None):
+        sym = symbol.upper().strip()
+        tf = timeframe.lower().strip()
+        print(f"      [Patched] load_candles called for {sym} {tf}")
+        df = all_data.get(tf, {}).get(sym, pd.DataFrame())
+        return df.copy()
+    MarketDataLake.load_candles = fast_load_candles
+    
+    # SQLite Lock 방지
+    MarketDataLake.__init__ = lambda self: None
+    
+    print("⏳ [2/4] 피처 일괄 계산 중...", flush=True)
+    engine = MLFeatureEngine()
+    tqqq_df = all_data["15m"]["TQQQ"].copy()
+    
+    # 이 호출은 패치된 load_candles를 사용하므로 0.1초만에 완료됨
+    feat_df = engine.extract_features(tqqq_df)
+    
+    feat_df_cache = feat_df.copy()
+    if 'Datetime' not in feat_df_cache.columns and 'datetime' in feat_df_cache.columns:
+        feat_df_cache.rename(columns={'datetime': 'Datetime'}, inplace=True)
+    if 'Datetime' not in feat_df_cache.columns:
+        feat_df_cache = feat_df_cache.reset_index()
+        feat_df_cache.rename(columns={'index': 'Datetime', 'datetime': 'Datetime'}, inplace=True, errors='ignore')
+    feat_df_cache['Datetime'] = pd.to_datetime(feat_df_cache['Datetime'])
+    feat_df_cache.set_index('Datetime', inplace=True, drop=False)
+
+    # 2차 몽키패치: ML 학습 시 피처를 재계산하지 않고 캐시에서 슬라이싱만 하도록 함

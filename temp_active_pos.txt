@@ -1,0 +1,55 @@
+99:         self._active_position: Optional[Dict[str, Any]] = None  # ? ??????
+117:     def _save_active_position(self, pos_data: Dict[str, Any]):
+119:         self._active_position = pos_data
+121:             pos_file = DATA_DIR / "active_position.json"
+128:     def _get_active_position(self) -> Optional[Dict[str, Any]]:
+129:         if self._active_position:
+130:             return self._active_position
+131:         pos_file = DATA_DIR / "active_position.json"
+135:                     self._active_position = json.load(f)
+136:                     return self._active_position
+141:     def _clear_active_position(self):
+142:         self._active_position = None
+144:             pos_file = DATA_DIR / "active_position.json"
+249:             active_pos = self._get_active_position()
+250:             if not active_pos or active_pos.get("symbol") != symbol:
+253:             qty = int(active_pos.get("quantity", 0))
+254:             buy_px = float(active_pos.get("price", 0.0))
+255:             buy_time_str = active_pos.get("buy_time")
+261:             cur_hi = active_pos.get("high_price_during_hold", price)
+262:             cur_lo = active_pos.get("low_price_during_hold", price)
+264:                 active_pos["high_price_during_hold"] = price
+266:                 active_pos["low_price_during_hold"] = price
+270:             tp_threshold = float(active_pos.get("tp_pct", config.MAX_TP_PCT * 100)) / 100.0 if active_pos.get("tp_pct") else config.MAX_TP_PCT
+271:             sl_threshold = float(active_pos.get("sl_pct", config.SL_MIN_PCT * 100)) / 100.0 if active_pos.get("sl_pct") else config.SL_MIN_PCT
+272:             time_stop_minutes = float(active_pos.get("time_stop_minutes", 90))
+329:         active_pos = self._get_active_position()
+330:         tp_max_pct = float(active_pos.get("tp_pct", config.MAX_TP_PCT * 100)) / 100.0 if active_pos else config.MAX_TP_PCT
+331:         sl_initial_pct = float(active_pos.get("sl_pct", config.SL_MIN_PCT * 100)) / 100.0 if active_pos else config.SL_MIN_PCT
+351:             if active_pos:
+352:                 peak_high = float(active_pos.get("high_price_during_hold", buy_px))
+353:                 cur_lo = float(active_pos.get("low_price_during_hold", cur_px))
+356:                     active_pos["high_price_during_hold"] = peak_high
+358:                     active_pos["low_price_during_hold"] = cur_px
+374:             if active_pos:
+375:                 active_pos["dynamic_sl_px"] = current_sl_px
+376:                 self._save_active_position(active_pos)
+501:                 self._save_active_position(filled_pos)
+569:                 self._save_active_position(filled_pos)
+627:                 self._save_active_position(filled_pos)
+694:                 self._save_active_position(filled_pos)
+710:                 self._clear_active_position()
+757:                 self._clear_active_position()
+791:                     active_pos = self._get_active_position() or {}
+792:                     self._clear_active_position()
+808:                     high_px = active_pos.get("high_price_during_hold", max(buy_px, latest_px))
+809:                     low_px = active_pos.get("low_price_during_hold", min(buy_px, latest_px))
+816:                             "entry_time": active_pos.get("buy_time", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+818:                             "intended_entry_price": active_pos.get("ref_price", buy_px),
+828:                             "gbdt_confidence": active_pos.get("gbdt_confidence", 0.0),
+829:                             "cross_dir": active_pos.get("cross_dir", "HOLD"),
+830:                             "buy_attempts": active_pos.get("buy_attempts", 1),
+832:                             "features": active_pos.get("features", {})
+934:                     active_pos = self._get_active_position()
+977: 🚦 상태: {'진입 승인 🟢 (보유종목 있어 실제 진입은 Skip)' if (is_appr and active_pos) else '진입 승인 🟢' if is_appr else '관망 유지 🟡'}
+982:                             if is_appr and not active_pos :

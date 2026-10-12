@@ -17,12 +17,12 @@ print(f"🔍 [키움증권 REST TR 및 엔드포인트 전수 진단 - Base: {br
 print("=" * 80)
 
 test_cases = [
-    ("/api/us/quote", "ust10000", {"symb": "TQQQ", "excd": "NAS"}),
+    ("/api/us/quote", "ust10000", {"symb": config.BASE_ASSET_LONG, "excd": "NAS"}),
     ("/api/us/acnt", "ust21110", {"cano": broker.account_no, "acnt_prdt_cd": "01"}),
     ("/api/us/acnt", "ust21070", {"cano": broker.account_no, "acnt_prdt_cd": "01", "qry_tp": "1"}),
     ("/api/us/acnt", "ust21050", {"cano": broker.account_no, "acnt_prdt_cd": "01", "qry_tp": "0"}),
-    ("/api/us/order", "tt80010", {"cano": broker.account_no, "acnt_prdt_cd": "01", "symb": "TQQQ", "excd": "NAS", "ord_qty": "1", "ord_unpr": "0", "ord_dv": "01"}),
-    ("/api/us/order", "ust80010", {"cano": broker.account_no, "acnt_prdt_cd": "01", "symb": "TQQQ", "excd": "NAS", "ord_qty": "1", "ord_unpr": "0", "ord_dv": "01"}),
+    ("/api/us/order", "tt80010", {"cano": broker.account_no, "acnt_prdt_cd": "01", "symb": config.BASE_ASSET_LONG, "excd": "NAS", "ord_qty": "1", "ord_unpr": "0", "ord_dv": "01"}),
+    ("/api/us/order", "ust80010", {"cano": broker.account_no, "acnt_prdt_cd": "01", "symb": config.BASE_ASSET_LONG, "excd": "NAS", "ord_qty": "1", "ord_unpr": "0", "ord_dv": "01"}),
 ]
 
 for ep, aid, body in test_cases:

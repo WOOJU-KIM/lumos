@@ -1,4 +1,4 @@
-﻿import os
+import os
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -17,7 +17,6 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # ?????ㅼ??????듭떖 ?ㅼ젙 ?뚮씪誘명꽣
 INITIAL_CAPITAL_KRW = 10_000_000  # 珥덇린 ?댁슜 ?먮낯湲?10,000,000??
-GBDT_CONFIDENCE_THRESHOLD = 0.704  # GBDT ?뚰삎 紐⑤뜽 ?⑥씪 ?몃━嫄??꾧퀎媛?(65%)
 
 # ==============================================================================
 # ?쒓뎅?ъ옄利앷텒(KIS) OpenAPI ?섍꼍 ?ㅼ젙 (VIRTUAL vs REAL)
@@ -73,6 +72,7 @@ RSI_OVERSOLD_THRESHOLD = 0        # RSI 怨쇰ℓ??吏꾩엯 湲덉? 湲곗? (V3
 ROLLING_TRAINING_WEEKS = 520      # 모델 롤링 누적 확장 학습 최대 10년 한도 (Expanding Window)      # 紐⑤뜽 濡ㅻ쭅 ?숈뒿 ?곗씠??湲곌컙 (104二?= 2??
 
 # [V3 ?곹깭怨듦컙 紐⑤뜽 ?곸슜 癒몄떊?щ떇 ?뚮씪誘명꽣]
+GBDT_MAX_DEPTH = 4
 GBDT_N_ESTIMATORS = 120           # ?몃━ 媛쒖닔 源딄퀬 留롮씠 ?앹꽦 (湲곗〈 80)
 GBDT_LEARNING_RATE = 0.02         # ?숈뒿 ?띾룄 ?섑뼢 (湲곗〈 0.03)
 GBDT_FEATURE_FRACTION = 0.5       # 怨쇱쟻??諛⑹? (?꾩껜 ?쇱쿂 以?50%留??ъ슜)
@@ -81,7 +81,8 @@ GBDT_FEATURE_FRACTION = 0.5       # 怨쇱쟻??諛⑹? (?꾩껜 ?쇱쿂 以?50%�
 SL_MIN_PCT = 0.02                 # 理쒖냼 ?먯젅 ?쇱씤 (2.0%)
 SL_MAX_PCT = 0.032                # 理쒕? ?먯젅 ?쇱씤 (3.2%)
 SL_ATR_MULTIPLIER = 1.5           # ATR 湲곕컲 ?먯젅 諛곗닔
-MAX_TP_PCT = 0.10                 # 紐⑺몴 ?듭젅 ?쇱씤 (10.0%)
+MAX_TP_PCT = 0.10
+LABEL_TP_PCT = 0.03               # 라벨링 전용 목표 익절 라인 (3.0%)                 # 紐⑺몴 ?듭젅 ?쇱씤 (10.0%)
 TRAILING_TRIGGER_PCT = 0.015      # 트레일링 스탑 발동 조건 (+1.5%)
 TRAILING_DROP_PCT = 0.003       # 트레일링 스탑 청산 조건 (최고점 대비 -0.3%)
 TIME_STOP_MINUTES = 90           # 강제 타임 스탑 (90분)
@@ -120,5 +121,11 @@ MAIN_LOOP_TICK_CLOSED = 15
 MAIN_LOOP_ERROR_WAIT = 1.0
 
 
-# 7. ?먮룞 ?숈뒿 ?ㅼ젙 (Auto Training Configuration)
-TRAINING_LOOKBACK_DAYS = 730
+# 7. 자동 학습 설정 (Auto Training Configuration)
+TRAINING_LOOKBACK_DAYS = ROLLING_TRAINING_WEEKS * 7
+
+# 8. 모델 및 캘리브레이션 파라미터 (Model Calibration)
+FALLBACK_PRICE = 120.74
+CALIB_BASE = 0.50
+CALIB_PIVOT = 0.333
+CALIB_SCALE = 1.15

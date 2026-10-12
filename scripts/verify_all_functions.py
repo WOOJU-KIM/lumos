@@ -39,17 +39,17 @@ print(f"[3/7] broker.get_overseas_deposit() & get_overseas_stock_balance()")
 print(f"      • 주문가능 외화: ${usd_avail:,.2f} USD | 보유 종목: {holdings_cnt}개 -> ✅ 정상")
 
 # 4. 실시간 호가 조회 함수
-quote = broker.get_stock_quote('TQQQ')
+quote = broker.get_stock_quote(config.BASE_ASSET_LONG)
 last_px = quote.get("last_price", 151.53)
-print(f"[4/7] broker.get_stock_quote('TQQQ')")
+print(f"[4/7] broker.get_stock_quote(config.BASE_ASSET_LONG)")
 print(f"      • 실시간 기준가: ${last_px:.2f} -> ✅ 정상")
 
 # 5. MoE 의사결정 & ATR 동적 손익비 함수
 lake = MarketDataLake()
-tqqq_15m = lake.load_candles('TQQQ', '15m')
+long_15m = lake.load_candles(config.BASE_ASSET_LONG, '15m')
 moe = MoEMetaOrchestrator()
-moe_res = moe.evaluate_dual_filter_signal(tqqq_15m)
-targets = moe.calculate_dynamic_targets(tqqq_15m, last_px)
+moe_res = moe.evaluate_dual_filter_signal(long_15m)
+targets = moe.calculate_dynamic_targets(long_15m, last_px)
 exp_desc = moe_res.get("expert_desc", "파형 GBDT")
 conf_pct = moe_res.get("expert_confidence", 0.8) * 100
 tp_px = targets.get("dynamic_tp_px", 156.83)
@@ -59,8 +59,8 @@ print(f"      • 지목 모델: [{exp_desc}] (확신도 {conf_pct:.1f}%) | 동�
 
 # 6. 매수 및 지정가 예약매도 발주 함수
 buy_px = round(last_px + 0.03, 2)
-buy_test = broker.send_order(symbol='TQQQ', order_type='BUY', quantity=1, price=buy_px)
-sell_test = broker.send_order(symbol='TQQQ', order_type='SELL', quantity=1, price=tp_px)
+buy_test = broker.send_order(symbol=config.BASE_ASSET_LONG, order_type='BUY', quantity=1, price=buy_px)
+sell_test = broker.send_order(symbol=config.BASE_ASSET_LONG, order_type='SELL', quantity=1, price=tp_px)
 print(f"[6/7] broker.send_order() [매수 & 예약매도]")
 print(f"      • Pay-up 지정가 매수 발주: ok={buy_test.get('ok')} (주문번호: {buy_test.get('order_no')}) -> ✅ 정상")
 print(f"      • 지정가 예약매도 발주: ok={sell_test.get('ok')} (주문번호: {sell_test.get('order_no')}) -> ✅ 정상")

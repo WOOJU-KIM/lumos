@@ -219,14 +219,17 @@ class KisClient:
     # [2. 거래소 코드 매핑]
     # =========================================================================
     def get_exchange_code(self, ticker: str) -> str:
-        """
-        종목별 KIS 해외 거래소 코드 자동 매핑
-        - VIRTUAL 모드: 'NASD' (모의투자는 TQQQ/SQQQ를 NASD/NYSE로 라우팅)
-        - REAL 모드: 'AMS' (NYSE American / Arca) 또는 'NASD'
-        """
         t = ticker.upper().strip()
         if self.mode == "VIRTUAL":
             return "NASD"
+        
+        # REAL 모드 거래소 정밀 매핑
+        if t in ["SOXL", "SOXS", "VIXY"]:
+            return "AMS"  # NYSE Arca
+        elif t in ["SPY"]:
+            return "NYSE" # NYSE
+        else:
+            return "NASD" # TQQQ, SQQQ, QQQ, NVDA (Nasdaq)
         
         # REAL 모드
         if t in ["SPY"]:
@@ -292,7 +295,7 @@ class KisClient:
     # =========================================================================
     # [4. 해외주식 주문가능금액 / 예수금 조회]
     # =========================================================================
-    def inquire_deposit(self, ticker: str = "TQQQ", price: float = 10.0) -> Dict[str, Any]:
+    def inquire_deposit(self, ticker: str = config.BASE_ASSET_LONG, price: float = 10.0) -> Dict[str, Any]:
         """해외주식 매수가능금액(예수금) 조회 (거래소 자동 폴백 지원)"""
         url = f"{self.base_url}/uapi/overseas-stock/v1/trading/inquire-psamount"
         headers = self._get_common_headers(self.tr_id_deposit)
@@ -454,7 +457,7 @@ class KisClient:
             test_summary["token_snippet"] = token[:10] + "..." if token else ""
 
             # 2. 예수금 조회 테스트
-            dep_res = self.inquire_deposit(ticker="TQQQ", price=10.0)
+            dep_res = self.inquire_deposit(ticker=config.BASE_ASSET_LONG, price=10.0)
             test_summary["deposit_ok"] = dep_res.get("ok", False)
             test_summary["avail_usd"] = dep_res.get("avail_usd", 0.0)
             test_summary["avail_krw"] = dep_res.get("avail_krw", 0.0)

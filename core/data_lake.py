@@ -355,21 +355,11 @@ class MarketDataLake:
         cur_candle_dt = now_ny.replace(minute=cur_minute, second=0, microsecond=0)
 
         if last_dt == cur_candle_dt:
-            # 기존 마지막 캔들 업데이트
-            df_copy.loc[last_dt, 'Close'] = live_price
-            df_copy.loc[last_dt, 'High'] = max(df_copy.loc[last_dt, 'High'], live_price)
-            df_copy.loc[last_dt, 'Low'] = min(df_copy.loc[last_dt, 'Low'], live_price)
+            # 진행 중인 캔들이 DB에 포함되어 있다면 제외 (완성된 캔들로만 피처 생성)
+            df_copy = df_copy.drop(last_dt)
         else:
-            # 새로운 형성 중인 캔들 추가
-            new_row = pd.DataFrame([{
-                'datetime': cur_candle_dt.strftime('%Y-%m-%d %H:%M:%S'),
-                'Open': live_price,
-                'High': live_price,
-                'Low': live_price,
-                'Close': live_price,
-                'Volume': 100.0
-            }], index=[cur_candle_dt])
-            df_copy = pd.concat([df_copy, new_row])
+            # 형성 중인 캔들이 아직 DB에 없다면, 그대로 완성된 캔들까지만 반환
+            pass
 
         return df_copy
 
@@ -439,14 +429,14 @@ class DailyAutoPipeline:
         import joblib
 
         # 최근 {config.ROLLING_TRAINING_WEEKS * 5} 거래일 고정 롤링 윈도우 추출 (Concept Drift 방지 및 꼬리 절삭)
-        tqqq_15m = self.data_lake.load_rolling_candles(config.TRADE_SYMBOLS[0], "15m", max_trading_days=config.ROLLING_TRAINING_WEEKS * 5)
-        if len(tqqq_15m) < 100:
+        long_15m = self.data_lake.load_rolling_candles(config.TRADE_SYMBOLS[0], "15m", max_trading_days=config.ROLLING_TRAINING_WEEKS * 5)
+        if len(long_15m) < 100:
             return {"ok": False, "msg": "데이터 부족으로 재학습 취소"}
 
         # 1. Track 1: LightGBM 최신화 롤링 재학습
         ml_engine = MLFeatureEngine(confidence_threshold=0.40)
-        tqqq_feat = ml_engine.extract_features(tqqq_15m)
-        trained_model, top_10, _ = ml_engine.train_and_select_top_features(tqqq_feat)
+        long_feat = ml_engine.extract_features(long_15m)
+        trained_model, top_10, _ = ml_engine.train_and_select_top_features(long_feat)
 
         refresh_path = BASE_DIR / "models" / "model_main_data_refresh.pkl"
         joblib.dump(trained_model, refresh_path)
@@ -479,13 +469,13 @@ class DailyAutoPipeline:
         import joblib
 
         # 최근 {config.ROLLING_TRAINING_WEEKS * 5} 거래일 고정 롤링 윈도우 추출 (Concept Drift 방지 및 꼬리 절삭)
-        tqqq_15m = self.data_lake.load_rolling_candles(config.TRADE_SYMBOLS[0], "15m", max_trading_days=config.ROLLING_TRAINING_WEEKS * 5)
-        if len(tqqq_15m) < 100:
+        long_15m = self.data_lake.load_rolling_candles(config.TRADE_SYMBOLS[0], "15m", max_trading_days=config.ROLLING_TRAINING_WEEKS * 5)
+        if len(long_15m) < 100:
             return {"ok": False, "msg": "데이터 부족으로 재학습 취소"}
 
         ml_engine = MLFeatureEngine(confidence_threshold=0.40)
-        tqqq_feat = ml_engine.extract_features(tqqq_15m)
-        trained_model, top_10, _ = ml_engine.train_and_select_top_features(tqqq_feat)
+        long_feat = ml_engine.extract_features(long_15m)
+        trained_model, top_10, _ = ml_engine.train_and_select_top_features(long_feat)
 
         refresh_path = BASE_DIR / "models" / "model_main_data_refresh.pkl"
         joblib.dump(trained_model, refresh_path)
@@ -509,8 +499,8 @@ class DailyAutoPipeline:
             "ok": True,
             "model_id": "M-DATA-REFRESH",
             "file_path": str(refresh_path),
-            "trading_days_used": len(tqqq_15m.index.strftime('%Y-%m-%d').unique()),
-            "total_bars": len(tqqq_15m),
+            "trading_days_used": len(long_15m.index.strftime('%Y-%m-%d').unique()),
+            "total_bars": len(long_15m),
             "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
 
@@ -646,7 +636,7 @@ class DailyAutoPipeline:
         logger.info("=" * 75)
 
         # 1. 데이터 적재
-        logger.info("\n[1/4] 7종 심볼 분봉 데이터 수집 및 DB 적재...")
+        logger.info("\n[1/4] 9종 심볼 분봉 데이터 수집 및 DB 적재...")
         h_res = self.run_step1_daily_harvest()
         records_cnt = h_res.get("total_records_updated", 0)
         logger.info(f"   • {records_cnt:,}개 캔들 DB UPSERT 완료")

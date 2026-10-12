@@ -1,0 +1,19 @@
+agentic_brain.py 391 1️⃣ **Phase 1 (09:30~14:30 EDT):** 15분봉 Model C (수익률 +24.38% 베이스라인)
+agentic_brain.py 392 2️⃣ **Phase 2 (14:30~15:30 EDT):** 5분봉 스나이퍼 (장 후반 변동성 사냥)
+data_lake.py 519 from scripts.evaluate_models_with_cutoff import run_cutoff_backtests
+data_lake.py 520 run_cutoff_backtests()
+market_calendar.py 41 trading_cutoff_time = dtime(15, 30)
+market_calendar.py 47 is_trading_allowed = (not is_weekend) and (market_open_time <= ny_time < trading_cutoff_time)
+market_calendar.py 123 3.  ??4?  ?(09:30~14:30 Phase 1 vs 14:30~15:30 Phase 2 vs 15:30 ??vs 15:50 EOD ?)
+ml_engine.py 372 cutoff_str = clean_data.index.min().strftime('%Y-%m-%d')
+ml_engine.py 373 target_live_df = target_live_df[target_live_df["entry_time"].astype(str).str.slice(0, 10) >= cutoff_str]
+power_hour_quant.py 14 [Lumos Quant: 장 마감 전 파워 아워(14:30~15:30 EDT) 단기 퀀트 엔진]
+power_hour_quant.py 170 룰 기반 진입 신호 생성 (14:30 ~ 15:30 EDT 전용)
+power_hour_quant.py 174 if not ('14:30' <= t_str <= '15:30'):
+power_hour_quant.py 209 # 파워 아워 구간(14:30~15:30) 데이터만 필터링
+power_hour_quant.py 210 ph_train = train_df[(train_df['time_str'] >= '14:30') & (train_df['time_str'] <= '15:30')].dropna(subset=self.FEATURE_COLS + ['target_meta_long', 'target_meta_short'])
+power_hour_quant.py 281 if not ('14:30' <= t_str <= '15:30'):
+system_logger.py 57 self.log("INFO", "MarketGuard", "🛡 장 마감 90분 전 신규 진입 차단 가드 (No-Entry Cutoff: 14:30 NYT) 활성화")
+weekly_tournament.py 357 # 09:45 이전 첫 봉 노이즈 배제 및 14:30 이후 신규 진입 금지
+weekly_tournament.py 358 if b_idx < 1 or time_str > "14:30":
+_legacy_power_hour_sniper.py 3 - Operating Window: 14:30 ~ 15:30 EDT (미국 장 마감 90분 전 ~ 30분 전)

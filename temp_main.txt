@@ -1,0 +1,99 @@
+                    if pnl_amount > 0: week_wins += 1
+                    active_pos = None
+
+            if active_pos is None and "09:30" <= bar_time <= "15:30":
+                g_dir = gbdt_dirs[local_i]
+                if g_dir in ["LONG_TQQQ", "SHORT_SQQQ"]:
+                    disloc = dislocation.values[global_i]
+                    is_veto = (g_dir == "LONG_TQQQ" and disloc <= -0.012) or (g_dir == "SHORT_SQQQ" and disloc >= 0.012)
+                    if not getattr(config, "USE_CROSS_ASSET_VETO", True):
+                        is_veto = False
+                    
+                    trend_ok = is_60m_trend_long.values[global_i] if g_dir == "LONG_TQQQ" else is_60m_trend_short.values[global_i]
+                    if not getattr(config, "USE_60M_TREND_FILTER", True):
+                        trend_ok = True
+                        
+                    cur_rsi = rsi_14[global_i]
+                    dip_ok = (cur_rsi <= RSI_OB) if g_dir == "LONG_TQQQ" else (cur_rsi >= RSI_OS)
+                    
+                    if not is_veto and trend_ok and dip_ok:
+                        sym = "TQQQ" if g_dir == "LONG_TQQQ" else "SQQQ"
+                        base_px = c_tqqq[global_i] if sym == "TQQQ" else c_sqqq[global_i]
+                        if base_px > 0:
+                            entry_px = base_px + SLIPPAGE_PAYUP
+                            shares = int((capital * ALLOC_RATIO) / (entry_px + config.QTY_CALC_BUFFER))
+                            invested = shares * entry_px
+                            
+                            if shares > 0 and invested > 0:
+                                atr_14 = np.mean(h_tqqq[global_i-13:global_i+1] - l_tqqq[global_i-13:global_i+1]) if global_i >= 13 else (h_tqqq[global_i]-l_tqqq[global_i])
+                                atr_sl_pct = (atr_14 * SL_ATR_MULT) / base_px
+                                initial_sl = max(SL_MIN, min(SL_MAX, atr_sl_pct)) * -1.0
+                                
+                                active_pos = {
+                                    "symbol": sym, "direction": g_dir, "entry_time": bar_time, "entry_local_idx": local_i,
+                                    "buy_price": entry_px, "shares": shares, "invested": invested, "initial_sl": initial_sl,
+                                    "peak_ret": 0.0, "trailing_active": False
+                                }
+
+        week_pnl = capital - week_start_capital
+        week_ret_pct = (week_pnl / week_start_capital) * 100 if week_start_capital > 0 else 0
+
+        if capital > peak_capital: peak_capital = capital
+        current_dd = (peak_capital - capital) / peak_capital * 100 if peak_capital > 0 else 0
+        if current_dd > max_drawdown: max_drawdown = current_dd
+
+        week_str = test_start.strftime("%Y-%m-%d")
+        weekly_results.append({
+            "Week": week_str, "Trades": week_trades, "Wins": week_wins, "Losses": week_trades - week_wins,
+            "Weekly_PnL": round(week_pnl, 2), "Weekly_Return_Pct": round(week_ret_pct, 2),
+            "Cumulative_Capital": round(capital, 2), "Drawdown_Pct": round(current_dd, 2)
+        })
+        week_count += 1
+        
+        test_start = test_end
+
+    total_elapsed = time.time() - t_start
+
+    print("\n" + "=" * 90)
+    print("🏆 [Lumos V5 Walk-Forward Rolling Backtest 초고속 성적표]")
+    print("=" * 90)
+
+    total_trades = sum(w["Trades"] for w in weekly_results)
+    total_wins = sum(w["Wins"] for w in weekly_results)
+    total_losses = total_trades - total_wins
+    total_return_pct = ((capital - INITIAL_CAPITAL) / INITIAL_CAPITAL) * 100
+    win_rate = (total_wins / total_trades) * 100 if total_trades > 0 else 0
+    years_elapsed = max((pd.to_datetime(weekly_results[-1]["Week"]) - pd.to_datetime(weekly_results[0]["Week"])).days / 365.25, 0.01) if weekly_results else 1.0
+    cagr = ((capital / INITIAL_CAPITAL) ** (1.0 / years_elapsed) - 1.0) * 100 if capital > 0 else 0.0
+
+    winning_trades = [t for t in trades if t["pnl_usd"] > 0]
+    losing_trades = [t for t in trades if t["pnl_usd"] <= 0]
+    avg_win = np.mean([t["return_pct"] for t in winning_trades]) if winning_trades else 0
+    avg_loss = np.mean([t["return_pct"] for t in losing_trades]) if losing_trades else 0
+    
+    sum_win_pnl = sum(t["pnl_usd"] for t in winning_trades)
+    sum_loss_pnl = abs(sum(t["pnl_usd"] for t in losing_trades))
+    profit_factor = sum_win_pnl / sum_loss_pnl if sum_loss_pnl != 0 else float('inf')
+
+    print(f"\n📊 소요 시간: {total_elapsed:.1f}초")
+    print(f"💰 초기 자본금:    ${INITIAL_CAPITAL:>12,.2f}")
+    print(f"💵 최종 자본금:    ${capital:>12,.2f}")
+    print(f"📈 총 누적 수익률: {total_return_pct:>+11.2f}%")
+    print(f"📈 연평균 수익률(CAGR): {cagr:>+8.2f}%")
+    print(f"📉 최대 낙폭(MDD):     {max_drawdown:>8.2f}%")
+    print(f"{'─'*50}")
+    print(f"🎯 총 거래 횟수:   {total_trades:>6}건")
+    print(f"✅ 승률:           {win_rate:>7.1f}%  ({total_wins}승 / {total_losses}패)")
+    print(f"📊 Profit Factor:  {profit_factor:>7.2f}")
+    print(f"📊 평균 수익/손실: {avg_win:>+7.2f}% / {avg_loss:>+7.2f}%")
+
+    report_dir = PROJECT_ROOT / "backtest_history"
+    report_dir.mkdir(exist_ok=True)
+    report_filename = datetime.now().strftime("%Y%m%d_%H%M%S") + "_fast_backtest_report.md"
+    report_path = report_dir / report_filename
+    with open(report_path, 'w', encoding='utf-8') as f:
+         f.write(f"# Lumos V5 Fast Vectorized Backtest\n**기간**: {years_elapsed:.1f}년\n**수익률**: {total_return_pct:.2f}%\n**MDD**: {max_drawdown:.2f}%\n**거래횟수**: {total_trades}건\n")
+    print(f"   ✅ 리포트 저장 완료: {report_path}")
+
+if __name__ == "__main__":
+    run_v5_rolling_backtest()

@@ -1,3 +1,4 @@
+import config
 import pandas as pd
 import numpy as np
 import yfinance as yf
@@ -16,20 +17,20 @@ class MarketRegimeClassifier:
         """시장 국면 분류 및 적응형 퀀트 파라미터 산출"""
         if historical_data is None:
             # yfinance로 장기 데이터 로드 (TQQQ, SOXX, ^VIX)
-            tqqq_df = yf.Ticker("TQQQ").history(period=self.lookback_period)
-            soxx_df = yf.Ticker("SOXX").history(period=self.lookback_period)
+            long_df = yf.Ticker(config.BASE_ASSET_LONG).history(period=self.lookback_period)
+            macro_df = yf.Ticker(config.MACRO_TREND_SYMBOL).history(period=self.lookback_period)
             vix_df = yf.Ticker("^VIX").history(period=self.lookback_period)
         else:
-            tqqq_df = historical_data.get("TQQQ")
-            soxx_df = historical_data.get("SOXX", tqqq_df)
+            long_df = historical_data.get(config.BASE_ASSET_LONG)
+            macro_df = historical_data.get(config.MACRO_TREND_SYMBOL, long_df)
             vix_df = historical_data.get("VIX")
 
         # 1. 테크니컬 지표 계산
-        close_tqqq = tqqq_df['Close']
-        current_tqqq = float(close_tqqq.iloc[-1])
-        ma20 = float(close_tqqq.tail(20).mean())
-        ma50 = float(close_tqqq.tail(50).mean())
-        ma200 = float(close_tqqq.tail(200).mean()) if len(close_tqqq) >= 200 else float(close_tqqq.mean())
+        close_long = long_df['Close']
+        current_long = float(close_long.iloc[-1])
+        ma20 = float(close_long.tail(20).mean())
+        ma50 = float(close_long.tail(50).mean())
+        ma200 = float(close_long.tail(200).mean()) if len(close_long) >= 200 else float(close_long.mean())
 
         # VIX 지표
         current_vix = float(vix_df['Close'].iloc[-1])
@@ -37,24 +38,24 @@ class MarketRegimeClassifier:
         vix_percentile = float((vix_df['Close'] < current_vix).mean() * 100)
 
         # 20일 실현 변동성 (연율화)
-        returns = close_tqqq.pct_change().dropna()
+        returns = close_long.pct_change().dropna()
         realized_vol_20d = float(returns.tail(20).std() * np.sqrt(252) * 100)
 
         # SOXX(반도체 지수) 모멘텀 (20일 등락률)
-        soxx_close = soxx_df['Close']
-        soxx_20d_perf = float((soxx_close.iloc[-1] - soxx_close.iloc[-20]) / soxx_close.iloc[-20] * 100) if len(soxx_close) >= 20 else 0.0
+        macro_close = macro_df['Close']
+        macro_20d_perf = float((macro_close.iloc[-1] - macro_close.iloc[-20]) / macro_close.iloc[-20] * 100) if len(macro_close) >= 20 else 0.0
 
         # 2. 국면 판정 로직
-        is_bull_ma = (current_tqqq > ma50) and (ma50 > ma200)
-        is_bear_ma = (current_tqqq < ma50) and (ma50 < ma200)
+        is_bull_ma = (current_long > ma50) and (ma50 > ma200)
+        is_bear_ma = (current_long < ma50) and (ma50 < ma200)
         
         if current_vix >= 25.0 or realized_vol_20d >= 85.0:
             regime = "HIGH_VOLATILITY_SIDEWAY"
             regime_name_kr = "고변동성 횡보 / 경계 국면 (High Volatility)"
             description = "VIX 및 실현 변동성이 극도로 높은 구간입니다. 포지션 규모를 대폭 축소하고 타이트한 손절 및 빠른 차익실현이 필요합니다."
             params = {
-                "tqqq_weight_mult": 0.5,
-                "sqqq_weight_mult": 0.8,
+                "long_weight_mult": 0.5,
+                "short_weight_mult": 0.8,
                 "dip_buy_threshold_pct": -1.2,
                 "stop_loss_pct": -1.5,
                 "hedge_switch_threshold_pct": -1.2,
@@ -65,20 +66,20 @@ class MarketRegimeClassifier:
             regime_name_kr = "강력한 상승 추세 국면 (Bull Trend)"
             description = "반도체 지수가 중장기 이평선 위에서 정배열을 형성하며 VIX가 20pt 미만으로 안정적입니다. TQQQ 선제 눌림목 매수를 적극 추천합니다."
             params = {
-                "tqqq_weight_mult": 1.2,
-                "sqqq_weight_mult": 0.3,
+                "long_weight_mult": 1.2,
+                "short_weight_mult": 0.3,
                 "dip_buy_threshold_pct": -0.8,
                 "stop_loss_pct": -2.0,
                 "hedge_switch_threshold_pct": -2.2,
                 "target_regime_mode": "AGGRESSIVE_LONG"
             }
-        elif is_bear_ma or (current_tqqq < ma200 and soxx_20d_perf < -5.0):
+        elif is_bear_ma or (current_long < ma200 and macro_20d_perf < -5.0):
             regime = "BEAR_TREND"
             regime_name_kr = "하락 추세 / 약세장 국면 (Bear Trend)"
             description = "중장기 이평선이 역배열이거나 지수 하방 압력이 큽니다. SQQQ 헤지 스위칭을 우선시하고 TQQQ 진입은 보수적으로 제한합니다."
             params = {
-                "tqqq_weight_mult": 0.4,
-                "sqqq_weight_mult": 1.5,
+                "long_weight_mult": 0.4,
+                "short_weight_mult": 1.5,
                 "dip_buy_threshold_pct": -1.5,
                 "stop_loss_pct": -1.5,
                 "hedge_switch_threshold_pct": -1.0,
@@ -89,8 +90,8 @@ class MarketRegimeClassifier:
             regime_name_kr = "수렴 및 저변동 횡보 국면 (Consolidation)"
             description = "뚜렷한 추세 없이 박스권 내에서 수렴하는 국면입니다. 기본 원칙에 입각한 정량 분할 매매를 수행합니다."
             params = {
-                "tqqq_weight_mult": 1.0,
-                "sqqq_weight_mult": 0.6,
+                "long_weight_mult": 1.0,
+                "short_weight_mult": 0.6,
                 "dip_buy_threshold_pct": -1.0,
                 "stop_loss_pct": -2.0,
                 "hedge_switch_threshold_pct": -1.8,
@@ -102,14 +103,14 @@ class MarketRegimeClassifier:
             "regime_name_kr": regime_name_kr,
             "description": description,
             "metrics": {
-                "current_tqqq": round(current_tqqq, 2),
+                "current_long": round(current_long, 2),
                 "ma20": round(ma20, 2),
                 "ma50": round(ma50, 2),
                 "ma200": round(ma200, 2),
                 "current_vix": round(current_vix, 2),
                 "vix_percentile": round(vix_percentile, 1),
                 "realized_vol_20d_pct": round(realized_vol_20d, 1),
-                "soxx_20d_perf_pct": round(soxx_20d_perf, 2)
+                "macro_20d_perf_pct": round(macro_20d_perf, 2)
             },
             "strategy_params": params
         }

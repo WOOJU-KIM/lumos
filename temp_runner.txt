@@ -1,0 +1,100 @@
+                        if not already_run:
+                            try:
+                                # 증권사 통신: 체결 내역 브리핑 발송 (에러 발생 시에도 무시되도록 try-except 가드)
+                                try:
+                                    exec_hist = self.broker.get_daily_execution_history()
+                                    if exec_hist.get("ok") and exec_hist.get("execution_count", 0) > 0:
+                                        msg = f"📊 **[오늘의 실제 매매 체결 내역 (증권사 원장)]**\n\n총 {exec_hist['execution_count']}건의 체결 내역이 확인되었습니다.\n"
+                                        for ex in exec_hist["executions"]:
+                                            sym = ex.get('pdno') or ex.get('stk_cd') or ex.get('symbol') or "알수없음"
+                                            od_type = ex.get('sll_buy_dvsn_cd_name') or ex.get('order_type') or ex.get('sll_buy_dvsn_cd') or "체결"
+                                            qty = ex.get('ccld_qty') or ex.get('quantity') or ex.get('ord_qty') or 0
+                                            px = ex.get('ft_ccld_unpr3') or ex.get('ccld_unpr') or ex.get('price') or 0
+                                            msg += f"• {sym} | {od_type} | {qty}주 @ \n"
+                                        self.dispatcher.send_telegram_message(msg)
+                                        system_logger.log("INFO", "ExecutionHistory", f"당일 체결 내역 브리핑 발송 완료 ({exec_hist['execution_count']}건)")
+                                except Exception as eh_err:
+                                    system_logger.log("ERROR", "ExecutionHistory", f"체결 내역 조회/발송 실패 (무시됨): {eh_err}")
+                            except Exception as dummy: pass
+
+                            try:
+                                from core.data_lake import DailyAutoPipeline
+                                pipeline = DailyAutoPipeline(self.data_lake)
+                                eod_res = pipeline.run_full_eod_pipeline(send_telegram=True)
+                                with open(eod_date_file, "w", encoding="utf-8") as f:
+                                    json.dump({"eod_date": today_str, "completed_at": time.strftime("%Y-%m-%d %H:%M:%S")}, f)
+                            except Exception as e:
+                                logger.info(f"[EOD Pipeline Error] {e}")
+
+                    self._last_market_session = current_session
+
+                # === AI Evaluation & Briefing ===
+                if current_session == "REGULAR_MARKET_OPEN" and not self._is_order_in_progress:
+                    now_t = time.time()
+                    active_pos = self._get_active_position()
+                    
+                    now_dt = datetime.now()
+                    force_first_run = (self._last_briefing_time == 0.0)
+                    is_target_minute = (now_dt.minute % 15 == 0)
+                    
+                    if (is_target_minute or force_first_run) and (now_t - self._last_briefing_time) >= 60:
+                        self._last_briefing_time = now_t
+                        
+                        try:                            # 2) 전 종목 Intraday 캔들 동기화
+                            self.data_lake.sync_live_intraday_candles(config.ALL_SYMBOLS)
+                            df_15m = self.data_lake.load_candles("TQQQ", "15m")
+                            live_prices = {sym: self.ws_streamer.get_latest_price(sym, 0.0) for sym in config.ALL_SYMBOLS}
+                            
+                            moe_res = self.moe_orchestrator.evaluate_dual_filter_signal(df_candle_15m=df_15m, live_prices=live_prices)
+                            self._last_moe_res = moe_res
+                            
+                            conf = float(moe_res.get('gating_confidence', 0.0)) * 100.0
+                            is_appr = moe_res.get('is_approved', False)
+                            direction = moe_res.get('direction', 'NONE')
+                            
+                            gbdt_probs = moe_res.get('gbdt_probs', {"LONG": 0.0, "SHORT": 0.0, "NONE": 0.0})
+                            p_long = gbdt_probs.get("LONG", 0.0) * 100
+                            p_short = gbdt_probs.get("SHORT", 0.0) * 100
+                            p_none = gbdt_probs.get("NONE", 0.0) * 100
+                            
+                            ny_dt = now_dt.astimezone(ZoneInfo('America/New_York'))
+                            if direction == "LONG_TQQQ":
+                                dir_str = "TQQQ 매수"
+                            elif direction == "SHORT_SQQQ":
+                                dir_str = "SQQQ 매수"
+                            else:
+                                dir_str = "매수 관망"
+                                
+                            briefing_msg = f"""🤖 <b>[Lumos AI 정기 브리핑]</b>
+⏰ 시간: {ny_dt.strftime('%H:%M')} (뉴욕시간)
+⏰ 시간: {now_dt.strftime('%H:%M')} (한국시간)
+🧭 AI 판독 방향: {dir_str}
+🎯 진입 임계값: {config.GBDT_CONFIDENCE_THRESHOLD * 100:.1f}%
+📈 롱(TQQQ) 확률: {p_long:.1f}%
+📉 숏(SQQQ) 확률: {p_short:.1f}%
+⏸ 관망 확률: {p_none:.1f}%
+🔥 최종 GBDT 확신도: {conf:.1f}%
+🚦 상태: {'진입 승인 🟢 (보유종목 있어 실제 진입은 Skip)' if (is_appr and active_pos) else '진입 승인 🟢' if is_appr else '관망 유지 🟡'}
+"""
+                            self.dispatcher.send_telegram_message(briefing_msg)
+                            system_logger.log("INFO", "AI", f"15???? ? (?: {conf:.1f}%)")
+                            
+                            if is_appr and not active_pos :
+                                if direction in ["LONG_TQQQ", "SHORT_SQQQ"]:
+                                    winner_sym = "TQQQ" if direction == "LONG_TQQQ" else "SQQQ"
+                                    cur_px = live_prices.get(winner_sym, 0.0)
+                                    
+                                    if cur_px > 0:
+                                        conn_res = self.broker.test_connection()
+                                        usd_avail = float(conn_res.get("usd_order_available", 0.0))
+                                        order_qty = int((usd_avail * config.MAX_ALLOCATION_RATIO) / (cur_px + config.QTY_CALC_BUFFER))
+                                        
+                                        if order_qty > 0:
+                                            system_logger.log("TRADE", "AI", f"V3 AI  ? ?! {winner_sym} {order_qty}? ?")
+                                            atr_14 = float(moe_res.get('features', {}).get('ATR_14', cur_px * 0.018))
+                                            atr_pct = (atr_14 / cur_px) * 100.0 if cur_px > 0 else 1.8
+                                            sl_pct = max(config.SL_MIN_PCT * 100.0, min(config.SL_MAX_PCT * 100.0, atr_pct * config.SL_ATR_MULTIPLIER))
+                                            tp_pct = config.MAX_TP_PCT * 100.0
+                                            
+                                            targets = {
+                                                "dynamic_tp_px": round(cur_px * (1.0 + tp_pct/100.0), 2),

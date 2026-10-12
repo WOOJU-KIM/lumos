@@ -1,4 +1,5 @@
 import os
+import config
 import sys
 import json
 import time
@@ -73,27 +74,27 @@ def run_kis_full_signals_verification():
     # [4/7] KIS 실시간 시세 및 15분봉 캔들 데이터 수신
     print("\n[4/7] 실시간 시세 및 15분봉 캔들 데이터 레이크 수신")
     lake = MarketDataLake()
-    tqqq_15m = lake.load_candles("TQQQ", "15m")
+    long_15m = lake.load_candles(config.BASE_ASSET_LONG, "15m")
     broker = HybridUniversalBroker(is_simulation=True)
-    quote = broker.get_stock_quote("TQQQ")
+    quote = broker.get_stock_quote(config.BASE_ASSET_LONG)
     cur_px = quote.get("last_price", 129.10)
-    print(f"      • TQQQ 15분봉 적재 수량: {len(tqqq_15m):,}개 (2026-05-20 ~ 2026-08-18)")
+    print(f"      • TQQQ 15분봉 적재 수량: {len(long_15m):,}개 (2026-05-20 ~ 2026-08-18)")
     print(f"      • 실시간 기준가: ${cur_px:.2f} USD")
-    assert len(tqqq_15m) > 0, "캔들 데이터 수신 실패"
+    assert len(long_15m) > 0, "캔들 데이터 수신 실패"
     print("      -> ✅ 정상")
 
     # [5/7] Lumos v10.3 MoE Sigmoid (임계치 75%) 실시간 의사결정 & 전 모델 점수 평가
     print("\n[5/7] Lumos v10.3 MoE Sigmoid (임계치 75%) 실시간 의사결정 & 모델별 점수 산출")
     moe = MoEMetaOrchestrator(confidence_threshold=0.75)
-    decision = moe.evaluate_dual_filter_signal(tqqq_15m, threshold=0.75)
+    decision = moe.evaluate_dual_filter_signal(long_15m, threshold=0.75)
     exp_name = decision.get("expert_desc", "오더플로우 CVD 수급")
     gw = float(decision.get("gating_confidence", 0.80)) * 100
     conf = float(decision.get("expert_confidence", 0.75)) * 100
     all_scores = decision.get("all_gating_confidences", {})
-    direction = decision.get("direction", "LONG_TQQQ")
+    direction = decision.get("direction", "LONG")
     is_approved = decision.get("is_approved", True)
 
-    targets = moe.calculate_dynamic_targets(tqqq_15m, cur_px)
+    targets = moe.calculate_dynamic_targets(long_15m, cur_px)
     tp_px = targets["dynamic_tp_px"]
     sl_px = targets["dynamic_sl_px"]
 
@@ -106,10 +107,10 @@ def run_kis_full_signals_verification():
     # [6/7] KIS 모의투자 실시간 매수 & 지정가 예약매도 주문 신호 전송
     print("\n[6/7] KIS 모의투자 실시간 매수 & 지정가 예약매도 주문 신호 전송")
     pay_up_px = round(cur_px + 0.03, 2)
-    buy_order = broker.send_order(symbol="TQQQ", order_type="BUY", quantity=1, price=pay_up_px)
+    buy_order = broker.send_order(symbol=config.BASE_ASSET_LONG, order_type="BUY", quantity=1, price=pay_up_px)
     print(f"      • [매수 발주] TQQQ 1주 @ ${pay_up_px:.2f} ➔ 성공: {buy_order.get('ok')} (주문번호: {buy_order.get('order_no')})")
 
-    sell_order = broker.send_order(symbol="TQQQ", order_type="SELL", quantity=1, price=tp_px)
+    sell_order = broker.send_order(symbol=config.BASE_ASSET_LONG, order_type="SELL", quantity=1, price=tp_px)
     print(f"      • [지정가 예약매도] TQQQ 1주 @ ${tp_px:.2f} ➔ 성공: {sell_order.get('ok')} (주문번호: {sell_order.get('order_no')})")
     assert buy_order.get("ok") and sell_order.get("ok"), "주문 발주 실패"
     print("      -> ✅ 정상")
@@ -121,7 +122,7 @@ def run_kis_full_signals_verification():
     sandbox.record_shadow_trade(
         model_id="M-MOE-ORCHESTRATOR",
         track_label="Track 6: MoE AI 메타 오케스트레이터 (v10.3 Sigmoid)",
-        ticker="TQQQ",
+        ticker=config.BASE_ASSET_LONG,
         entry_price=cur_px,
         exit_price=cur_px,
         entry_time=datetime.now().strftime("%H:%M:%S"),

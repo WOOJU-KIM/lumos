@@ -36,7 +36,7 @@ if logs_file.exists():
 conn = sqlite3.connect("data/shadow_trades.db")
 conn.row_factory = sqlite3.Row
 cur = conn.cursor()
-rows = cur.execute("SELECT * FROM shadow_trades WHERE ticker = 'TQQQ' ORDER BY rowid DESC LIMIT 10;").fetchall()
+rows = cur.execute("SELECT * FROM shadow_trades WHERE ticker = config.BASE_ASSET_LONG ORDER BY rowid DESC LIMIT 10;").fetchall()
 print(f"\n• Shadow Trades TQQQ 최근 기록 ({len(rows)}건):")
 for r in rows:
     print(f"  - [{r['trade_date']} {r['entry_time']}] {r['ticker']} {r['entry_price']}$ ➔ 지목: {r['selected_expert']} (확신도: {r['gating_weight']*100:.1f}점) | 이유: {r['exit_reason']}")

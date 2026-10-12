@@ -18,6 +18,7 @@ if sys.platform.startswith('win'):
     except Exception:
         pass
 
+import config
 import pandas as pd
 import numpy as np
 from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, INITIAL_CAPITAL_KRW, BASE_DIR
@@ -60,10 +61,10 @@ def run_cold_start_v3():
     # [2단계: 메인 챔피언 및 골든 베이스라인 모델 생성]
     # ----------------------------------------------------
     print("\n⏳ [2/5] 메인 챔피언 및 골든 베이스라인(24.38%) 모델 등록...")
-    tqqq_15m = data_lake.load_candles("TQQQ", "15m")
+    long_15m = data_lake.load_candles(config.BASE_ASSET_LONG, "15m")
     ml_engine = MLFeatureEngine(confidence_threshold=0.40)
-    tqqq_feat = ml_engine.extract_features(tqqq_15m)
-    trained_model, top_10, _ = ml_engine.train_and_select_top_features(tqqq_feat)
+    long_feat = ml_engine.extract_features(long_15m)
+    trained_model, top_10, _ = ml_engine.train_and_select_top_features(long_feat)
 
     # 1. 챔피언 및 골든 등록
     registry.register_model(
@@ -103,7 +104,7 @@ def run_cold_start_v3():
     )
 
     # 서브 2: 신규 튜닝 챌린저 앙상블 (model_challenger_v1.pkl)
-    df_c = tqqq_feat.dropna()
+    df_c = long_feat.dropna()
     feat_cols = [c for c in df_c.columns if c not in ['Open','High','Low','Close','Volume','date_str','Confidence','Signal','datetime','Datetime'] and pd.api.types.is_numeric_dtype(df_c[c])]
     y_c = ((df_c['Close'].shift(-4) / df_c['Close'] - 1.0) >= 0.015).astype(int).iloc[:-4]
     X_c = df_c[feat_cols].iloc[:-4]

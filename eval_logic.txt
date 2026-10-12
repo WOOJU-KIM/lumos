@@ -1,0 +1,40 @@
+                            briefing_msg = f"""🤖 <b>[Lumos AI 정기 브리핑]</b>
+⏰ 시간: {ny_dt.strftime('%H:%M')} (뉴욕시간)
+⏰ 시간: {now_dt.strftime('%H:%M')} (한국시간)
+🧭 AI 판독 방향: {dir_str}
+🎯 진입 임계값: {config.GBDT_CONFIDENCE_THRESHOLD * 100:.1f}%
+📈 롱(TQQQ) 확률: {p_long:.1f}%
+📉 숏(SQQQ) 확률: {p_short:.1f}%
+⏸ 관망 확률: {p_none:.1f}%
+🔥 최종 GBDT 확신도: {conf:.1f}%
+🚦 상태: {'진입 승인 🟢 (보유종목 있어 실제 진입은 Skip)' if (is_appr and active_pos) else '진입 승인 🟢' if is_appr else '관망 유지 🟡'}
+"""
+                            self.dispatcher.send_telegram_message(briefing_msg)
+                            system_logger.log("INFO", "AI", f"15???? ? (?: {conf:.1f}%)")
+                            
+                            if is_appr and not active_pos :
+                                if direction in ["LONG_TQQQ", "SHORT_SQQQ"]:
+                                    winner_sym = "TQQQ" if direction == "LONG_TQQQ" else "SQQQ"
+                                    cur_px = live_prices.get(winner_sym, 0.0)
+                                    
+                                    if cur_px > 0:
+                                        conn_res = self.broker.test_connection()
+                                        usd_avail = float(conn_res.get("usd_order_available", 0.0))
+                                        order_qty = int((usd_avail * config.MAX_ALLOCATION_RATIO) / (cur_px + config.QTY_CALC_BUFFER))
+                                        
+                                        if order_qty > 0:
+                                            system_logger.log("TRADE", "AI", f"V3 AI  ? ?! {winner_sym} {order_qty}? ?")
+                                            atr_14 = float(moe_res.get('features', {}).get('ATR_14', cur_px * 0.018))
+                                            atr_pct = (atr_14 / cur_px) * 100.0 if cur_px > 0 else 1.8
+                                            sl_pct = max(config.SL_MIN_PCT * 100.0, min(config.SL_MAX_PCT * 100.0, atr_pct * config.SL_ATR_MULTIPLIER))
+                                            tp_pct = config.MAX_TP_PCT * 100.0
+                                            
+                                            targets = {
+                                                "dynamic_tp_px": round(cur_px * (1.0 + tp_pct/100.0), 2),
+                                                "dynamic_sl_px": round(cur_px * (1.0 - sl_pct/100.0), 2),
+                                                "tp_pct": tp_pct,
+                                                "sl_pct": sl_pct,
+                                                "time_stop_minutes": config.TIME_STOP_MINUTES,
+                                                "strategy_tag": "Lumos V4 Optimal"
+                                            }
+                                            self._execute_buy_with_10s_chase(

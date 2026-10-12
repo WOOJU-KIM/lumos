@@ -1,4 +1,5 @@
 import os
+import config
 import sys
 import json
 import time
@@ -86,9 +87,9 @@ class HybridUniversalBroker:
             "msg": f"{self.broker_name} {self.mode_str} 정상 연동 확인 완료"
         }
 
-    def get_stock_quote(self, symbol: str = "TQQQ") -> Dict[str, Any]:
+    def get_stock_quote(self, symbol: str = config.BASE_ASSET_LONG) -> Dict[str, Any]:
         """실시간 호가 및 체결가 조회 (KIS 실시간 원장 / DataLake 실시간 틱 동기화)"""
-        last_px = 120.74
+        last_px = config.FALLBACK_PRICE
         if self.is_simulation:
             try:
                 bal = self.kis.inquire_balance()
@@ -124,7 +125,7 @@ class HybridUniversalBroker:
     def get_overseas_deposit(self) -> Dict[str, Any]:
         """외화 예수금 및 주문가능금액 조회 (한투 OpenAPI)"""
         if self.is_simulation:
-            res = self.kis.inquire_deposit(ticker="TQQQ", price=120.74)
+            res = self.kis.inquire_deposit(ticker=config.BASE_ASSET_LONG, price=config.FALLBACK_PRICE)
             raw = res.get("raw", {})
             usd_avail = float(raw.get("ord_psbl_frcr_amt", 1540.83) or 1540.83)
             exrt = float(raw.get("exrt", 1402.5) or 1402.5)
@@ -153,7 +154,7 @@ class HybridUniversalBroker:
                     # 중복 종목 방지
                     if not any(item["symbol"] == h.get("ticker") for item in holdings):
                         holdings.append({
-                            "symbol": h.get("ticker", "TQQQ"),
+                            "symbol": h.get("ticker", config.BASE_ASSET_LONG),
                             "quantity": int(h.get("qty", 0)),
                             "holding_qty": int(h.get("qty", 0)),
                             "purchase_price": float(h.get("avg_price", 0.0)),
@@ -195,7 +196,7 @@ class HybridUniversalBroker:
             else:
                 # 🎯 [시장가/긴급청산] 100% 즉시 체결을 위해 현재가 대비 -1.5% 슬리피지 지정가 발주
                 quote_res = self.get_stock_quote(symbol)
-                cur_px = float(quote_res.get("last_price", 120.74))
+                cur_px = float(quote_res.get("last_price", config.FALLBACK_PRICE))
                 ord_px = round(cur_px * 0.985, 2) if order_type == "SELL" else round(cur_px * 1.015, 2)
 
             res = self.kis.order_overseas_stock(

@@ -4,6 +4,7 @@ import json
 import urllib.request
 from datetime import datetime
 from pathlib import Path
+import config
 import pandas as pd
 from dotenv import load_dotenv
 
@@ -72,7 +73,7 @@ def fetch_alpaca_bars(symbol: str, timeframe: str = "15Min", start_dt: str = "20
 
 if __name__ == "__main__":
     print("Testing Alpaca Fetcher for TQQQ 2024 Q1 (Jan ~ Mar 2024)...")
-    df = fetch_alpaca_bars("TQQQ", timeframe="15Min", start_dt="2024-01-01", end_dt="2024-03-31")
+    df = fetch_alpaca_bars(config.BASE_ASSET_LONG, timeframe="15Min", start_dt="2024-01-01", end_dt="2024-03-31")
     print(f"Fetch completed: {len(df)} bars downloaded!")
     print("\nFirst 3 bars:")
     print(df.head(3))

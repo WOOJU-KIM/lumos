@@ -47,11 +47,29 @@ class USMarketCalendar:
         eod_liquidation_time = _parse_time(config.PHASE_EOD_CLEAR)
         market_close_time = _parse_time(config.MARKET_CLOSE_TIME)
 
-        is_regular_hours = (not is_weekend) and (market_open_time <= ny_time < market_close_time)
+        # Holiday and Early close handling
+        is_holiday = False
+        try:
+            import pandas_market_calendars as mcal
+            nyse = mcal.get_calendar('NYSE')
+            today_str = now_ny.strftime('%Y-%m-%d')
+            schedule = nyse.schedule(start_date=today_str, end_date=today_str)
+            if schedule.empty:
+                is_holiday = True
+            else:
+                actual_close = schedule.iloc[0]['market_close'].astimezone(ny_tz)
+                if actual_close.time() != dtime(16, 0):
+                    market_close_time = actual_close.time()
+                    eod_liquidation_time = (actual_close - timedelta(minutes=5)).time()
+                    trading_cutoff_time = (actual_close - timedelta(minutes=30)).time()
+        except Exception:
+            pass
+
+        is_regular_hours = (not is_weekend) and (not is_holiday) and (market_open_time <= ny_time < market_close_time)
         is_phase2_allowed = False
-        is_trading_allowed = (not is_weekend) and (market_open_time <= ny_time < trading_cutoff_time)
+        is_trading_allowed = (not is_weekend) and (not is_holiday) and (market_open_time <= ny_time < trading_cutoff_time)
         is_entry_allowed = is_trading_allowed
-        is_eod_liquidation_window = (not is_weekend) and (eod_liquidation_time <= ny_time < market_close_time)
+        is_eod_liquidation_window = (not is_weekend) and (not is_holiday) and (eod_liquidation_time <= ny_time < market_close_time)
 
         if is_regular_hours:
             next_open_kst = None

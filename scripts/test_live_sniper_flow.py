@@ -22,7 +22,7 @@ broker = KiwoomBroker()
 dispatcher = DispatcherAgent(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
 
 # 1. 시세 조회
-quote = broker.get_stock_quote("TQQQ")
+quote = broker.get_stock_quote(config.BASE_ASSET_LONG)
 cur_px = quote.get("last_price", 151.53)
 tp_px = round(cur_px * 1.035, 2)
 sl_px = round(cur_px * 0.980, 2)
@@ -35,12 +35,12 @@ print(f"   • 칼손절 기준가 (-2.0%): ${sl_px:.2f}")
 
 # 2. 실시간 시장가 매수 발주 시험
 print(f"\n[2/4] 키움 OpenAPI ➔ TQQQ {qty}주 실시간 시장가 매수 발주...")
-buy_res = broker.send_order(symbol="TQQQ", order_type="BUY", quantity=qty, price=0.0)
+buy_res = broker.send_order(symbol=config.BASE_ASSET_LONG, order_type="BUY", quantity=qty, price=0.0)
 print(f"   • 매수 주문 응답: ok={buy_res.get('ok')}, 주문번호={buy_res.get('order_no')}, 메시지={buy_res.get('msg')}")
 
 # 3. 매수 직후 +3.5% 지정가 예약매도 발주 시험
 print(f"\n[3/4] 키움 OpenAPI ➔ TQQQ {qty}주 @ ${tp_px:.2f} (+3.5% 지정가 예약매도) 발주...")
-tp_res = broker.send_order(symbol="TQQQ", order_type="SELL", quantity=qty, price=tp_px)
+tp_res = broker.send_order(symbol=config.BASE_ASSET_LONG, order_type="SELL", quantity=qty, price=tp_px)
 print(f"   • 예약매도 주문 응답: ok={tp_res.get('ok')}, 주문번호={tp_res.get('order_no')}, 메시지={tp_res.get('msg')}")
 
 # 4. 텔레그램 체결 & 예약 알림 전송 시험

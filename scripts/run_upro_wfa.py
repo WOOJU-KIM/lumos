@@ -53,7 +53,7 @@ def run_weekly_rolling_walk_forward():
     spxu_15m = lake.load_candles("SPXU", "15m")
     spy_60m = lake.load_candles("SPY", "60m")
     nvda_15m = lake.load_candles("NVDA", "15m")
-    soxx_15m = lake.load_candles("SOXX", "15m")
+    macro_15m = lake.load_candles(config.MACRO_TREND_SYMBOL, "15m")
     spy_15m  = lake.load_candles("SPY", "15m")
     vixy_15m = lake.load_candles("VIXY", "15m")
     ief_15m  = lake.load_candles("IEF", "15m")
@@ -79,7 +79,7 @@ def run_weekly_rolling_walk_forward():
 
     # 크로스에셋 딕셔너리 고속 캐싱
     nvda_map = nvda_15m.set_index('datetime')['Close'].to_dict()
-    soxx_map = soxx_15m.set_index('datetime')['Close'].to_dict()
+    macro_map = macro_15m.set_index('datetime')['Close'].to_dict()
     spy_map  = spy_15m.set_index('datetime')['Close'].to_dict()
     vix_map  = vixy_15m.set_index('datetime')['Close'].to_dict()
     ief_map  = ief_15m.set_index('datetime')['Close'].to_dict()
@@ -280,7 +280,7 @@ def run_weekly_rolling_walk_forward():
                     conf_gbdt = float(row.get('Confidence', 0.50))
 
                     n_px = nvda_map.get(curr_dt)
-                    sx_px = soxx_map.get(curr_dt)
+                    sx_px = macro_map.get(curr_dt)
                     q_px = spy_map.get(curr_dt)
                     v_px = vix_map.get(curr_dt)
                     i_px = ief_map.get(curr_dt)
@@ -290,13 +290,13 @@ def run_weekly_rolling_walk_forward():
                     if cur_bar_idx >= 5 and n_px and sx_px and q_px:
                         prev_dt = day_bars.iloc[cur_bar_idx - 5]['datetime']
                         p_n = nvda_map.get(prev_dt, n_px)
-                        p_sx = soxx_map.get(prev_dt, sx_px)
+                        p_sx = macro_map.get(prev_dt, sx_px)
                         p_q = spy_map.get(prev_dt, q_px)
                         p_v = vix_map.get(prev_dt, v_px) if v_px else None
                         p_i = ief_map.get(prev_dt, i_px) if i_px else None
 
                         nvda_r = (n_px / p_n - 1.0) if p_n else 0.0
-                        soxx_r = (sx_px / p_sx - 1.0) if p_sx else 0.0
+                        macro_r = (sx_px / p_sx - 1.0) if p_sx else 0.0
                         spy_r  = (q_px / p_q - 1.0) if p_q else 0.0
                         vix_r  = (v_px / p_v - 1.0) if (v_px and p_v) else 0.0
                         ief_r  = (i_px / p_i - 1.0) if (i_px and p_i) else 0.0
@@ -306,7 +306,7 @@ def run_weekly_rolling_walk_forward():
                         sig_code, _, _ = cross_mod.predict_signal(
                             upro_ret=upro_r,
                             nvda_ret=nvda_r,
-                            soxx_ret=soxx_r,
+                            macro_ret=macro_r,
                             spy_ret=spy_r,
                             vix_ret=vix_r,
                             tnx_ret=tnx_proxy_ret

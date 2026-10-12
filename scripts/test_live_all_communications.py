@@ -1,4 +1,5 @@
 import os
+import config
 import sys
 import json
 import time
@@ -50,17 +51,17 @@ def run_full_communication_test():
     print("   ⏳ 소켓 틱 데이터 스트림 대기 중 (약 3초)...")
     time.sleep(3.5)
 
-    tqqq_ws_px = ws.get_latest_price("TQQQ", default=0.0)
-    sqqq_ws_px = ws.get_latest_price("SQQQ", default=0.0)
+    long_ws_px = ws.get_latest_price(config.BASE_ASSET_LONG, default=0.0)
+    short_ws_px = ws.get_latest_price(config.BASE_ASSET_SHORT, default=0.0)
     nvda_ws_px = ws.get_latest_price("NVDA", default=0.0)
     qqq_ws_px = ws.get_latest_price("QQQ", default=0.0)
 
     print("   • [소켓/피드 실시간 가격 현황]")
-    print(f"     - TQQQ: ${tqqq_ws_px:.2f}")
-    print(f"     - SQQQ: ${sqqq_ws_px:.2f}")
+    print(f"     - TQQQ: ${long_ws_px:.2f}")
+    print(f"     - SQQQ: ${short_ws_px:.2f}")
     print(f"     - NVDA: ${nvda_ws_px:.2f}")
     print(f"     - QQQ : ${qqq_ws_px:.2f}")
-    print(f"   • WebSocket 스트리밍 상태: {'✅ 연결 및 수신 정상' if (ws.is_connected or len(received_ticks) > 0 or tqqq_ws_px > 0) else '⚠️ REST 폴링 모드 대체 가동'}")
+    print(f"   • WebSocket 스트리밍 상태: {'✅ 연결 및 수신 정상' if (ws.is_connected or len(received_ticks) > 0 or long_ws_px > 0) else '⚠️ REST 폴링 모드 대체 가동'}")
 
     # 3. 주문 전 현재 외화 예수금 및 원장 잔고 조회
     print("\n[Step 3] [REST 조회] 외화예수금(ust21110) 및 원장잔고(ust21070) 조회...")
@@ -71,7 +72,7 @@ def run_full_communication_test():
     print(f"   • 보유 주식 수: {stk_before.get('holdings_count', 0)}개")
 
     # 4. REST API 1주 매수 발주 집행 (ust20000)
-    target_sym = "TQQQ"
+    target_sym = config.BASE_ASSET_LONG
     print(f"\n[Step 4] [REST 매수 발주] {target_sym} 1주 매수 주문 전송 (TR: ust20000)...")
     try:
         buy_res = broker.send_order(symbol=target_sym, order_type="BUY", quantity=1, price=0.0)

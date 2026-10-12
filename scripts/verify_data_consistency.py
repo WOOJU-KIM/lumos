@@ -5,6 +5,7 @@ import sqlite3
 import urllib.request
 from datetime import datetime
 from pathlib import Path
+import config
 import pandas as pd
 import numpy as np
 from dotenv import load_dotenv
@@ -74,7 +75,7 @@ def fetch_alpaca_bars_full(symbol: str, timeframe: str, start_dt: str, end_dt: s
 
 def compare_dataset():
     lake = MarketDataLake()
-    symbols = ["TQQQ", "NVDA", "QQQ", "SOXX", "SQQQ"]
+    symbols = [config.BASE_ASSET_LONG, "NVDA", "QQQ", config.MACRO_TREND_SYMBOL, config.BASE_ASSET_SHORT]
     timeframe = "15m"
     
     print("=" * 85)

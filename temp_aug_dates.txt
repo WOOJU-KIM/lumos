@@ -1,0 +1,4 @@
+11: if sys.platform.startswith('win'):
+37:             f"SELECT datetime, open, high, low, close, volume FROM market_candles WHERE symbol='{s}' AND timeframe='15m' AND datetime >= '2026-08-01' ORDER BY datetime ASC",
+146:                     equity_curve.append(capital)
+166:                     trades.append(trade_rec)

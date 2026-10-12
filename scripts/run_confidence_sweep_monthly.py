@@ -12,14 +12,15 @@ def print_monthly(df_t, label, initial_capital):
         gw = g[g['net_ret_pct'] > 0]['net_ret_pct'].sum()
         gl = abs(g[g['net_ret_pct'] <= 0]['net_ret_pct'].sum())
         y_pf = (gw / gl) if gl > 0 else 99.0
-        tqqq_c = len(g[g['symbol'] == 'TQQQ']); sqqq_c = len(g[g['symbol'] == 'SQQQ'])
-        print(f"  {m:<7} | {int(y_start_cap):>13,}원 | {int(y_end_cap):>13,}원 | {y_ret:>+7.1f}% | {y_trades:>4}회 | {y_wr:>6.1f}% | {y_pf:>5.2f} | {tqqq_c}/{sqqq_c}회")
+        long_c = len(g[g['symbol'] == config.BASE_ASSET_LONG]); short_c = len(g[g['symbol'] == config.BASE_ASSET_SHORT])
+        print(f"  {m:<7} | {int(y_start_cap):>13,}원 | {int(y_end_cap):>13,}원 | {y_ret:>+7.1f}% | {y_trades:>4}회 | {y_wr:>6.1f}% | {y_pf:>5.2f} | {long_c}/{short_c}회")
         y_start_cap = y_end_cap
 
 import os
 import sys
 import json
 from pathlib import Path
+import config
 import pandas as pd
 import numpy as np
 from lightgbm import LGBMClassifier
@@ -53,7 +54,7 @@ def mk_ca(df, name, periods=[1, 3, 5, 20]):
     d[f'{name}_momentum'] = d['Close'].pct_change(1) - d['Close'].pct_change(5) / 5.0
     return d[['datetime_dt'] + [c for c in d.columns if c.startswith(name)]]
 
-def simulate_with_threshold(test_df, tqqq_5m_by_date, sqqq_5m_by_date, sqqq_dict,
+def simulate_with_threshold(test_df, long_5m_by_date, short_5m_by_date, short_dict,
                              conf_threshold, initial_capital=10_000_000.0):
     """주어진 확신도 임계값으로 5분봉 체결 시뮬레이션"""
     current_capital  = initial_capital
@@ -63,16 +64,16 @@ def simulate_with_threshold(test_df, tqqq_5m_by_date, sqqq_5m_by_date, sqqq_dict
 
     for d_str in sorted(test_df['date_str'].unique()):
         day_bars_15 = test_df[test_df['date_str'] == d_str].reset_index(drop=True)
-        day_tqqq_5  = tqqq_5m_by_date.get(d_str, pd.DataFrame())
-        day_sqqq_5  = sqqq_5m_by_date.get(d_str, pd.DataFrame())
+        day_long_5  = long_5m_by_date.get(d_str, pd.DataFrame())
+        day_short_5  = short_5m_by_date.get(d_str, pd.DataFrame())
         daily_stoploss_count = 0; b_idx = 0
 
         while b_idx < len(day_bars_15):
             row = day_bars_15.iloc[b_idx]
             curr_dt = row['datetime']; time_str = row['time_str']
-            cur_tqqq_close = float(row['Close'])
-            sqqq_row = sqqq_dict.get(curr_dt)
-            cur_sqqq_close = float(sqqq_row['Close']) if sqqq_row else 0.0
+            cur_long_close = float(row['Close'])
+            short_row = short_dict.get(curr_dt)
+            cur_short_close = float(short_row['Close']) if short_row else 0.0
 
             if daily_stoploss_count >= 3 or time_str >= '14:30':
                 b_idx += 1; continue
@@ -81,13 +82,13 @@ def simulate_with_threshold(test_df, tqqq_5m_by_date, sqqq_5m_by_date, sqqq_dict
             gbdt_conf = float(row.get('Confidence', 0.50))
             entry_approved = False; target_sym = None; entry_price = 0.0
 
-            if gbdt_dir == "LONG_TQQQ" and gbdt_conf >= conf_threshold:
-                entry_approved = True; target_sym = "TQQQ"; entry_price = cur_tqqq_close
-            elif gbdt_dir == "SHORT_SQQQ" and gbdt_conf >= conf_threshold:
-                entry_approved = True; target_sym = "SQQQ"; entry_price = cur_sqqq_close
+            if gbdt_dir == "LONG" and gbdt_conf >= conf_threshold:
+                entry_approved = True; target_sym = config.BASE_ASSET_LONG; entry_price = cur_long_close
+            elif gbdt_dir == "SHORT" and gbdt_conf >= conf_threshold:
+                entry_approved = True; target_sym = config.BASE_ASSET_SHORT; entry_price = cur_short_close
 
             if entry_approved and entry_price > 0:
-                target_5m = day_tqqq_5 if target_sym == "TQQQ" else day_sqqq_5
+                target_5m = day_long_5 if target_sym == config.BASE_ASSET_LONG else day_short_5
                 post_5m   = target_5m[target_5m['datetime'] > curr_dt].reset_index(drop=True)
 
                 atr_pct             = float(row.get('ATR_Pct', 1.8))
@@ -166,11 +167,11 @@ def print_yearly(df_t, label, initial_capital):
         gw = g[g['net_ret_pct'] > 0]['net_ret_pct'].sum()
         gl = abs(g[g['net_ret_pct'] <= 0]['net_ret_pct'].sum())
         y_pf = (gw / gl) if gl > 0 else 99.0
-        tqqq_c = len(g[g['symbol'] == 'TQQQ']); sqqq_c = len(g[g['symbol'] == 'SQQQ'])
-        print(f"  {y:<5} | {int(y_start_cap):>13,}원 | {int(y_end_cap):>13,}원 | {y_ret:>+7.1f}% | {y_trades:>4}회 | {y_wr:>6.1f}% | {y_pf:>5.2f} | {tqqq_c}/{sqqq_c}회")
+        long_c = len(g[g['symbol'] == config.BASE_ASSET_LONG]); short_c = len(g[g['symbol'] == config.BASE_ASSET_SHORT])
+        print(f"  {y:<5} | {int(y_start_cap):>13,}원 | {int(y_end_cap):>13,}원 | {y_ret:>+7.1f}% | {y_trades:>4}회 | {y_wr:>6.1f}% | {y_pf:>5.2f} | {long_c}/{short_c}회")
         yearly.append({"year": y, "start_cap": int(y_start_cap), "end_cap": int(y_end_cap),
                         "ret_pct": round(y_ret,1), "trades": y_trades, "win_rate": round(y_wr,1),
-                        "pf": round(y_pf,2), "tqqq_cnt": tqqq_c, "sqqq_cnt": sqqq_c})
+                        "pf": round(y_pf,2), "long_cnt": long_c, "short_cnt": short_c})
         y_start_cap = y_end_cap
     return yearly
 
@@ -185,29 +186,29 @@ def run_confidence_sweep():
 
     # 1. 데이터 로드
     print("⏳ [1/4] 데이터 로드 중...")
-    tqqq_15m = lake.load_candles("TQQQ", "15m").sort_values('datetime').reset_index(drop=True)
-    sqqq_15m = lake.load_candles("SQQQ", "15m").sort_values('datetime').reset_index(drop=True)
-    soxx_60m = lake.load_candles("SOXX", "60m").sort_values('datetime').reset_index(drop=True)
+    long_15m = lake.load_candles(config.BASE_ASSET_LONG, "15m").sort_values('datetime').reset_index(drop=True)
+    short_15m = lake.load_candles(config.BASE_ASSET_SHORT, "15m").sort_values('datetime').reset_index(drop=True)
+    macro_60m = lake.load_candles(config.MACRO_TREND_SYMBOL, "60m").sort_values('datetime').reset_index(drop=True)
     nvda_15m  = lake.load_candles("NVDA",  "15m").sort_values('datetime').reset_index(drop=True)
     qqq_15m   = lake.load_candles("QQQ",   "15m").sort_values('datetime').reset_index(drop=True)
     vixy_15m  = lake.load_candles("VIXY",  "15m").sort_values('datetime').reset_index(drop=True)
     ief_15m   = lake.load_candles("IEF",   "15m").sort_values('datetime').reset_index(drop=True)
-    tqqq_5m   = lake.load_candles("TQQQ", "5m").sort_values('datetime').reset_index(drop=True)
-    sqqq_5m   = lake.load_candles("SQQQ", "5m").sort_values('datetime').reset_index(drop=True)
+    long_5m   = lake.load_candles(config.BASE_ASSET_LONG, "5m").sort_values('datetime').reset_index(drop=True)
+    short_5m   = lake.load_candles(config.BASE_ASSET_SHORT, "5m").sort_values('datetime').reset_index(drop=True)
 
     # 2. 피처 생성 (V4 동일)
     print("⏳ [2/4] V4 피처 생성 중...")
-    soxx_60m['ema20'] = soxx_60m['Close'].ewm(span=20, adjust=False).mean()
-    soxx_60m['ema60'] = soxx_60m['Close'].ewm(span=60, adjust=False).mean()
-    soxx_60m['macro_trend_spread']   = (soxx_60m['ema20'] - soxx_60m['ema60']) / (soxx_60m['ema60'] + 1e-9) * 100.0
-    soxx_60m['macro_ema20_slope']    = (soxx_60m['ema20'].diff(5) / soxx_60m['ema20'].shift(5)) * 100.0
-    soxx_60m['macro_price_vs_ema20'] = (soxx_60m['Close'] - soxx_60m['ema20']) / (soxx_60m['ema20'] + 1e-9) * 100.0
+    macro_60m['ema20'] = macro_60m['Close'].ewm(span=20, adjust=False).mean()
+    macro_60m['ema60'] = macro_60m['Close'].ewm(span=60, adjust=False).mean()
+    macro_60m['macro_trend_spread']   = (macro_60m['ema20'] - macro_60m['ema60']) / (macro_60m['ema60'] + 1e-9) * 100.0
+    macro_60m['macro_ema20_slope']    = (macro_60m['ema20'].diff(5) / macro_60m['ema20'].shift(5)) * 100.0
+    macro_60m['macro_price_vs_ema20'] = (macro_60m['Close'] - macro_60m['ema20']) / (macro_60m['ema20'] + 1e-9) * 100.0
     macro_cols = ['macro_trend_spread', 'macro_ema20_slope', 'macro_price_vs_ema20']
-    soxx_feat = soxx_60m[['datetime'] + macro_cols].copy()
-    soxx_feat['datetime_dt'] = pd.to_datetime(soxx_feat['datetime']) + pd.Timedelta(minutes=60)
+    macro_feat = macro_60m[['datetime'] + macro_cols].copy()
+    macro_feat['datetime_dt'] = pd.to_datetime(macro_feat['datetime']) + pd.Timedelta(minutes=60)
 
     ml_engine = MLFeatureEngine(confidence_threshold=0.60)
-    df_15m = ml_engine.extract_features(tqqq_15m)
+    df_15m = ml_engine.extract_features(long_15m)
     df_15m['ATR_Pct']         = (df_15m['ATR_14']     / (df_15m['Close'] + 1e-9)) * 100.0
     df_15m['MACD_Pct']        = (df_15m['MACD']        / (df_15m['Close'] + 1e-9)) * 100.0
     df_15m['MACD_Signal_Pct'] = (df_15m['MACD_Signal'] / (df_15m['Close'] + 1e-9)) * 100.0
@@ -218,17 +219,17 @@ def run_confidence_sweep():
                     mk_ca(vixy_15m,'vixy'), mk_ca(ief_15m,'ief')]:
         df_merged_base = feat_df if 'df_merged_base' not in dir() else df_merged_base
     df_merged = pd.merge_asof(df_15m.sort_values('datetime_dt'),
-                               soxx_feat.sort_values('datetime_dt')[['datetime_dt']+macro_cols],
+                               macro_feat.sort_values('datetime_dt')[['datetime_dt']+macro_cols],
                                on='datetime_dt', direction='backward')
     for sym, raw in [('nvda', nvda_15m), ('qqq', qqq_15m), ('vixy', vixy_15m), ('ief', ief_15m)]:
         df_merged = pd.merge_asof(df_merged.sort_values('datetime_dt'),
                                    mk_ca(raw, sym).sort_values('datetime_dt'),
                                    on='datetime_dt', direction='backward')
 
-    df_merged['tqqq_ret_20']    = df_merged['Close'].pct_change(20) * 100.0
-    df_merged['tqqq_ret_5']     = df_merged['Close'].pct_change(5)  * 100.0
-    df_merged['tqqq_vs_qqq_20'] = df_merged['tqqq_ret_20'] - df_merged.get('qqq_ret_20', pd.Series(0.0, index=df_merged.index)).fillna(0)
-    df_merged['tqqq_vs_qqq_5']  = df_merged['tqqq_ret_5']  - df_merged.get('qqq_ret_5',  pd.Series(0.0, index=df_merged.index)).fillna(0)
+    df_merged['long_ret_20']    = df_merged['Close'].pct_change(20) * 100.0
+    df_merged['long_ret_5']     = df_merged['Close'].pct_change(5)  * 100.0
+    df_merged['long_vs_qqq_20'] = df_merged['long_ret_20'] - df_merged.get('qqq_ret_20', pd.Series(0.0, index=df_merged.index)).fillna(0)
+    df_merged['long_vs_qqq_5']  = df_merged['long_ret_5']  - df_merged.get('qqq_ret_5',  pd.Series(0.0, index=df_merged.index)).fillna(0)
     df_merged['panic_signal']   = (
         (df_merged.get('vixy_ret_1', pd.Series(0.0, index=df_merged.index)).fillna(0) > 0).astype(int) +
         (df_merged.get('ief_ret_1',  pd.Series(0.0, index=df_merged.index)).fillna(0) > 0).astype(int)
@@ -275,10 +276,10 @@ def run_confidence_sweep():
             ps, pn, pl = p_s[i], p_n[i], p_l[i]
             if pl > pn and pl > ps:
                 w_confs[i] = min(0.95, max(0.50, 0.50 + (pl - 0.333) * 1.15))
-                w_dirs[i]  = "LONG_TQQQ"
+                w_dirs[i]  = "LONG"
             elif ps > pn and ps > pl:
                 w_confs[i] = min(0.95, max(0.50, 0.50 + (ps - 0.333) * 1.15))
-                w_dirs[i]  = "SHORT_SQQQ"
+                w_dirs[i]  = "SHORT"
         w_test_df['Confidence'] = w_confs
         w_test_df['Direction']  = w_dirs
         test_dfs.append(w_test_df)
@@ -287,11 +288,11 @@ def run_confidence_sweep():
     print("   ✅ GBDT WFA 추론 완료 → 이제 4개 임계값으로 시뮬레이션")
 
     # 4. 5분봉 데이터 준비
-    tqqq_5m_by_date = {d: g.sort_values('datetime').reset_index(drop=True)
-                        for d, g in tqqq_5m.groupby(tqqq_5m['datetime'].str.slice(0, 10))}
-    sqqq_5m_by_date = {d: g.sort_values('datetime').reset_index(drop=True)
-                        for d, g in sqqq_5m.groupby(sqqq_5m['datetime'].str.slice(0, 10))}
-    sqqq_dict = sqqq_15m.set_index('datetime').to_dict(orient='index')
+    long_5m_by_date = {d: g.sort_values('datetime').reset_index(drop=True)
+                        for d, g in long_5m.groupby(long_5m['datetime'].str.slice(0, 10))}
+    short_5m_by_date = {d: g.sort_values('datetime').reset_index(drop=True)
+                        for d, g in short_5m.groupby(short_5m['datetime'].str.slice(0, 10))}
+    short_dict = short_15m.set_index('datetime').to_dict(orient='index')
 
     # 5. 4개 임계값 동시 시뮬레이션
     print("\n⏳ [4/4] 4개 확신도 임계값 시뮬레이션 중...")
@@ -302,7 +303,7 @@ def run_confidence_sweep():
         label = f"conf_{int(conf_th*100)}pct"
         print(f"   🔄 임계값 {conf_th:.0%} 시뮬레이션...")
         trades, final_cap, mdd = simulate_with_threshold(
-            test_df, tqqq_5m_by_date, sqqq_5m_by_date, sqqq_dict,
+            test_df, long_5m_by_date, short_5m_by_date, short_dict,
             conf_th, initial_capital
         )
         all_results[label] = {'conf_threshold': conf_th, 'trades': trades,

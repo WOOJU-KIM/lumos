@@ -51,15 +51,15 @@ def run_weekly_rolling_walk_forward():
     print("⏳ [1/4] 데이터 레이크에서 6개년(38,000+개 분봉) 데이터 로드 중...")
     soxl_15m = lake.load_candles("SOXL", "15m")
     soxs_15m = lake.load_candles("SOXS", "15m")
-    soxx_60m = lake.load_candles("SOXX", "60m")
+    macro_60m = lake.load_candles(config.MACRO_TREND_SYMBOL, "60m")
     nvda_15m = lake.load_candles("NVDA", "15m")
-    soxx_15m = lake.load_candles("SOXX", "15m")
-    soxx_15m  = lake.load_candles("SOXX", "15m")
+    macro_15m = lake.load_candles(config.MACRO_TREND_SYMBOL, "15m")
+    macro_15m  = lake.load_candles(config.MACRO_TREND_SYMBOL, "15m")
     vixy_15m = lake.load_candles("VIXY", "15m")
     ief_15m  = lake.load_candles("IEF", "15m")
 
     # 60m SOXX EMA
-    soxx_60m['ema_filter'] = soxx_60m['Close'].ewm(span=config.SOXX_EMA_PERIOD, adjust=False).mean()
+    macro_60m['ema_filter'] = macro_60m['Close'].ewm(span=config.SOXX_EMA_PERIOD, adjust=False).mean()
 
     # 2. 피처 및 타겟 추출 (전체 시계열 사전 계산)
     print("⏳ [2/4] 머신러닝 피처 및 Triple Barrier 타겟 사전 추출 중...")
@@ -79,8 +79,8 @@ def run_weekly_rolling_walk_forward():
 
     # 크로스에셋 딕셔너리 고속 캐싱
     nvda_map = nvda_15m.set_index('datetime')['Close'].to_dict()
-    soxx_map = soxx_15m.set_index('datetime')['Close'].to_dict()
-    soxx_map  = soxx_15m.set_index('datetime')['Close'].to_dict()
+    macro_map = macro_15m.set_index('datetime')['Close'].to_dict()
+    macro_map  = macro_15m.set_index('datetime')['Close'].to_dict()
     vix_map  = vixy_15m.set_index('datetime')['Close'].to_dict()
     ief_map  = ief_15m.set_index('datetime')['Close'].to_dict()
     soxs_dict = soxs_15m.set_index('datetime').to_dict(orient='index')
@@ -267,21 +267,21 @@ def run_weekly_rolling_walk_forward():
 
                 # 2. 신규 진입 검토
                 if active_pos is None and time_str < config.PHASE_MAIN_END:
-                    past_soxx_60 = soxx_60m[soxx_60m['datetime'] <= curr_dt]
-                    soxx_60m_bull = True
-                    soxx_60m_bear = True
-                    if len(past_soxx_60) >= 20:
-                        q_c = past_soxx_60['Close'].iloc[-1]
-                        q_ema = past_soxx_60['ema_filter'].iloc[-1]
-                        soxx_60m_bull = (q_c >= q_ema * 0.998)
-                        soxx_60m_bear = (q_c <= q_ema * 1.002)
+                    past_macro_60 = macro_60m[macro_60m['datetime'] <= curr_dt]
+                    macro_60m_bull = True
+                    macro_60m_bear = True
+                    if len(past_macro_60) >= 20:
+                        q_c = past_macro_60['Close'].iloc[-1]
+                        q_ema = past_macro_60['ema_filter'].iloc[-1]
+                        macro_60m_bull = (q_c >= q_ema * 0.998)
+                        macro_60m_bear = (q_c <= q_ema * 1.002)
 
                     dir_gbdt = row.get('Direction', 'NONE')
                     conf_gbdt = float(row.get('Confidence', 0.50))
 
                     n_px = nvda_map.get(curr_dt)
-                    sx_px = soxx_map.get(curr_dt)
-                    q_px = soxx_map.get(curr_dt)
+                    sx_px = macro_map.get(curr_dt)
+                    q_px = macro_map.get(curr_dt)
                     v_px = vix_map.get(curr_dt)
                     i_px = ief_map.get(curr_dt)
 
@@ -290,14 +290,14 @@ def run_weekly_rolling_walk_forward():
                     if cur_bar_idx >= 5 and n_px and sx_px and q_px:
                         prev_dt = day_bars.iloc[cur_bar_idx - 5]['datetime']
                         p_n = nvda_map.get(prev_dt, n_px)
-                        p_sx = soxx_map.get(prev_dt, sx_px)
-                        p_q = soxx_map.get(prev_dt, q_px)
+                        p_sx = macro_map.get(prev_dt, sx_px)
+                        p_q = macro_map.get(prev_dt, q_px)
                         p_v = vix_map.get(prev_dt, v_px) if v_px else None
                         p_i = ief_map.get(prev_dt, i_px) if i_px else None
 
                         nvda_r = (n_px / p_n - 1.0) if p_n else 0.0
-                        soxx_r = (sx_px / p_sx - 1.0) if p_sx else 0.0
-                        soxx_r  = (q_px / p_q - 1.0) if p_q else 0.0
+                        macro_r = (sx_px / p_sx - 1.0) if p_sx else 0.0
+                        macro_r  = (q_px / p_q - 1.0) if p_q else 0.0
                         vix_r  = (v_px / p_v - 1.0) if (v_px and p_v) else 0.0
                         ief_r  = (i_px / p_i - 1.0) if (i_px and p_i) else 0.0
                         tnx_proxy_ret = -ief_r
@@ -306,8 +306,8 @@ def run_weekly_rolling_walk_forward():
                         sig_code, _, _ = cross_mod.predict_signal(
                             soxl_ret=soxl_r,
                             nvda_ret=nvda_r,
-                            soxx_ret=soxx_r,
-                            soxx_ret=soxx_r,
+                            macro_ret=macro_r,
+                            macro_ret=macro_r,
                             vix_ret=vix_r,
                             tnx_ret=tnx_proxy_ret
                         )
@@ -316,7 +316,7 @@ def run_weekly_rolling_walk_forward():
                         elif sig_code < 0:
                             cross_dir = "SHORT_SOXS"
 
-                    if dir_gbdt == "LONG_SOXL" and conf_gbdt >= config.GBDT_CONFIDENCE_THRESHOLD and soxx_60m_bull and cross_dir != "SHORT_SOXS":
+                    if dir_gbdt == "LONG_SOXL" and conf_gbdt >= config.GBDT_CONFIDENCE_THRESHOLD and macro_60m_bull and cross_dir != "SHORT_SOXS":
                         active_pos = {
                             'sym': 'SOXL',
                             'entry_px': cur_soxl_close,
@@ -324,7 +324,7 @@ def run_weekly_rolling_walk_forward():
                             'bars': 0,
                             'peak_high': cur_soxl_close
                         }
-                    elif dir_gbdt == "SHORT_SOXS" and conf_gbdt >= config.GBDT_CONFIDENCE_THRESHOLD and soxx_60m_bear and cross_dir != "LONG_SOXL":
+                    elif dir_gbdt == "SHORT_SOXS" and conf_gbdt >= config.GBDT_CONFIDENCE_THRESHOLD and macro_60m_bear and cross_dir != "LONG_SOXL":
                         if cur_soxs_close > 0:
                             active_pos = {
                                 'sym': 'SOXS',

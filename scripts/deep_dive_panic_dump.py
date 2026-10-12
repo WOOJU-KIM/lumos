@@ -1,5 +1,6 @@
 import sqlite3
 import sys
+import config
 import pandas as pd
 import numpy as np
 
@@ -14,32 +15,32 @@ def deep_dive_panic_dump():
     conn = sqlite3.connect('data/market_data.db')
     
     # Load TQQQ and SQQQ 5m candles
-    df_tqqq = pd.read_sql_query("""
+    df_long = pd.read_sql_query("""
         SELECT datetime, open, high, low, close, volume 
         FROM market_candles 
-        WHERE symbol='TQQQ' AND timeframe='5m' 
+        WHERE symbol=config.BASE_ASSET_LONG AND timeframe='5m' 
         ORDER BY datetime ASC
     """, conn)
-    df_tqqq['datetime'] = pd.to_datetime(df_tqqq['datetime'])
-    df_tqqq['date'] = df_tqqq['datetime'].dt.strftime('%Y-%m-%d')
-    df_tqqq['time'] = df_tqqq['datetime'].dt.strftime('%H:%M')
+    df_long['datetime'] = pd.to_datetime(df_long['datetime'])
+    df_long['date'] = df_long['datetime'].dt.strftime('%Y-%m-%d')
+    df_long['time'] = df_long['datetime'].dt.strftime('%H:%M')
 
-    df_sqqq = pd.read_sql_query("""
+    df_short = pd.read_sql_query("""
         SELECT datetime, open, high, low, close, volume 
         FROM market_candles 
-        WHERE symbol='SQQQ' AND timeframe='5m' 
+        WHERE symbol=config.BASE_ASSET_SHORT AND timeframe='5m' 
         ORDER BY datetime ASC
     """, conn)
-    df_sqqq['datetime'] = pd.to_datetime(df_sqqq['datetime'])
-    df_sqqq['date'] = df_sqqq['datetime'].dt.strftime('%Y-%m-%d')
-    df_sqqq['time'] = df_sqqq['datetime'].dt.strftime('%H:%M')
+    df_short['datetime'] = pd.to_datetime(df_short['datetime'])
+    df_short['date'] = df_short['datetime'].dt.strftime('%Y-%m-%d')
+    df_short['time'] = df_short['datetime'].dt.strftime('%H:%M')
 
-    days = sorted(df_tqqq['date'].unique())
+    days = sorted(df_long['date'].unique())
     trades = []
 
     for d in days:
-        sub_l = df_tqqq[df_tqqq['date'] == d].sort_values('time').copy()
-        sub_s = df_sqqq[df_sqqq['date'] == d].sort_values('time').copy()
+        sub_l = df_long[df_long['date'] == d].sort_values('time').copy()
+        sub_s = df_short[df_short['date'] == d].sort_values('time').copy()
         if len(sub_l) < 50 or len(sub_s) < 50:
             continue
 
@@ -75,10 +76,10 @@ def deep_dive_panic_dump():
             ret_raw = (exit_1550_s - entry_px) / entry_px * 100.0 - 0.20 # net fee
             
             # Max run-up / run-down in SQQQ during 15:00~15:50
-            max_sqqq_px = post_s['high'].max()
-            min_sqqq_px = post_s['low'].min()
-            max_run_up = (max_sqqq_px - entry_px) / entry_px * 100.0
-            max_drawdown = (min_sqqq_px - entry_px) / entry_px * 100.0
+            max_short_px = post_s['high'].max()
+            min_short_px = post_s['low'].min()
+            max_run_up = (max_short_px - entry_px) / entry_px * 100.0
+            max_drawdown = (min_short_px - entry_px) / entry_px * 100.0
 
             # Option B: With TP +2.0% / SL -1.5%
             tp_px = entry_px * 1.020
@@ -100,10 +101,10 @@ def deep_dive_panic_dump():
 
             trades.append({
                 'date': d,
-                'tqqq_box_low': round(box_l_low, 2),
-                'tqqq_1500': round(c_1500_l, 2),
-                'sqqq_entry': round(entry_px, 2),
-                'sqqq_exit_1550': round(exit_1550_s, 2),
+                'long_box_low': round(box_l_low, 2),
+                'long_1500': round(c_1500_l, 2),
+                'short_entry': round(entry_px, 2),
+                'short_exit_1550': round(exit_1550_s, 2),
                 'ret_pure_1550': round(ret_raw, 2),
                 'ret_tp_sl': round(ret_b, 2),
                 'exit_reason': exit_reason,

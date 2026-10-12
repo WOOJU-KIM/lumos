@@ -1,0 +1,1 @@
+system_logger.py 57 self.log("INFO", "MarketGuard", "🛡 장 마감 90분 전 신규 진입 차단 가드 (No-Entry Cutoff: 14:30 NYT) 활성화")

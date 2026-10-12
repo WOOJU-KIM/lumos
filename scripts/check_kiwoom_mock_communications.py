@@ -1,4 +1,5 @@
 import os
+import config
 import sys
 import json
 import time
@@ -189,7 +190,7 @@ def run_kiwoom_mock_comms_check():
     print("5️⃣ [통신 체크 5] 미국주식 실시간 시세 조회 (TQQQ, SQQQ, NVDA)")
     print("-" * 80)
     quotes = {}
-    for sym in ["TQQQ", "SQQQ", "NVDA"]:
+    for sym in [config.BASE_ASSET_LONG, config.BASE_ASSET_SHORT, "NVDA"]:
         q_start = time.time()
         q = broker.get_stock_quote(sym)
         q_elapsed = round(time.time() - q_start, 3)
@@ -206,7 +207,7 @@ def run_kiwoom_mock_comms_check():
     print("\n" + "-" * 80)
     print("6️⃣ [통신 체크 6] 키움 모의투자 실시간 매수 신호 송출 및 리턴 수신 (TR: ust20000 | /api/us/ordr)")
     print("-" * 80)
-    test_sym = "TQQQ"
+    test_sym = config.BASE_ASSET_LONG
     quote_px = quotes.get(test_sym, {}).get("price", 28.50)
     # 현재가 대비 충분히 낮게 지정가 설정하여 바로 체결되지 않고 미체결로 생성되게 테스트 (취소 테스트 연계)
     test_limit_px = round(quote_px * 0.5, 2)  # 50% 낮은 가격으로 지정가 주문
@@ -299,7 +300,7 @@ def run_kiwoom_mock_comms_check():
                     "refresh": "1",
                     "data": [
                         {
-                            "item": [{"jmcode": "TQQQ", "stex_tp": "ND"}, {"jmcode": "SQQQ", "stex_tp": "ND"}],
+                            "item": [{"jmcode": config.BASE_ASSET_LONG, "stex_tp": "ND"}, {"jmcode": config.BASE_ASSET_SHORT, "stex_tp": "ND"}],
                             "type": ["0A", "0B", "FT"]
                         }
                     ]

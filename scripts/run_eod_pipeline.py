@@ -1,4 +1,4 @@
-import os
+﻿import os
 import sys
 import json
 import sqlite3
@@ -19,14 +19,14 @@ print("=" * 75)
 print("🚀 [Lumos EOD 자동 데이터 아카이빙 및 롤링 모델 재학습 실행] 🚀")
 print("=" * 75)
 
-# Step 1. 7종 심볼 데이터 하베스팅
-print("\n[Step 1] 7종 심볼 최신 분봉 데이터 수집 및 DB 적재 (UPSERT)...")
+# Step 1. 9종 심볼 데이터 하베스팅
+print("\n[Step 1] 9종 심볼 최신 분봉 데이터 수집 및 DB 적재 (UPSERT)...")
 pipeline = DailyAutoPipeline()
 import subprocess
 subprocess.run([sys.executable, str(PROJECT_ROOT / 'scripts' / 'run_alpaca_full_sync.py')])
 harvest_res = {'harvested_at': 'Now', 'total_records_updated': 'ALL'}
 print(f"• 수집 완료 시각: {harvest_res.get('harvested_at')}")
-print(f"• 신규/갱신 적재 레코드: {harvest_res.get('total_records_updated'):,}개")
+print(f"• 신규/갱신 적재 레코드: {harvest_res.get('total_records_updated')}개")
 for k, v in harvest_res.get('details', {}).items():
     print(f"   - {k}: {v}개")
 

@@ -1140,12 +1140,12 @@ class KiwoomLiveRunner:
                         self._last_briefing_time = now_t
                         
                         try:
-                            # self.data_lake.sync_live_intraday_candles(["TQQQ", "SQQQ", "SOXX", "NVDA", "QQQ", "VIXY", "IEF"])
-                            df_15m = self.data_lake.load_candles("TQQQ", "15m")
+                            # self.data_lake.sync_live_intraday_candles([config.BASE_ASSET_LONG, config.BASE_ASSET_SHORT, config.MACRO_TREND_SYMBOL, "NVDA", "QQQ", "VIXY", "IEF"])
+                            df_15m = self.data_lake.load_candles(config.BASE_ASSET_LONG, "15m")
                             live_prices = {
-                                "TQQQ": self.ws_streamer.get_latest_price("TQQQ", 0.0),
-                                "SQQQ": self.ws_streamer.get_latest_price("SQQQ", 0.0),
-                                "SOXX": self.ws_streamer.get_latest_price("SOXX", 0.0),
+                                config.BASE_ASSET_LONG: self.ws_streamer.get_latest_price(config.BASE_ASSET_LONG, 0.0),
+                                config.BASE_ASSET_SHORT: self.ws_streamer.get_latest_price(config.BASE_ASSET_SHORT, 0.0),
+                                config.MACRO_TREND_SYMBOL: self.ws_streamer.get_latest_price(config.MACRO_TREND_SYMBOL, 0.0),
                                 "QQQ": self.ws_streamer.get_latest_price("QQQ", 0.0),
                                 "NVDA": self.ws_streamer.get_latest_price("NVDA", 0.0),
                                 "VIXY": self.ws_streamer.get_latest_price("VIXY", 0.0),
@@ -1178,8 +1178,8 @@ class KiwoomLiveRunner:
                             system_logger.log("INFO", "AI", f"15???? ? (?: {conf:.1f}%)")
                             
                             if is_appr and not active_pos and not self.daily_circuit_breaker_triggered:
-                                if direction in ["LONG_TQQQ", "SHORT_SQQQ"]:
-                                    winner_sym = "TQQQ" if direction == "LONG_TQQQ" else "SQQQ"
+                                if direction in ["LONG", "SHORT"]:
+                                    winner_sym = config.BASE_ASSET_LONG if direction == "LONG" else config.BASE_ASSET_SHORT
                                     cur_px = live_prices.get(winner_sym, 0.0)
                                     
                                     if cur_px > 0:
@@ -1218,8 +1218,8 @@ class KiwoomLiveRunner:
                         stk_bal = self.broker.get_overseas_stock_balance()
                         if stk_bal.get("ok") and stk_bal.get("holdings"):
                             live_p = {
-                                "TQQQ": self.ws_streamer.get_latest_price("TQQQ", 0.0),
-                                "SQQQ": self.ws_streamer.get_latest_price("SQQQ", 0.0)
+                                config.BASE_ASSET_LONG: self.ws_streamer.get_latest_price(config.BASE_ASSET_LONG, 0.0),
+                                config.BASE_ASSET_SHORT: self.ws_streamer.get_latest_price(config.BASE_ASSET_SHORT, 0.0)
                             }
                             if current_session == "EOD_LIQUIDATION":
                                 for h in stk_bal.get("holdings"):

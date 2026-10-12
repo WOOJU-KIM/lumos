@@ -1,0 +1,50 @@
+                    nvda_ret=nvda_r,
+                    soxx_ret=soxx_r,
+                    qqq_ret=qqq_r,
+                    vix_ret=vix_r,
+                    tnx_ret=tnx_proxy_ret
+                )
+                if sig_code > 0:
+                    cross_dir = "LONG_TQQQ"
+                elif sig_code < 0:
+                    cross_dir = "SHORT_SQQQ"
+
+            # 진입 조건 검사
+            entry_approved = False
+            target_sym = None
+            entry_price = 0.0
+
+            if dir_gbdt == "LONG_TQQQ" and conf_gbdt >= 0.60 and soxx_60m_bull and cross_dir != "SHORT_SQQQ":
+                entry_approved = True
+                target_sym = "TQQQ"
+                entry_price = cur_tqqq_close
+            elif dir_gbdt == "SHORT_SQQQ" and conf_gbdt >= 0.60 and soxx_60m_bear and cross_dir != "LONG_TQQQ":
+                entry_approved = True
+                target_sym = "SQQQ"
+                entry_price = cur_sqqq_close
+
+            if entry_approved and entry_price > 0:
+                # 5분봉 정밀 궤적 추적 시작
+                target_5m = day_tqqq_5 if target_sym == 'TQQQ' else day_sqqq_5
+                post_5m = target_5m[target_5m['datetime'] > curr_dt].reset_index(drop=True)
+
+                atr_14 = float(row['ATR_14']) if 'ATR_14' in row else (cur_tqqq_close * 0.02)
+                atr_sl_pct = (atr_14 * 1.5) / entry_price
+                initial_sl = max(0.02, min(0.032, atr_sl_pct))
+                sl_px = entry_price * (1.0 - initial_sl)
+                tp_px = entry_price * 1.10
+                
+                exit_price = None
+                exit_reason = None
+                exit_dt = None
+                holding_5m_bars = 0
+                peak_ret = 0.0
+                trailing_active = False
+                
+                max_eval_bars = min(len(post_5m), 24)
+                
+                for k in range(max_eval_bars):
+                    bar_5m = post_5m.iloc[k]
+                    b_h = float(bar_5m.get('High', bar_5m.get('high')))
+                    b_l = float(bar_5m.get('Low', bar_5m.get('low')))
+                    b_c = float(bar_5m.get('Close', bar_5m.get('close')))

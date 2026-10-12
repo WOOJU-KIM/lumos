@@ -25,7 +25,7 @@ broker = KiwoomBroker()
 dispatcher = DispatcherAgent(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
 token = broker.get_access_token()
 
-symbols = ["TQQQ", "SQQQ", "NVDA", "QQQ"]
+symbols = [config.BASE_ASSET_LONG, config.BASE_ASSET_SHORT, "NVDA", "QQQ"]
 
 # 1. 구독(Subscribe) 패킷 생성 및 구조 검증
 print("\n[1/5] 실시간 종목 구독(Subscribe) 패킷 빌드 및 규격 검증:")
@@ -58,7 +58,7 @@ unsub_packet = {
     "body": {
         "input": {
             "tr_id": "ust01000",
-            "tr_key": "TQQQ"
+            "tr_key": config.BASE_ASSET_LONG
         }
     }
 }
@@ -83,7 +83,7 @@ streamer.register_callback(test_callback)
 # 가상 실시간 틱 주입 (TQQQ +3.5% 급등 틱 모의 주입)
 bench_start = time.time()
 sample_tick_msg = json.dumps({
-    "symb": "TQQQ",
+    "symb": config.BASE_ASSET_LONG,
     "last_price": 156.83,
     "volume": 2500,
     "benchmark_start": bench_start

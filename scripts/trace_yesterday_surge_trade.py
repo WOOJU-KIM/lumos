@@ -1,4 +1,5 @@
 import sys
+import config
 import pandas as pd
 import numpy as np
 from pathlib import Path
@@ -12,18 +13,18 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from core.data_lake import MarketDataLake
 
 lake = MarketDataLake()
-tqqq_15m = lake.load_candles('TQQQ', '15m')
-tqqq_5m = lake.load_candles('TQQQ', '5m')
+long_15m = lake.load_candles(config.BASE_ASSET_LONG, '15m')
+long_5m = lake.load_candles(config.BASE_ASSET_LONG, '5m')
 
-tqqq_15m_yest = tqqq_15m[tqqq_15m['datetime'].str.startswith('2026-08-17')].copy().reset_index(drop=True)
-tqqq_5m_yest = tqqq_5m[tqqq_5m['datetime'].str.startswith('2026-08-17')].copy().reset_index(drop=True)
+long_15m_yest = long_15m[long_15m['datetime'].str.startswith('2026-08-17')].copy().reset_index(drop=True)
+long_5m_yest = long_5m[long_5m['datetime'].str.startswith('2026-08-17')].copy().reset_index(drop=True)
 
 print("=" * 80)
 print("🔍 [2026-08-17 직전 장 TQQQ 급등 시점 매수 체결 및 청산 시뮬레이션]")
 print("=" * 80)
 
 # 1. 09:30 진입 시뮬레이션
-entry_bar = tqqq_15m_yest.iloc[0]
+entry_bar = long_15m_yest.iloc[0]
 entry_time = entry_bar['datetime']
 entry_price = float(entry_bar['Close'])  # $152.29
 tp_price = round(entry_price * 1.035, 2)  # $157.62 (+3.5%)
@@ -52,7 +53,7 @@ exit_price = 0.0
 exit_time = ""
 bars_held = 0
 
-for idx, r in tqqq_15m_yest.iterrows():
+for idx, r in long_15m_yest.iterrows():
     b_time = r['datetime']
     t_str = b_time.split(' ')[1][:5]
     o = float(r['Open'])

@@ -1,5 +1,6 @@
 import sqlite3
 import sys
+import config
 import pandas as pd
 import numpy as np
 
@@ -17,7 +18,7 @@ def research_power_hour():
     query_5m = """
         SELECT symbol, datetime, open, high, low, close, volume 
         FROM market_candles 
-        WHERE timeframe='5m' AND symbol IN ('TQQQ', 'SQQQ', 'QQQ', 'NVDA')
+        WHERE timeframe='5m' AND symbol IN (config.BASE_ASSET_LONG, config.BASE_ASSET_SHORT, 'QQQ', 'NVDA')
         ORDER BY datetime ASC
     """
     df_5m = pd.read_sql_query(query_5m, conn)
@@ -34,8 +35,8 @@ def research_power_hour():
     # =========================================================================
     strat1_trades = []
     for d in days:
-        sub = df_5m[(df_5m['date'] == d) & (df_5m['symbol'] == 'TQQQ')].sort_values('time')
-        sub_s = df_5m[(df_5m['date'] == d) & (df_5m['symbol'] == 'SQQQ')].sort_values('time')
+        sub = df_5m[(df_5m['date'] == d) & (df_5m['symbol'] == config.BASE_ASSET_LONG)].sort_values('time')
+        sub_s = df_5m[(df_5m['date'] == d) & (df_5m['symbol'] == config.BASE_ASSET_SHORT)].sort_values('time')
         if len(sub) < 50 or len(sub_s) < 50: continue
 
         avg_vol = sub[sub['time'] < '15:30']['volume'].mean()
@@ -56,13 +57,13 @@ def research_power_hour():
             e_px = post_l.iloc[0]['open'] + 0.03
             exit_px = post_l.iloc[-1]['close'] - 0.03
             ret = (exit_px - e_px) / e_px * 100 - 0.20
-            strat1_trades.append({'date': d, 'sym': 'TQQQ', 'ret': ret, 'vol_ratio': vol_ratio, 'bar_ret': bar_ret})
+            strat1_trades.append({'date': d, 'sym': config.BASE_ASSET_LONG, 'ret': ret, 'vol_ratio': vol_ratio, 'bar_ret': bar_ret})
         # If 15:30 volume >= 2.0x and bar_ret <= -0.5% -> Buy SQQQ
         elif vol_ratio >= 2.0 and bar_ret <= -0.5:
             e_px = post_s.iloc[0]['open'] + 0.03
             exit_px = post_s.iloc[-1]['close'] - 0.03
             ret = (exit_px - e_px) / e_px * 100 - 0.20
-            strat1_trades.append({'date': d, 'sym': 'SQQQ', 'ret': ret, 'vol_ratio': vol_ratio, 'bar_ret': bar_ret})
+            strat1_trades.append({'date': d, 'sym': config.BASE_ASSET_SHORT, 'ret': ret, 'vol_ratio': vol_ratio, 'bar_ret': bar_ret})
 
     s1_df = pd.DataFrame(strat1_trades)
     print("\n" + "="*70)
@@ -81,8 +82,8 @@ def research_power_hour():
     # =========================================================================
     strat2_trades = []
     for d in days:
-        sub_l = df_5m[(df_5m['date'] == d) & (df_5m['symbol'] == 'TQQQ')].sort_values('time')
-        sub_s = df_5m[(df_5m['date'] == d) & (df_5m['symbol'] == 'SQQQ')].sort_values('time')
+        sub_l = df_5m[(df_5m['date'] == d) & (df_5m['symbol'] == config.BASE_ASSET_LONG)].sort_values('time')
+        sub_s = df_5m[(df_5m['date'] == d) & (df_5m['symbol'] == config.BASE_ASSET_SHORT)].sort_values('time')
         sub_q = df_5m[(df_5m['date'] == d) & (df_5m['symbol'] == 'QQQ')].sort_values('time')
         if len(sub_l) < 50 or len(sub_s) < 50 or len(sub_q) < 50: continue
 
@@ -110,13 +111,13 @@ def research_power_hour():
             e_px = c_l + 0.03
             exit_px = post_l.iloc[-1]['close'] - 0.03
             ret = (exit_px - e_px) / e_px * 100 - 0.20
-            strat2_trades.append({'date': d, 'sym': 'TQQQ', 'ret': ret, 'type': 'UP_BREAK'})
+            strat2_trades.append({'date': d, 'sym': config.BASE_ASSET_LONG, 'ret': ret, 'type': 'UP_BREAK'})
         # Down breakdown (any QQQ)
         elif c_l < box_low:
             e_px = c_s + 0.03
             exit_px = post_s.iloc[-1]['close'] - 0.03
             ret = (exit_px - e_px) / e_px * 100 - 0.20
-            strat2_trades.append({'date': d, 'sym': 'SQQQ', 'ret': ret, 'type': 'DN_BREAK'})
+            strat2_trades.append({'date': d, 'sym': config.BASE_ASSET_SHORT, 'ret': ret, 'type': 'DN_BREAK'})
 
     s2_df = pd.DataFrame(strat2_trades)
     print("\n" + "="*70)
@@ -134,8 +135,8 @@ def research_power_hour():
     # =========================================================================
     strat3_trades = []
     for d in days:
-        sub_l = df_5m[(df_5m['date'] == d) & (df_5m['symbol'] == 'TQQQ')].sort_values('time')
-        sub_s = df_5m[(df_5m['date'] == d) & (df_5m['symbol'] == 'SQQQ')].sort_values('time')
+        sub_l = df_5m[(df_5m['date'] == d) & (df_5m['symbol'] == config.BASE_ASSET_LONG)].sort_values('time')
+        sub_s = df_5m[(df_5m['date'] == d) & (df_5m['symbol'] == config.BASE_ASSET_SHORT)].sort_values('time')
         if len(sub_l) < 50 or len(sub_s) < 50: continue
 
         prior_l = sub_l[sub_l['time'] <= '15:00']
@@ -157,13 +158,13 @@ def research_power_hour():
             e_px = c_l + 0.03
             exit_px = post_l.iloc[-1]['close'] - 0.03
             ret = (exit_px - e_px) / e_px * 100 - 0.20
-            strat3_trades.append({'date': d, 'sym': 'TQQQ', 'ret': ret, 'type': 'HIGH_SQUEEZE'})
+            strat3_trades.append({'date': d, 'sym': config.BASE_ASSET_LONG, 'ret': ret, 'type': 'HIGH_SQUEEZE'})
         # Near day low (within 0.5%): Dump SQQQ
         elif (c_l - day_low) / day_low * 100 <= 0.5:
             e_px = c_s + 0.03
             exit_px = post_s.iloc[-1]['close'] - 0.03
             ret = (exit_px - e_px) / e_px * 100 - 0.20
-            strat3_trades.append({'date': d, 'sym': 'SQQQ', 'ret': ret, 'type': 'LOW_DUMP'})
+            strat3_trades.append({'date': d, 'sym': config.BASE_ASSET_SHORT, 'ret': ret, 'type': 'LOW_DUMP'})
 
     s3_df = pd.DataFrame(strat3_trades)
     print("\n" + "="*70)

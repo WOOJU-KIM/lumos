@@ -1,0 +1,331 @@
+﻿diff --git a/core/live_runner.py b/core/live_runner.py
+index db63d9c..2f1d2ad 100644
+--- a/core/live_runner.py
++++ b/core/live_runner.py
+@@ -1,6 +1,4 @@
+-import config
+ import os
+-# import os
+ import sys
+ import time
+ import json
+@@ -16,6 +14,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
+ if str(PROJECT_ROOT) not in sys.path:
+     sys.path.insert(0, str(PROJECT_ROOT))
+ 
++import config
++
+ # Windows  utf-8 ?
+ if sys.platform.startswith('win'):
+     try:
+@@ -85,8 +85,8 @@ class KiwoomLiveRunner:
+         self.experience_logger = LiveExperienceLogger()
+ 
+         # ??[?????????? (Hard Rule #4: 3.0????]
+-        self.order_timeout_buy_sec: float = float(os.getenv("LUMOS_ORDER_TIMEOUT_BUY_SEC", str(self.ORDER_TIMEOUT_BUY_SEC)))
+-        self.order_timeout_sell_sec: float = float(os.getenv("LUMOS_ORDER_TIMEOUT_SELL_SEC", str(self.ORDER_TIMEOUT_SELL_SEC)))
++        self.order_timeout_buy_sec: float = float(config.BUY_TIMEOUT_SEC)
++        self.order_timeout_sell_sec: float = float(config.SELL_TIMEOUT_SEC)
+         
+         # ??????WebSocket) ???? ? ?
+         from core.kiwoom_ws_streamer import KiwoomWebSocketStreamer
+@@ -266,9 +266,9 @@ class KiwoomLiveRunner:
+ 
+             pnl_pct = (price - buy_px) / buy_px
+ 
+-            tp_threshold = float(active_pos.get("tp_pct", 3.0)) / 100.0 if active_pos.get("tp_pct") else 0.030
+-            sl_threshold = float(active_pos.get("sl_pct", 2.0)) / 100.0 if active_pos.get("sl_pct") else 0.020
+-            time_stop_minutes = float(active_pos.get("time_stop_minutes", 90))
++            tp_threshold = float(active_pos.get("tp_pct", config.MAX_TP_PCT * 100.0)) / 100.0 if active_pos.get("tp_pct") else config.MAX_TP_PCT
++            sl_threshold = float(active_pos.get("sl_pct", config.SL_MIN_PCT * 100.0)) / 100.0 if active_pos.get("sl_pct") else config.SL_MIN_PCT
++            time_stop_minutes = float(active_pos.get("time_stop_minutes", config.TIME_STOP_MINUTES))
+ 
+             # 1.  ?
+             if pnl_pct >= tp_threshold:
+@@ -326,8 +326,8 @@ class KiwoomLiveRunner:
+             return
+ 
+         active_pos = self._get_active_position()
+-        tp_max_pct = float(active_pos.get("tp_pct", 3.5)) / 100.0 if active_pos else 0.035
+-        sl_initial_pct = float(active_pos.get("sl_pct", 2.0)) / 100.0 if active_pos else 0.020
++        tp_max_pct = float(active_pos.get("tp_pct", config.MAX_TP_PCT * 100.0)) / 100.0 if active_pos else config.MAX_TP_PCT
++        sl_initial_pct = float(active_pos.get("sl_pct", config.SL_MIN_PCT * 100.0)) / 100.0 if active_pos else config.SL_MIN_PCT
+ 
+         for h in holdings:
+             sym = str(h.get("symbol") or h.get("stk_cd") or "").strip().upper()
+@@ -358,14 +358,16 @@ class KiwoomLiveRunner:
+ 
+             is_trailing_active = False
+             current_sl_px = buy_px * (1.0 - sl_initial_pct)
+-            trailing_trigger_px = buy_px * 1.020
++            trailing_trigger_px = buy_px * (1.0 + config.TRAILING_TRIGGER_PCT)
+             
+             if peak_high >= trailing_trigger_px:
+                 is_trailing_active = True
+-                current_sl_px = buy_px * 1.005
++                # 諛쒕룞 ??理쒖냼 ?듭젅 蹂댁옣 ?쇱씤 (?? 留ㅼ닔媛 +0.5% ?먮뒗 怨좎젏 - DROP)
++                base_sl = buy_px * 1.005
++                current_sl_px = max(base_sl, peak_high * (1.0 - config.TRAILING_DROP_PCT))
+                 
+             if is_trailing_active:
+-                t = peak_high * 0.992
++                t = peak_high * (1.0 - config.TRAILING_DROP_PCT)
+                 if t > current_sl_px:
+                     current_sl_px = t
+             
+@@ -437,9 +439,9 @@ class KiwoomLiveRunner:
+             top_conf = float(moe_res.get("gating_confidence", 0.0)) * 100.0
+             tp_px = targets["dynamic_tp_px"]
+             sl_px = targets["dynamic_sl_px"]
+-            tp_pct = targets.get("tp_pct", 3.0)
+-            sl_pct = targets.get("sl_pct", 2.0)
+-            time_stop_min = targets.get("time_stop_minutes", 90)
++            tp_pct = targets.get("tp_pct", config.MAX_TP_PCT * 100.0)
++            sl_pct = targets.get("sl_pct", config.SL_MIN_PCT * 100.0)
++            time_stop_min = targets.get("time_stop_minutes", config.TIME_STOP_MINUTES)
+             strategy_tag = targets.get("strategy_tag", "Lumos V3")
+             atr_14 = targets.get("atr_14", 0.0)
+             all_scores = moe_res.get("all_gating_confidences", {})
+@@ -450,7 +452,7 @@ class KiwoomLiveRunner:
+             cur_px = float(self.ws_streamer.get_latest_price(symbol, ref_price))
+             if cur_px <= 0:
+                 cur_px = ref_price
+-            order_px_1 = round(cur_px + 0.03, 2)
++            order_px_1 = round(cur_px + config.BUY_SLIPPAGE_ADJUST, 2)
+ 
+             logger.info(f"?? [1? ] {symbol} {target_qty}?@ ${order_px_1:.2f} ({self.order_timeout_buy_sec:.0f}? ???)")
+             ord_res_1 = self.broker.send_order(symbol=symbol, order_type="BUY", quantity=target_qty, price=order_px_1)
+@@ -492,7 +494,7 @@ class KiwoomLiveRunner:
+                     "time_stop_minutes": time_stop_min,
+                     "strategy_tag": strategy_tag,
+                     "ref_price": ref_price,
+-                    "gbdt_confidence": float(moe_res.get("gating_confidence", 0.60)),
++                    "gbdt_confidence": float(moe_res.get("gating_confidence", config.GBDT_CONFIDENCE_THRESHOLD)),
+                     "cross_dir": moe_res.get("cross_dir", "HOLD"),
+                     "features": moe_res.get("features", {}),
+                     "high_price_during_hold": real_buy_px,
+@@ -510,7 +512,7 @@ class KiwoomLiveRunner:
+                     ticker=symbol,
+                     entry_price=real_buy_px,
+                     qty=real_qty,
+-                    gbdt_prob=float(moe_res.get("gating_confidence", 0.60)),
++                    gbdt_prob=float(moe_res.get("gating_confidence", config.GBDT_CONFIDENCE_THRESHOLD)),
+                     cross_dir=moe_res.get("cross_dir", "HOLD"),
+                     tp_price=tp_px_dyn,
+                     sl_price=sl_px_dyn,
+@@ -560,7 +562,7 @@ class KiwoomLiveRunner:
+                     "time_stop_minutes": time_stop_min,
+                     "strategy_tag": strategy_tag,
+                     "ref_price": ref_price,
+-                    "gbdt_confidence": float(moe_res.get("gating_confidence", 0.60)),
++                    "gbdt_confidence": float(moe_res.get("gating_confidence", config.GBDT_CONFIDENCE_THRESHOLD)),
+                     "cross_dir": moe_res.get("cross_dir", "HOLD"),
+                     "features": moe_res.get("features", {}),
+                     "high_price_during_hold": real_buy_px,
+@@ -572,7 +574,7 @@ class KiwoomLiveRunner:
+                     ticker=symbol,
+                     entry_price=real_buy_px,
+                     qty=real_qty,
+-                    gbdt_prob=float(moe_res.get("gating_confidence", 0.60)),
++                    gbdt_prob=float(moe_res.get("gating_confidence", config.GBDT_CONFIDENCE_THRESHOLD)),
+                     cross_dir=moe_res.get("cross_dir", "HOLD"),
+                     tp_price=tp_px_dyn,
+                     sl_price=sl_px_dyn,
+@@ -584,7 +586,7 @@ class KiwoomLiveRunner:
+ 
+             # 2??? ???
+             latest_px_2 = float(self.ws_streamer.get_latest_price(symbol, cur_px))
+-            order_px_2 = round(latest_px_2 + 0.03, 2)
++            order_px_2 = round(latest_px_2 + config.BUY_SLIPPAGE_ADJUST, 2)
+             logger.info(f"??[2? ??(1/1)] {symbol} {remaining_qty}?@ ${order_px_2:.2f} ({self.order_timeout_buy_sec:.0f}? ???)")
+             ord_res_2 = self.broker.send_order(symbol=symbol, order_type="BUY", quantity=remaining_qty, price=order_px_2)
+             ord_no_2 = str(ord_res_2.get("order_no", "")).strip()
+@@ -618,7 +620,7 @@ class KiwoomLiveRunner:
+                     "time_stop_minutes": time_stop_min,
+                     "strategy_tag": strategy_tag,
+                     "ref_price": ref_price,
+-                    "gbdt_confidence": float(moe_res.get("gating_confidence", 0.60)),
++                    "gbdt_confidence": float(moe_res.get("gating_confidence", config.GBDT_CONFIDENCE_THRESHOLD)),
+                     "cross_dir": moe_res.get("cross_dir", "HOLD"),
+                     "features": moe_res.get("features", {}),
+                     "high_price_during_hold": real_buy_px,
+@@ -636,7 +638,7 @@ class KiwoomLiveRunner:
+                     ticker=symbol,
+                     entry_price=real_buy_px,
+                     qty=real_qty,
+-                    gbdt_prob=float(moe_res.get("gating_confidence", 0.60)),
++                    gbdt_prob=float(moe_res.get("gating_confidence", config.GBDT_CONFIDENCE_THRESHOLD)),
+                     cross_dir=moe_res.get("cross_dir", "HOLD"),
+                     tp_price=tp_px_dyn,
+                     sl_price=sl_px_dyn,
+@@ -685,7 +687,7 @@ class KiwoomLiveRunner:
+                     "time_stop_minutes": time_stop_min,
+                     "strategy_tag": strategy_tag,
+                     "ref_price": ref_price,
+-                    "gbdt_confidence": float(moe_res.get("gating_confidence", 0.60)),
++                    "gbdt_confidence": float(moe_res.get("gating_confidence", config.GBDT_CONFIDENCE_THRESHOLD)),
+                     "cross_dir": moe_res.get("cross_dir", "HOLD"),
+                     "features": moe_res.get("features", {}),
+                     "high_price_during_hold": real_buy_px,
+@@ -698,7 +700,7 @@ class KiwoomLiveRunner:
+                     ticker=symbol,
+                     entry_price=real_buy_px,
+                     qty=real_qty,
+-                    gbdt_prob=float(moe_res.get("gating_confidence", 0.60)),
++                    gbdt_prob=float(moe_res.get("gating_confidence", config.GBDT_CONFIDENCE_THRESHOLD)),
+                     cross_dir=moe_res.get("cross_dir", "HOLD"),
+                     tp_price=tp_px_dyn,
+                     sl_price=sl_px_dyn,
+@@ -766,12 +768,12 @@ class KiwoomLiveRunner:
+                     latest_px = cur_px
+ 
+                 if is_market_order and not self.broker.is_simulation:
+-                    # 15:50 EOD ?? 0%  ?: ?? ?? ?(03, price=0.0)  
++                    # {config.PHASE_EOD_CLEAR} EOD ?? 0%  ?: ?? ?? ?(03, price=0.0)  
+                     sell_px = 0.0
+                     order_label = "? ? ?(Market Order)"
+                 else:
+                     # ? ? ? (? ?? ? ?? ? ): Bid - $0.05 ????
+-                    sell_px = max(0.01, round(latest_px - 0.05, 2)) if latest_px > 0 else 0.0
++                    sell_px = max(0.01, round(latest_px - config.SELL_SLIPPAGE_ADJUST, 2)) if latest_px > 0 else 0.0
+                     order_label = f"?  ??(${sell_px:.2f})"
+ 
+                 logger.info(f"? [ ?  ({loop_retry}?)] {symbol} {quantity}?| {order_label} | ?: {reason_desc} ({self.order_timeout_sell_sec:.0f}? ??")
+@@ -868,7 +870,9 @@ class KiwoomLiveRunner:
+                         self.ws_streamer.reset_session_ticks()
+                         
+                         system_logger.log("TRADE", "MarketSession", f"??? ?? ? ? ({mkt['now_kst_str']})")
+-                        open_msg = f"""?뵦 **[?뺢퇋??留ㅻℓ 媛쒖떆]**\n\n???꾩옱 ?쒓컖: `{mkt['now_kst_str']}`\n?뼢截??ㅽ뻾 紐⑤뱶: `{self.broker.mode_str}`\n?쭬 AI ?꾨왂: `?섏씠釉뚮━??MoE V3 (09:30~15:30 EDT)`\n?렞 留ㅼ닔 猷? `GBDT 62% ?댁긽`\n?썳截?泥?궛 猷? `Max TP +3.5% / ATR Trailing Stop`\n?뙔 留덇컧泥?궛: `15:50 EDT 0% ?ㅻ쾭?섏엲 ?꾨웾 ?쒖옣媛`"""
++                        cross_txt = "O" if getattr(config, "USE_CROSS_ASSET_VETO", False) else "X"
++                        trend_txt = "O" if getattr(config, "USE_60M_TREND_FILTER", False) else "X"
++                        open_msg = f"""?윟 **[?뺢퇋??留ㅻℓ 媛쒖떆]**\n\n?븩 ?꾩옱 ?쒓컖: `{mkt['now_kst_str']}`\n?숋툘 ?ㅽ뻾 紐⑤뱶: `{self.broker.mode_str}`\n?쭬 AI ?꾨왂: `?섏씠釉뚮━??MoE V3 (09:30~15:30 EDT)`\n?렞 吏꾩엯 議곌굔: `GBDT {config.GBDT_CONFIDENCE_THRESHOLD*100:.0f}% ?댁긽 (?щ줈?ㅼ뿉?? {cross_txt}, 60遺꾩텛?? {trend_txt})`\n?썳截?泥?궛 猷? `Max TP +3.5% / ATR Trailing Stop`\n?뵚 ??留덇컧泥?궛: `15:50 EDT 0% ?ㅻ쾭?섏엲 ?꾨웾 ?쒖옣媛`"""
+                         self.dispatcher.send_telegram_message(open_msg)
+ 
+                     elif current_session in ["AFTER_MARKET_CLOSED", "CLOSED"]:
+@@ -910,7 +914,7 @@ class KiwoomLiveRunner:
+                         
+                         try:                            # 2) ??醫낅ぉ Intraday 罹붾뱾 ?숆린??                             self.data_lake.sync_live_intraday_candles(config.ALL_SYMBOLS)
+-                            df_15m = self.data_lake.load_candles("TQQQ", "15m")
++                            df_15m = self.data_lake.load_candles(config.TRADE_SYMBOLS[0], "15m")
+                             live_prices = {sym: self.ws_streamer.get_latest_price(sym, 0.0) for sym in config.ALL_SYMBOLS}
+                             
+                             moe_res = self.moe_orchestrator.evaluate_dual_filter_signal(df_candle_15m=df_15m, live_prices=live_prices)
+@@ -920,13 +924,29 @@ class KiwoomLiveRunner:
+                             is_appr = moe_res.get('is_approved', False)
+                             direction = moe_res.get('direction', 'NONE')
+                             
+-                            dir_str = "留ㅼ닔 ?湲? if direction == "NONE" else direction
++                            gbdt_probs = moe_res.get('gbdt_probs', {"LONG": 0.0, "SHORT": 0.0, "NONE": 0.0})
++                            p_long = gbdt_probs.get("LONG", 0.0) * 100
++                            p_short = gbdt_probs.get("SHORT", 0.0) * 100
++                            p_none = gbdt_probs.get("NONE", 0.0) * 100
++                            
++                            ny_dt = now_dt.astimezone(ZoneInfo('America/New_York'))
++                            if direction == "LONG_TQQQ":
++                                dir_str = "TQQQ 留ㅼ닔"
++                            elif direction == "SHORT_SQQQ":
++                                dir_str = "SQQQ 留ㅼ닔"
++                            else:
++                                dir_str = "留ㅼ닔 愿留?
++                                
+                             briefing_msg = f"""?쨼 <b>[Lumos AI ?뺢린 釉뚮━??</b>
+-??<b>?쒓컙</b>: {now_dt.strftime('%H:%M')} (KST)
+-??<b>AI ?먮룆 諛⑺뼢</b>: {dir_str}
+-??<b>GBDT ?뺤떊??/b>: {conf:.1f}%
+-??<b>VIXY</b>: {live_prices.get('VIXY', 0.0):.2f} / <b>IEF</b>: {live_prices.get('IEF', 0.0):.2f}
+-??<b>?곹깭</b>: {'吏꾩엯 ?뱀씤 ??' if is_appr else '愿留?以??몓截?}
++???쒓컙: {ny_dt.strftime('%H:%M')} (?댁슃?쒓컙)
++???쒓컙: {now_dt.strftime('%H:%M')} (?쒓뎅?쒓컙)
++?㎛ AI ?먮룆 諛⑺뼢: {dir_str}
++?렞 吏꾩엯 ?꾧퀎媛? {config.GBDT_CONFIDENCE_THRESHOLD * 100:.1f}%
++?뱢 濡?TQQQ) ?뺣쪧: {p_long:.1f}%
++?뱣 ??SQQQ) ?뺣쪧: {p_short:.1f}%
++??愿留??뺣쪧: {p_none:.1f}%
++?뵦 理쒖쥌 GBDT ?뺤떊?? {conf:.1f}%
++?슗 ?곹깭: {'吏꾩엯 ?뱀씤 ?윟' if is_appr else '愿留??좎? ?윞'}
+ """
+                             self.dispatcher.send_telegram_message(briefing_msg)
+                             system_logger.log("INFO", "AI", f"15???? ? (?: {conf:.1f}%)")
+@@ -939,21 +959,21 @@ class KiwoomLiveRunner:
+                                     if cur_px > 0:
+                                         conn_res = self.broker.test_connection()
+                                         usd_avail = float(conn_res.get("usd_order_available", 0.0))
+-                                        order_qty = int((usd_avail * 0.99) / (cur_px + 0.05))
++                                        order_qty = int((usd_avail * config.MAX_ALLOCATION_RATIO) / (cur_px + config.QTY_CALC_BUFFER))
+                                         
+                                         if order_qty > 0:
+                                             system_logger.log("TRADE", "AI", f"V3 AI  ? ?! {winner_sym} {order_qty}? ?")
+                                             atr_14 = float(moe_res.get('features', {}).get('ATR_14', cur_px * 0.018))
+                                             atr_pct = (atr_14 / cur_px) * 100.0 if cur_px > 0 else 1.8
+-                                            sl_pct = max(2.0, min(3.2, atr_pct * 1.5))
+-                                            tp_pct = 3.5
++                                            sl_pct = max(config.SL_MIN_PCT * 100.0, min(config.SL_MAX_PCT * 100.0, atr_pct * config.SL_ATR_MULTIPLIER))
++                                            tp_pct = config.MAX_TP_PCT * 100.0
+                                             
+                                             targets = {
+                                                 "dynamic_tp_px": round(cur_px * (1.0 + tp_pct/100.0), 2),
+                                                 "dynamic_sl_px": round(cur_px * (1.0 - sl_pct/100.0), 2),
+                                                 "tp_pct": tp_pct,
+                                                 "sl_pct": sl_pct,
+-                                                "time_stop_minutes": 90,
++                                                "time_stop_minutes": config.TIME_STOP_MINUTES,
+                                                 "strategy_tag": "Lumos V4 Optimal"
+                                             }
+                                             self._execute_buy_with_10s_chase(
+@@ -972,19 +992,19 @@ class KiwoomLiveRunner:
+                         stk_bal = self.broker.get_overseas_stock_balance()
+                         if stk_bal.get("ok") and stk_bal.get("holdings"):
+                             live_p = {
+-                                "TQQQ": self.ws_streamer.get_latest_price("TQQQ", 0.0),
+-                                "SQQQ": self.ws_streamer.get_latest_price("SQQQ", 0.0)
++                                config.TRADE_SYMBOLS[0]: self.ws_streamer.get_latest_price(config.TRADE_SYMBOLS[0], 0.0),
++                                config.TRADE_SYMBOLS[1]: self.ws_streamer.get_latest_price(config.TRADE_SYMBOLS[1], 0.0)
+                             }
+                             if current_session == "EOD_LIQUIDATION":
+                                 for h in stk_bal.get("holdings"):
+                                     sym = str(h.get("symbol") or h.get("stk_cd") or "").strip().upper()
+                                     qty = int(float(str(h.get("quantity") or h.get("poss_qty") or 0).replace(",", "")))
+                                     if qty > 0:
+-                                        system_logger.log("TRADE", "EOD", f"Executing 15:50 EOD Liquidation for {sym}")
++                                        system_logger.log("TRADE", "EOD", f"Executing {config.PHASE_EOD_CLEAR} EOD Liquidation for {sym}")
+                                         self._execute_sell_with_10s_chase(
+                                             symbol=sym,
+                                             quantity=qty,
+-                                            reason_desc="EOD 15:50 100% Liquidation",
++                                            reason_desc="EOD {config.PHASE_EOD_CLEAR} 100% Liquidation",
+                                             is_market_order=True
+                                         )
+                             else:
+@@ -1033,9 +1053,22 @@ class KiwoomLiveRunner:
+         logger.info(f"   ??OAuth2 ?: {'???  ?' if conn_res['ok'] else '?? ?'}")
+         logger.info(f"   ??? : {self.broker.account_no}-{self.broker.account_type}")
+         logger.info(f"   ?????: ${conn_res['usd_order_available']:,.2f} USD")
++        
++        # 2.5. 湲곗〈??嫄몃젮?덈뒗 紐⑤뱺 誘몄껜寃?二쇰Ц ?쇨큵 痍⑥냼 (?섎룞 二쇰Ц ?붿옱濡??명븳 ?덉닔湲??좉? 諛⑹?)
++        logger.info(f"\n[2.5/3] 湲곗〈 誘몄껜寃?二쇰Ц ?쇨큵 痍⑥냼 ?뺤씤 以?..")
++        try:
++            cancel_res = self.broker.cancel_all_open_orders()
++            if cancel_res:
++                logger.info(f"   => {len(cancel_res)}嫄댁쓽 湲곗〈 誘몄껜寃?二쇰Ц???깃났?곸쑝濡?痍⑥냼?덉뒿?덈떎.")
++            else:
++                logger.info(f"   => 痍⑥냼??湲곗〈 誘몄껜寃?二쇰Ц???놁뒿?덈떎.")
++        except Exception as e:
++            logger.warning(f"   => 湲곗〈 誘몄껜寃?二쇰Ц 痍⑥냼 以??먮윭 諛쒖깮 (臾댁떆?섍퀬 吏꾪뻾): {e}")
+ 
+         # 3. ?  ? ??????
+-        ai_engine_desc = "`Phase 1: 15 GBDT Model (62% ? ??/ ????Veto ?? / GBDT Feature ?)`"
++        cross_asset_txt = "O" if getattr(config, "USE_CROSS_ASSET_VETO", False) else "X"
++        trend_txt = "O" if getattr(config, "USE_60M_TREND_FILTER", False) else "X"
++        ai_engine_desc = f"`Phase 1: 15m GBDT Model (吏꾩엯 > {config.GBDT_CONFIDENCE_THRESHOLD*100:.1f}% / ?щ줈?ㅼ뿉??Veto: {cross_asset_txt} / QQQ 60遺?異붿꽭諛⑺뙣: {trend_txt})`"
+         start_msg = f"""? **[Lumos ??{self.broker.mode_str} ?  ?????**
+ ??**? ?:** `{mkt_status['now_kst_str']}`
+ ? **? ???** `100% ??? (KST-NYT {sync_res['delta_hours']:.0f}h ? ?,  ???)`
+@@ -1070,6 +1103,8 @@ class KiwoomLiveRunner:
+ if __name__ == "__main__":
+     import argparse
+     parser = argparse.ArgumentParser(description="Lumos Auto Trading Live Runner")
++    parser.add_argument("--real", action="store_true", help="Run in real trading mode")
++    parser.add_argument("--sim", action="store_true", help="Run in simulation mode")
+     args, unknown = parser.parse_known_args()
+ 
+     is_sim = None

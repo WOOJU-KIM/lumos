@@ -1,0 +1,12 @@
+
+        test_mask = tqqq_feat['date_str'] == '2026-09-22'
+        test_df = tqqq_feat[test_mask].copy()
+
+        X_all = test_df[feature_cols].fillna(0.0)
+        probs = clf_22_24.predict_proba(X_all)
+        prob_short = probs[:, 0]
+        prob_neutral = probs[:, 1]
+        prob_long = probs[:, 2]
+
+        confidences = np.full(len(test_df), 0.50, dtype=float)
+        directions = ["NONE"] * len(test_df)

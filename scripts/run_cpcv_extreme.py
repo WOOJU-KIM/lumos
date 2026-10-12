@@ -1,5 +1,6 @@
 import sys
 import numpy as np
+import config
 import pandas as pd
 from pathlib import Path
 import itertools
@@ -19,29 +20,29 @@ def run_cpcv():
     print('=' * 80)
 
     lake = MarketDataLake()
-    tqqq_15m = lake.load_candles('TQQQ', '15m')
-    sqqq_15m = lake.load_candles('SQQQ', '15m')
-    soxx_60m = lake.load_candles('SOXX', '60m')
-    tqqq_5m = lake.load_candles('TQQQ', '5m')
-    sqqq_5m = lake.load_candles('SQQQ', '5m')
+    long_15m = lake.load_candles(config.BASE_ASSET_LONG, '15m')
+    short_15m = lake.load_candles(config.BASE_ASSET_SHORT, '15m')
+    macro_60m = lake.load_candles(config.MACRO_TREND_SYMBOL, '60m')
+    long_5m = lake.load_candles(config.BASE_ASSET_LONG, '5m')
+    short_5m = lake.load_candles(config.BASE_ASSET_SHORT, '5m')
     
-    soxx_60m['ema20'] = soxx_60m['Close'].ewm(span=20, adjust=False).mean()
+    macro_60m['ema20'] = macro_60m['Close'].ewm(span=20, adjust=False).mean()
     
-    tqqq_5m_by_date = {}
-    for d, g in tqqq_5m.groupby(tqqq_5m['datetime'].str.slice(0, 10)):
-        tqqq_5m_by_date[d] = g.sort_values('datetime').reset_index(drop=True)
-    sqqq_5m_by_date = {}
-    for d, g in sqqq_5m.groupby(sqqq_5m['datetime'].str.slice(0, 10)):
-        sqqq_5m_by_date[d] = g.sort_values('datetime').reset_index(drop=True)
+    long_5m_by_date = {}
+    for d, g in long_5m.groupby(long_5m['datetime'].str.slice(0, 10)):
+        long_5m_by_date[d] = g.sort_values('datetime').reset_index(drop=True)
+    short_5m_by_date = {}
+    for d, g in short_5m.groupby(short_5m['datetime'].str.slice(0, 10)):
+        short_5m_by_date[d] = g.sort_values('datetime').reset_index(drop=True)
         
     ml_engine = MLFeatureEngine(confidence_threshold=0.60)
-    tqqq_feat = ml_engine.extract_features(tqqq_15m)
-    labels = ml_engine.compute_triple_barrier_labels(tqqq_feat)
+    long_feat = ml_engine.extract_features(long_15m)
+    labels = ml_engine.compute_triple_barrier_labels(long_feat)
     target_series = labels.map({1: 2, -1: 0, 0: 1}).fillna(1).astype(int)
-    tqqq_feat['target'] = target_series
+    long_feat['target'] = target_series
     
-    tqqq_feat['datetime_dt'] = pd.to_datetime(tqqq_feat['datetime'])
-    tqqq_feat['date_str'] = tqqq_feat['datetime_dt'].dt.strftime('%Y-%m-%d')
+    long_feat['datetime_dt'] = pd.to_datetime(long_feat['datetime'])
+    long_feat['date_str'] = long_feat['datetime_dt'].dt.strftime('%Y-%m-%d')
     
     raw_price_features = {
         'open', 'high', 'low', 'close', 'volume', 'Open', 'High', 'Low', 'Close', 'Volume',
@@ -49,9 +50,9 @@ def run_cpcv():
         'cum_vp', 'vwap', 'EMA_9', 'EMA_21', 'EMA_50', 'EMA_200',
         'BB_Upper', 'BB_Lower', 'KC_Upper', 'KC_Lower', 'ATR_14', 'MACD', 'MACD_Signal', 'MACD_Hist'
     }
-    feature_cols = [c for c in tqqq_feat.columns if c not in raw_price_features and pd.api.types.is_numeric_dtype(tqqq_feat[c])]
+    feature_cols = [c for c in long_feat.columns if c not in raw_price_features and pd.api.types.is_numeric_dtype(long_feat[c])]
     
-    unique_dates = sorted(tqqq_feat['date_str'].unique())
+    unique_dates = sorted(long_feat['date_str'].unique())
     n_splits = 6
     split_size = len(unique_dates) // n_splits
     folds = []
@@ -71,12 +72,12 @@ def run_cpcv():
         test_dates = []
         for i in test_fold_indices: test_dates.extend(folds[i])
         
-        train_mask = tqqq_feat['date_str'].isin(train_dates)
-        test_mask = tqqq_feat['date_str'].isin(test_dates)
+        train_mask = long_feat['date_str'].isin(train_dates)
+        test_mask = long_feat['date_str'].isin(test_dates)
         
-        X_tr = tqqq_feat.loc[train_mask, feature_cols].fillna(0.0)
-        y_tr = tqqq_feat.loc[train_mask, 'target']
-        X_te = tqqq_feat.loc[test_mask, feature_cols].fillna(0.0)
+        X_tr = long_feat.loc[train_mask, feature_cols].fillna(0.0)
+        y_tr = long_feat.loc[train_mask, 'target']
+        X_te = long_feat.loc[test_mask, feature_cols].fillna(0.0)
         
         clf = LGBMClassifier(
             objective='multiclass', num_class=3, class_weight='balanced',
@@ -85,7 +86,7 @@ def run_cpcv():
         clf.fit(X_tr, y_tr)
         
         w_probs = clf.predict_proba(X_te)
-        test_df = tqqq_feat[test_mask].copy()
+        test_df = long_feat[test_mask].copy()
         
         p_s = w_probs[:, 0]
         p_n = w_probs[:, 1]
@@ -97,10 +98,10 @@ def run_cpcv():
             ps, pn, pl = p_s[i], p_n[i], p_l[i]
             if pl > pn and pl > ps:
                 w_confs[i] = min(0.95, max(0.50, 0.50 + (pl - 0.333) * 1.15))
-                w_dirs[i] = 'LONG_TQQQ'
+                w_dirs[i] = "LONG"
             elif ps > pn and ps > pl:
                 w_confs[i] = min(0.95, max(0.50, 0.50 + (ps - 0.333) * 1.15))
-                w_dirs[i] = 'SHORT_SQQQ'
+                w_dirs[i] = "SHORT"
                 
         test_df['Confidence'] = w_confs
         test_df['Direction'] = w_dirs
@@ -114,8 +115,8 @@ def run_cpcv():
         
         for d_str in test_dates:
             day_bars_15 = test_df[test_df['date_str'] == d_str].reset_index(drop=True)
-            day_tqqq_5 = tqqq_5m_by_date.get(d_str, pd.DataFrame())
-            day_sqqq_5 = sqqq_5m_by_date.get(d_str, pd.DataFrame())
+            day_long_5 = long_5m_by_date.get(d_str, pd.DataFrame())
+            day_short_5 = short_5m_by_date.get(d_str, pd.DataFrame())
             
             for b_idx in range(len(day_bars_15)):
                 row_15 = day_bars_15.iloc[b_idx]
@@ -123,11 +124,11 @@ def run_cpcv():
                 d_conf = row_15['Confidence']
                 if d_dir == 'NONE' or d_conf < 0.60: continue
                 
-                target_sym = 'TQQQ' if d_dir == 'LONG_TQQQ' else 'SQQQ'
+                target_sym = config.BASE_ASSET_LONG if d_dir == "LONG" else config.BASE_ASSET_SHORT
                 entry_time = row_15['datetime'][11:16]
                 if entry_time >= '15:30': continue
                 
-                post_5m = day_tqqq_5 if target_sym == 'TQQQ' else day_sqqq_5
+                post_5m = day_long_5 if target_sym == config.BASE_ASSET_LONG else day_short_5
                 post_5m = post_5m[post_5m['datetime'].str.slice(11, 16) > entry_time]
                 if post_5m.empty: continue
                 

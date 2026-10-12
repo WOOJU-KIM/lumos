@@ -1,0 +1,11 @@
+최종 GBDT 확신도: {conf:.1f}%
+light 상태: {'진입 승인 green' if is_appr else '관망 유지 yellow'}
+"""
+                            self.dispatcher.send_telegram_message(briefing_msg)
+                            system_logger.log("INFO", "AI", f"15???? ? (?: {conf:.1f}%)")
+                            
+                            if is_appr and not active_pos :
+                                if direction in ["LONG_TQQQ", "SHORT_SQQQ"]:
+                                    winner_sym = "TQQQ" if direction == "LONG_TQQQ" else "SQQQ"
+                                    cur_px = live_prices.get(winner_sym, 0.0)
+                 

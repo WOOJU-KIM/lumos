@@ -1,4 +1,5 @@
 import os
+import config
 import sys
 import json
 import time
@@ -71,7 +72,7 @@ def test_all_fixes_live():
     # ----------------------------------------------------
     print("\n[Test 3] 매도 발주(send_order SELL) 시 미체결 자동 취소 연동 검증...")
     try:
-        sell_test_res = broker.send_order(symbol="SQQQ", order_type="SELL", quantity=1, price=0.0)
+        sell_test_res = broker.send_order(symbol=config.BASE_ASSET_SHORT, order_type="SELL", quantity=1, price=0.0)
         print(f"   • 매도 주문 신호 전송 결과: {sell_test_res.get('msg')}")
     except Exception as e:
         print(f"   • 증권사 서버 공식 수신 응답: {e}")
@@ -87,41 +88,41 @@ def test_all_fixes_live():
     print("   (A) 목표 익절(+3.5%) 도달 시 즉시 매도 신호 송출 검증:")
     fake_holding_tp = {
         "holdings": [{
-            "symbol": "SQQQ",
+            "symbol": config.BASE_ASSET_SHORT,
             "quantity": 10,
             "purchase_price": 40.00,
             "buy_time": (datetime.now() - timedelta(minutes=10)).strftime("%Y-%m-%d %H:%M:%S")
         }]
     }
     # 현재가를 $42.00 (+5.0%)으로 강제 오버라이드
-    runner._manage_open_positions(fake_holding_tp, realtime_px_override={"SQQQ": 42.00})
+    runner._manage_open_positions(fake_holding_tp, realtime_px_override={config.BASE_ASSET_SHORT: 42.00})
     print("   👉 [A. 익절 로직]: ✅ 목표가 도달 감지 및 매도 청산 신호 송출 성공!")
 
     # (B) 칼손절 (-2.0%) 도달 시뮬레이션
     print("\n   (B) 손절선(-2.0%) 도달 시 즉시 칼손절 매도 신호 송출 검증:")
     fake_holding_sl = {
         "holdings": [{
-            "symbol": "SQQQ",
+            "symbol": config.BASE_ASSET_SHORT,
             "quantity": 10,
             "purchase_price": 40.00,
             "buy_time": (datetime.now() - timedelta(minutes=10)).strftime("%Y-%m-%d %H:%M:%S")
         }]
     }
     # 현재가를 $38.00 (-5.0%)으로 강제 오버라이드
-    runner._manage_open_positions(fake_holding_sl, realtime_px_override={"SQQQ": 38.00})
+    runner._manage_open_positions(fake_holding_sl, realtime_px_override={config.BASE_ASSET_SHORT: 38.00})
     print("   👉 [B. 칼손절 로직]: ✅ 손절선 이탈 감지 및 칼손절 청산 신호 송출 성공!")
 
     # (C) 90분 타임스탑 도달 시뮬레이션
     print("\n   (C) 90분 타임스탑(시간 초과) 도달 시 기회비용 회수 청산 신호 검증:")
     fake_holding_ts = {
         "holdings": [{
-            "symbol": "SQQQ",
+            "symbol": config.BASE_ASSET_SHORT,
             "quantity": 10,
             "purchase_price": 40.00,
             "buy_time": (datetime.now() - timedelta(minutes=95)).strftime("%Y-%m-%d %H:%M:%S") # 95분 경과
         }]
     }
-    runner._manage_open_positions(fake_holding_ts, realtime_px_override={"SQQQ": 40.00})
+    runner._manage_open_positions(fake_holding_ts, realtime_px_override={config.BASE_ASSET_SHORT: 40.00})
     print("   👉 [C. 90분 타임스탑]: ✅ 95분 경과 감지 및 시간 초과 시장가 매도 신호 송출 성공!")
 
     # ----------------------------------------------------

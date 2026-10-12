@@ -1,0 +1,50 @@
+                
+                exit_triggered, exit_px, reason = False, 0.0, ""
+                sl_pct = active_pos['initial_sl']
+                prev_peak_ret = active_pos['peak_ret']
+                
+                if min_ret <= sl_pct:
+                    exit_triggered = True; exit_px = buy_px * (1 + sl_pct) - SELL_SLIPPAGE; reason = f"🛑 손절 ({sl_pct*100:.1f}%)"
+                elif active_pos['trailing_active'] and (prev_peak_ret - min_ret >= TRAILING_DROP):
+                    exit_triggered = True; exit_px = buy_px * (1 + (prev_peak_ret - TRAILING_DROP)) - SELL_SLIPPAGE; reason = f"🛡️ 트레일링 스탑 (이전고점-{TRAILING_DROP*100:.1f}%)"
+                elif max_ret >= MAX_TP_PCT:
+                    exit_triggered = True; exit_px = buy_px * (1 + MAX_TP_PCT) - SELL_SLIPPAGE; reason = f"🎯 목표익절 (+{MAX_TP_PCT*100:.1f}%)"
+                elif bars_held >= TIME_STOP_BARS:
+                    exit_triggered = True; exit_px = cur_c - SELL_SLIPPAGE; reason = f"⏰ {config.TIME_STOP_MINUTES}분 타임스탑"
+                elif bar_time >= "15:50":
+                    exit_triggered = True; exit_px = cur_c - SELL_SLIPPAGE; reason = "🌙 장마감 청산 (15:50)"
+                    
+                if max_ret > active_pos['peak_ret']: active_pos['peak_ret'] = max_ret
+                if active_pos['peak_ret'] >= TRAILING_TRIGGER: active_pos['trailing_active'] = True
+                    
+                if exit_triggered:
+                    cost_amount = active_pos['invested'] * FEE
+                    pnl_amount = (active_pos['shares'] * (exit_px - buy_px)) - cost_amount
+                    capital += pnl_amount
+                    net_ret_pct = pnl_amount / active_pos['invested']
+                    
+                    trades.append({
+                        "date": pd.to_datetime(dates[global_i]).strftime('%Y-%m-%d'), "symbol": sym, "direction": active_pos['direction'],
+                        "entry_time": active_pos['entry_time'], "entry_price": buy_px, "exit_time": bar_time, "exit_price": exit_px,
+                        "return_pct": round(net_ret_pct * 100, 2), "pnl_usd": round(pnl_amount, 2), "capital_after": round(capital, 2), "exit_reason": reason
+                    })
+                    week_trades += 1
+                    if pnl_amount > 0: week_wins += 1
+                    active_pos = None
+
+            if active_pos is None and "09:30" <= bar_time <= "15:30":
+                g_dir = gbdt_dirs[local_i]
+                if g_dir in ["LONG_TQQQ", "SHORT_SQQQ"]:
+                    disloc = dislocation.values[global_i]
+                    is_veto = (g_dir == "LONG_TQQQ" and disloc <= -0.012) or (g_dir == "SHORT_SQQQ" and disloc >= 0.012)
+                    if not getattr(config, "USE_CROSS_ASSET_VETO", True):
+                        is_veto = False
+                    
+                    trend_ok = is_60m_trend_long.values[global_i] if g_dir == "LONG_TQQQ" else is_60m_trend_short.values[global_i]
+                    if not getattr(config, "USE_60M_TREND_FILTER", True):
+                        trend_ok = True
+                        
+                    cur_rsi = rsi_14[global_i]
+                    dip_ok = (cur_rsi <= RSI_OB) if g_dir == "LONG_TQQQ" else (cur_rsi >= RSI_OS)
+                    
+                    if not is_veto and trend_ok and dip_ok:

@@ -3,6 +3,7 @@ import json
 import time
 import sqlite3
 import threading
+import config
 import pandas as pd
 from datetime import datetime
 from pathlib import Path
@@ -206,7 +207,7 @@ class LiveExperienceLogger:
         row_dict = {
             "trade_id": trade_id,
             "mode": trade_data.get("mode", "VIRTUAL"),
-            "symbol": trade_data.get("symbol", "TQQQ"),
+            "symbol": trade_data.get("symbol", config.BASE_ASSET_LONG),
             "entry_time": entry_time_str,
             "exit_time": exit_time_str,
             "hold_minutes": hold_min,

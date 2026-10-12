@@ -1,6 +1,7 @@
 import os
 import sys
 import sqlite3
+import config
 import pandas as pd
 import numpy as np
 from pathlib import Path
@@ -20,35 +21,35 @@ from core.ml_engine import MLFeatureEngine
 
 # Load all 15m and 60m data from SQLite DB
 conn = sqlite3.connect('data/market_data.db')
-tqqq_15m = pd.read_sql_query("SELECT datetime, open as Open, high as High, low as Low, close as Close, volume as Volume FROM market_candles WHERE symbol='TQQQ' AND timeframe='15m' ORDER BY datetime", conn)
-sqqq_15m = pd.read_sql_query("SELECT datetime, open as Open, high as High, low as Low, close as Close, volume as Volume FROM market_candles WHERE symbol='SQQQ' AND timeframe='15m' ORDER BY datetime", conn)
+long_15m = pd.read_sql_query("SELECT datetime, open as Open, high as High, low as Low, close as Close, volume as Volume FROM market_candles WHERE symbol=config.BASE_ASSET_LONG AND timeframe='15m' ORDER BY datetime", conn)
+short_15m = pd.read_sql_query("SELECT datetime, open as Open, high as High, low as Low, close as Close, volume as Volume FROM market_candles WHERE symbol=config.BASE_ASSET_SHORT AND timeframe='15m' ORDER BY datetime", conn)
 nvda_15m = pd.read_sql_query("SELECT datetime, open as Open, high as High, low as Low, close as Close, volume as Volume FROM market_candles WHERE symbol='NVDA' AND timeframe='15m' ORDER BY datetime", conn)
 qqq_15m = pd.read_sql_query("SELECT datetime, open as Open, high as High, low as Low, close as Close, volume as Volume FROM market_candles WHERE symbol='QQQ' AND timeframe='15m' ORDER BY datetime", conn)
-soxx_15m = pd.read_sql_query("SELECT datetime, open as Open, high as High, low as Low, close as Close, volume as Volume FROM market_candles WHERE symbol='SOXX' AND timeframe='15m' ORDER BY datetime", conn)
+macro_15m = pd.read_sql_query("SELECT datetime, open as Open, high as High, low as Low, close as Close, volume as Volume FROM market_candles WHERE symbol=config.MACRO_TREND_SYMBOL AND timeframe='15m' ORDER BY datetime", conn)
 vix_15m = pd.read_sql_query("SELECT datetime, open as Open, high as High, low as Low, close as Close, volume as Volume FROM market_candles WHERE symbol='^VIX' AND timeframe='15m' ORDER BY datetime", conn)
 tnx_15m = pd.read_sql_query("SELECT datetime, open as Open, high as High, low as Low, close as Close, volume as Volume FROM market_candles WHERE symbol='^TNX' AND timeframe='15m' ORDER BY datetime", conn)
 
-tqqq_60m = pd.read_sql_query("SELECT datetime, open as Open, high as High, low as Low, close as Close, volume as Volume FROM market_candles WHERE symbol='TQQQ' AND timeframe='60m' ORDER BY datetime", conn)
-soxx_60m = pd.read_sql_query("SELECT datetime, open as Open, high as High, low as Low, close as Close, volume as Volume FROM market_candles WHERE symbol='SOXX' AND timeframe='60m' ORDER BY datetime", conn)
+long_60m = pd.read_sql_query("SELECT datetime, open as Open, high as High, low as Low, close as Close, volume as Volume FROM market_candles WHERE symbol=config.BASE_ASSET_LONG AND timeframe='60m' ORDER BY datetime", conn)
+macro_60m = pd.read_sql_query("SELECT datetime, open as Open, high as High, low as Low, close as Close, volume as Volume FROM market_candles WHERE symbol=config.MACRO_TREND_SYMBOL AND timeframe='60m' ORDER BY datetime", conn)
 conn.close()
 
-for df in [tqqq_15m, sqqq_15m, nvda_15m, qqq_15m, soxx_15m, vix_15m, tnx_15m, tqqq_60m, soxx_60m]:
+for df in [long_15m, short_15m, nvda_15m, qqq_15m, macro_15m, vix_15m, tnx_15m, long_60m, macro_60m]:
     df['Datetime'] = pd.to_datetime(df['datetime'])
     df['date'] = df['datetime'].str.slice(0, 10)
     df.set_index('Datetime', inplace=True)
 
 # Compute 60m trend filters
-soxx_60m['ema20'] = soxx_60m['Close'].ewm(span=20, adjust=False).mean()
-tqqq_60m['ema20'] = tqqq_60m['Close'].ewm(span=20, adjust=False).mean()
-ema12 = tqqq_60m['Close'].ewm(span=12, adjust=False).mean()
-ema26 = tqqq_60m['Close'].ewm(span=26, adjust=False).mean()
-tqqq_60m['macd'] = ema12 - ema26
-tqqq_60m['macd_sig'] = tqqq_60m['macd'].ewm(span=9, adjust=False).mean()
+macro_60m['ema20'] = macro_60m['Close'].ewm(span=20, adjust=False).mean()
+long_60m['ema20'] = long_60m['Close'].ewm(span=20, adjust=False).mean()
+ema12 = long_60m['Close'].ewm(span=12, adjust=False).mean()
+ema26 = long_60m['Close'].ewm(span=26, adjust=False).mean()
+long_60m['macd'] = ema12 - ema26
+long_60m['macd_sig'] = long_60m['macd'].ewm(span=9, adjust=False).mean()
 
 # Compute ML Features
 ml_engine = MLFeatureEngine()
-tqqq_feat = ml_engine.extract_features(tqqq_15m)
-sqqq_feat = ml_engine.extract_features(sqqq_15m)
+long_feat = ml_engine.extract_features(long_15m)
+short_feat = ml_engine.extract_features(short_15m)
 
 # Instantiate 4 heterogeneous non-time-series models
 exp_orderflow = OrderFlowImbalanceModel(delta_threshold=1.8, absorption_ratio=2.2)
@@ -57,10 +58,10 @@ exp_statespace = StateSpaceKalmanModel()
 exp_cross = CrossAssetDislocationModel(dislocation_z_threshold=1.6)
 
 # Test MoE Sigmoid Network across 62 days
-unique_dates = sorted(tqqq_15m['date'].unique())
+unique_dates = sorted(long_15m['date'].unique())
 total_weeks = len(unique_dates) / 5.0
 
-print(f"Loaded {len(tqqq_15m)} 15m candles over {len(unique_dates)} trading days ({total_weeks:.1f} weeks).")
+print(f"Loaded {len(long_15m)} 15m candles over {len(unique_dates)} trading days ({total_weeks:.1f} weeks).")
 
 class PrecisionMoESigmoidNetwork:
     """
@@ -104,37 +105,37 @@ class PrecisionMoESigmoidNetwork:
         cur_vix: float,
         row_l: pd.Series,
         row_s: pd.Series,
-        tqqq_sub: pd.DataFrame,
+        long_sub: pd.DataFrame,
         nvda_sub: pd.DataFrame,
         qqq_sub: pd.DataFrame,
-        soxx_sub: pd.DataFrame,
+        macro_sub: pd.DataFrame,
         tnx_sub: pd.DataFrame,
-        soxx_60_sub: pd.DataFrame,
-        tqqq_60_sub: pd.DataFrame
+        macro_60_sub: pd.DataFrame,
+        long_60_sub: pd.DataFrame
     ) -> Dict[str, Any]:
         # 1. Compute 5-sensor vector R
         elapsed_min = float(b_idx * 15.0)
         elapsed_norm = (elapsed_min - 120.0) / 100.0
         vix_norm = (cur_vix - 17.0) / 4.0
 
-        hl = tqqq_sub['High'] - tqqq_sub['Low']
+        hl = long_sub['High'] - long_sub['Low']
         rec_atr = hl.tail(5).mean()
         avg_atr = hl.tail(20).mean()
         atr_ratio = (rec_atr / avg_atr) if avg_atr > 0 else 1.0
         atr_norm = (atr_ratio - 1.0) / 0.4
 
-        c = tqqq_sub['Close']
-        o = tqqq_sub['Open']
-        h = tqqq_sub['High']
-        l = tqqq_sub['Low']
-        v = tqqq_sub['Volume']
+        c = long_sub['Close']
+        o = long_sub['Open']
+        h = long_sub['High']
+        l = long_sub['Low']
+        v = long_sub['Volume']
         hl_diff = (h - l).replace(0, 0.001)
         v_delta = ((c - o) / hl_diff) * v
         avg_v = v.tail(15).mean() + 1e-6
         cvd_delta = float(v_delta.tail(3).mean() / avg_v)
         cvd_norm = np.clip(cvd_delta, -3.0, 3.0)
 
-        s_ret = (tqqq_sub['Close'].iloc[-1] / tqqq_sub['Close'].iloc[-5] - 1.0) * 100.0 if len(tqqq_sub) >= 5 else 0.0
+        s_ret = (long_sub['Close'].iloc[-1] / long_sub['Close'].iloc[-5] - 1.0) * 100.0 if len(long_sub) >= 5 else 0.0
         n_ret = (nvda_sub['Close'].iloc[-1] / nvda_sub['Close'].iloc[-5] - 1.0) * 100.0 if len(nvda_sub) >= 5 else 0.0
         q_ret = (qqq_sub['Close'].iloc[-1] / qqq_sub['Close'].iloc[-5] - 1.0) * 100.0 if len(qqq_sub) >= 5 else 0.0
         macro_exp = (n_ret * 0.6 + q_ret * 0.4) * 3.0
@@ -158,56 +159,56 @@ class PrecisionMoESigmoidNetwork:
         direction = "NONE"
 
         if top_expert == "orderflow":
-            cvd_df = exp_orderflow.compute_cvd(tqqq_sub)
+            cvd_df = exp_orderflow.compute_cvd(long_sub)
             s_code, c_val, _ = exp_orderflow.predict_signal(cvd_df.iloc[-1])
             if s_code != 0:
                 expert_sig = s_code
-                direction = "LONG_TQQQ" if s_code == 1 else "SHORT_SQQQ"
+                direction = "LONG" if s_code == 1 else "SHORT"
                 expert_conf = max(top_gating_conf, c_val)
 
         elif top_expert == "tda_topology":
-            s_code, c_val, _ = exp_tda.predict_signal(tqqq_sub)
+            s_code, c_val, _ = exp_tda.predict_signal(long_sub)
             if s_code != 0:
                 expert_sig = s_code
-                direction = "LONG_TQQQ" if s_code == 1 else "SHORT_SQQQ"
+                direction = "LONG" if s_code == 1 else "SHORT"
                 expert_conf = max(top_gating_conf, c_val)
 
         elif top_expert == "statespace_kalman":
-            s_code, c_val, _ = exp_statespace.predict_signal(tqqq_sub['Close'].values)
+            s_code, c_val, _ = exp_statespace.predict_signal(long_sub['Close'].values)
             if s_code != 0:
                 expert_sig = s_code
-                direction = "LONG_TQQQ" if s_code == 1 else "SHORT_SQQQ"
+                direction = "LONG" if s_code == 1 else "SHORT"
                 expert_conf = max(top_gating_conf, c_val)
 
         elif top_expert == "cross_asset":
-            sx_ret = (soxx_sub['Close'].iloc[-1] / soxx_sub['Close'].iloc[-5] - 1.0) if len(soxx_sub) >= 5 else 0.0
+            sx_ret = (macro_sub['Close'].iloc[-1] / macro_sub['Close'].iloc[-5] - 1.0) if len(macro_sub) >= 5 else 0.0
             v_ret = (cur_vix / vix_15m['Close'].iloc[-5] - 1.0) if len(vix_15m) >= 5 else 0.0
             t_ret = (tnx_sub['Close'].iloc[-1] / tnx_sub['Close'].iloc[-5] - 1.0) if len(tnx_sub) >= 5 else 0.0
             s_code, c_val, _ = exp_cross.predict_signal(s_ret/100, n_ret/100, q_ret/100, sx_ret, v_ret, t_ret)
             if s_code != 0:
                 expert_sig = s_code
-                direction = "LONG_TQQQ" if s_code == 1 else "SHORT_SQQQ"
+                direction = "LONG" if s_code == 1 else "SHORT"
                 expert_conf = max(top_gating_conf, c_val)
 
         else: # GBDT Champion / Refresh (Track 0 / 1)
             # 60m Trend Confirmation
             is_60m_bull = False
             is_60m_bear = False
-            if len(soxx_60_sub) >= 20 and len(tqqq_60_sub) >= 20:
-                last_soxx = soxx_60_sub.iloc[-1]
-                last_tqqq = tqqq_60_sub.iloc[-1]
-                is_60m_bull = (last_soxx['Close'] >= last_soxx['ema20'] * 0.998) and (last_tqqq['Close'] >= last_tqqq['ema20'] * 0.998)
-                is_60m_bear = (last_soxx['Close'] <= last_soxx['ema20'] * 1.002) and (last_tqqq['Close'] <= last_tqqq['ema20'] * 1.002)
+            if len(macro_60_sub) >= 20 and len(long_60_sub) >= 20:
+                last_macro = macro_60_sub.iloc[-1]
+                last_long = long_60_sub.iloc[-1]
+                is_60m_bull = (last_macro['Close'] >= last_macro['ema20'] * 0.998) and (last_long['Close'] >= last_long['ema20'] * 0.998)
+                is_60m_bear = (last_macro['Close'] <= last_macro['ema20'] * 1.002) and (last_long['Close'] <= last_long['ema20'] * 1.002)
 
-            tqqq_dip_ok = (row_l.get('VWAP_Diff', 0) <= 1.5) and (row_l.get('RSI_14', 50) <= 62.0)
-            sqqq_dip_ok = (row_s.get('VWAP_Diff', 0) <= 1.5) and (row_s.get('RSI_14', 50) <= 62.0)
+            long_dip_ok = (row_l.get('VWAP_Diff', 0) <= 1.5) and (row_l.get('RSI_14', 50) <= 62.0)
+            short_dip_ok = (row_s.get('VWAP_Diff', 0) <= 1.5) and (row_s.get('RSI_14', 50) <= 62.0)
 
-            if is_60m_bull and tqqq_dip_ok:
+            if is_60m_bull and long_dip_ok:
                 expert_sig = 1
-                direction = "LONG_TQQQ"
-            elif is_60m_bear and sqqq_dip_ok:
+                direction = "LONG"
+            elif is_60m_bear and short_dip_ok:
                 expert_sig = -1
-                direction = "SHORT_SQQQ"
+                direction = "SHORT"
 
         return {
             "top_expert": top_expert,
@@ -244,34 +245,34 @@ def run_precision_sweep():
         entry_conf = 0.0
 
         for day_str in unique_dates:
-            day_tqqq = tqqq_15m[tqqq_15m['date'] == day_str].reset_index(drop=True)
-            day_sqqq = sqqq_15m[sqqq_15m['date'] == day_str].reset_index(drop=True)
-            if len(day_tqqq) < 5 or len(day_sqqq) < 5:
+            day_long = long_15m[long_15m['date'] == day_str].reset_index(drop=True)
+            day_short = short_15m[short_15m['date'] == day_str].reset_index(drop=True)
+            if len(day_long) < 5 or len(day_short) < 5:
                 continue
 
-            num_bars = min(len(day_tqqq), len(day_sqqq))
+            num_bars = min(len(day_long), len(day_short))
 
             for b_idx in range(num_bars):
-                row_l = tqqq_feat[tqqq_feat['date'] == day_str].iloc[b_idx]
-                row_s = sqqq_feat[sqqq_feat['date'] == day_str].iloc[b_idx]
+                row_l = long_feat[long_feat['date'] == day_str].iloc[b_idx]
+                row_s = short_feat[short_feat['date'] == day_str].iloc[b_idx]
                 bar_dt = row_l['datetime']
                 time_str = bar_dt.split(" ")[1][:5]
 
                 sub_vix = vix_15m[vix_15m['datetime'] <= bar_dt]
                 cur_vix = float(sub_vix.iloc[-1]['Close']) if not sub_vix.empty else 16.5
-                tqqq_sub = tqqq_15m[tqqq_15m['datetime'] <= bar_dt].tail(30)
+                long_sub = long_15m[long_15m['datetime'] <= bar_dt].tail(30)
                 nvda_sub = nvda_15m[nvda_15m['datetime'] <= bar_dt].tail(30)
                 qqq_sub = qqq_15m[qqq_15m['datetime'] <= bar_dt].tail(30)
-                soxx_sub = soxx_15m[soxx_15m['datetime'] <= bar_dt].tail(30)
+                macro_sub = macro_15m[macro_15m['datetime'] <= bar_dt].tail(30)
                 tnx_sub = tnx_15m[tnx_15m['datetime'] <= bar_dt].tail(30)
 
-                soxx_60_sub = soxx_60m[soxx_60m.index <= row_l.name]
-                tqqq_60_sub = tqqq_60m[tqqq_60m.index <= row_l.name]
+                macro_60_sub = macro_60m[macro_60m.index <= row_l.name]
+                long_60_sub = long_60m[long_60m.index <= row_l.name]
 
                 # 1. Exit Evaluation
                 if in_market and current_pos != "NONE":
                     bars_held += 1
-                    curr_row = row_l if current_pos == "TQQQ" else row_s
+                    curr_row = row_l if current_pos == config.BASE_ASSET_LONG else row_s
                     curr_h = float(curr_row['High'])
                     curr_l = float(curr_row['Low'])
                     curr_c = float(curr_row['Close'])
@@ -330,15 +331,15 @@ def run_precision_sweep():
 
                     eval_res = orchestrator.evaluate_bar(
                         b_idx, bar_dt, time_str, cur_vix, row_l, row_s,
-                        tqqq_sub, nvda_sub, qqq_sub, soxx_sub, tnx_sub,
-                        soxx_60_sub, tqqq_60_sub
+                        long_sub, nvda_sub, qqq_sub, macro_sub, tnx_sub,
+                        macro_60_sub, long_60_sub
                     )
 
                     # Check Sigmoid Threshold: top_confidence >= T and valid expert signal
                     if eval_res["gating_confidence"] >= T and eval_res["expert_sig"] != 0 and eval_res["direction"] != "NONE":
                         in_market = True
-                        current_pos = "TQQQ" if eval_res["direction"] == "LONG_TQQQ" else "SQQQ"
-                        entry_row = row_l if current_pos == "TQQQ" else row_s
+                        current_pos = config.BASE_ASSET_LONG if eval_res["direction"] == "LONG" else config.BASE_ASSET_SHORT
+                        entry_row = row_l if current_pos == config.BASE_ASSET_LONG else row_s
                         entry_price = float(entry_row['Close'])
                         entry_time = bar_dt
                         bars_held = 0

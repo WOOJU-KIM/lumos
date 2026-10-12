@@ -2,6 +2,7 @@ import os
 import sys
 import sqlite3
 import json
+import config
 import pandas as pd
 import numpy as np
 from pathlib import Path
@@ -30,7 +31,7 @@ def run_live_identical_backtest():
     db_path = DATA_DIR / "market_data.db"
     conn = sqlite3.connect(db_path)
     
-    symbols = ["TQQQ", "SQQQ", "NVDA", "QQQ", "SOXX", "^VIX", "^TNX"]
+    symbols = [config.BASE_ASSET_LONG, config.BASE_ASSET_SHORT, "NVDA", "QQQ", config.MACRO_TREND_SYMBOL, "^VIX", "^TNX"]
     data_15m = {}
     for s in symbols:
         df = pd.read_sql_query(
@@ -43,14 +44,14 @@ def run_live_identical_backtest():
 
     conn.close()
 
-    tqqq_df = data_15m["TQQQ"]
+    long_df = data_15m[config.BASE_ASSET_LONG]
     print(f"📊 [데이터 적재 현황]")
-    print(f"   • 시작 시각: {tqqq_df['datetime'].iloc[0]} ➔ 종료 시각: {tqqq_df['datetime'].iloc[-1]}")
-    print(f"   • 총 15분봉 캔들 수: {len(tqqq_df):,}개 (약 3개월 전 구간)")
+    print(f"   • 시작 시각: {long_df['datetime'].iloc[0]} ➔ 종료 시각: {long_df['datetime'].iloc[-1]}")
+    print(f"   • 총 15분봉 캔들 수: {len(long_df):,}개 (약 3개월 전 구간)")
 
     # 2. 날짜별 인덱싱 (뉴욕 정규장 09:30 ~ 16:00)
-    tqqq_df['date_str'] = tqqq_df['datetime'].dt.strftime('%Y-%m-%d')
-    unique_dates = sorted(tqqq_df['date_str'].unique())
+    long_df['date_str'] = long_df['datetime'].dt.strftime('%Y-%m-%d')
+    unique_dates = sorted(long_df['date_str'].unique())
 
     print(f"   • 총 거래일 수: {len(unique_dates)}일")
 
@@ -81,16 +82,16 @@ def run_live_identical_backtest():
 
     for date_idx, d_str in enumerate(unique_dates):
         # 당일 캔들 슬라이스
-        day_tqqq = tqqq_df[tqqq_df['date_str'] == d_str].reset_index(drop=True)
-        if len(day_tqqq) < 5:
+        day_long = long_df[long_df['date_str'] == d_str].reset_index(drop=True)
+        if len(day_long) < 5:
             continue
 
         active_pos = None  # 당일 포지션 관리
 
-        for b_idx in range(len(day_tqqq)):
-            row = day_tqqq.iloc[b_idx]
+        for b_idx in range(len(day_long)):
+            row = day_long.iloc[b_idx]
             bar_time = row['datetime'].strftime('%H:%M')
-            cur_tqqq_px = row['Close']
+            cur_long_px = row['Close']
             
             # [A] 보유 포지션이 있는 경우 ➔ 실시간 청산 관리 (TP / SL / TimeStop / EOD)
             if active_pos is not None:
@@ -99,17 +100,17 @@ def run_live_identical_backtest():
                 bars_held = b_idx - active_pos['entry_bar_idx']
                 
                 # 심볼별 당일 현재가 추적
-                if sym == 'TQQQ':
+                if sym == config.BASE_ASSET_LONG:
                     cur_h = row['High']
                     cur_l = row['Low']
                     cur_c = row['Close']
                 else:
                     # SQQQ 데이터 매칭
-                    sqqq_day = data_15m['SQQQ'][data_15m['SQQQ']['datetime'] == row['datetime']]
-                    if not sqqq_day.empty:
-                        cur_h = sqqq_day['High'].iloc[0]
-                        cur_l = sqqq_day['Low'].iloc[0]
-                        cur_c = sqqq_day['Close'].iloc[0]
+                    short_day = data_15m[config.BASE_ASSET_SHORT][data_15m[config.BASE_ASSET_SHORT]['datetime'] == row['datetime']]
+                    if not short_day.empty:
+                        cur_h = short_day['High'].iloc[0]
+                        cur_l = short_day['Low'].iloc[0]
+                        cur_c = short_day['Close'].iloc[0]
                     else:
                         cur_h = cur_l = cur_c = buy_px
 
@@ -133,7 +134,7 @@ def run_live_identical_backtest():
                     exit_triggered = True
                     exit_reason = "⏰ 90분 타임스탑"
                     exit_price = round(cur_c - SLIPPAGE_PAYUP, 2)
-                elif b_idx >= len(day_tqqq) - 1 or bar_time >= "15:45":
+                elif b_idx >= len(day_long) - 1 or bar_time >= "15:45":
                     exit_triggered = True
                     exit_reason = "🌙 장마감 청산 (오버나잇 0%)"
                     exit_price = round(cur_c - SLIPPAGE_PAYUP, 2)
@@ -178,27 +179,27 @@ def run_live_identical_backtest():
             # [B] 포지션이 없고 신규 진입 윈도우인 경우 (09:30 ~ 14:30 NYT)
             if active_pos is None and bar_time <= "14:30":
                 # 과거 60개 캔들 슬라이스
-                global_idx = tqqq_df[tqqq_df['datetime'] == row['datetime']].index[0]
+                global_idx = long_df[long_df['datetime'] == row['datetime']].index[0]
                 if global_idx >= 60:
-                    tqqq_sub = tqqq_df.iloc[global_idx-59:global_idx+1].copy()
+                    long_sub = long_df.iloc[global_idx-59:global_idx+1].copy()
                     
                     # MoE 오케스트레이터 평가
                     cur_t_str = row['datetime'].strftime("%Y-%m-%d %H:%M:%S")
-                    moe_res = moe.evaluate_dual_filter_signal(tqqq_sub, current_time_str=cur_t_str, threshold=CONFIDENCE_THRESHOLD)
+                    moe_res = moe.evaluate_dual_filter_signal(long_sub, current_time_str=cur_t_str, threshold=CONFIDENCE_THRESHOLD)
                     
                     is_approved = moe_res.get("is_approved", False)
                     direction = moe_res.get("direction", "NONE")
                     top_conf = moe_res.get("gating_confidence", 0.0)
                     selected_exp = moe_res.get("expert_desc", "MoE")
 
-                    if is_approved and direction in ["LONG_TQQQ", "SHORT_SQQQ"]:
-                        winner_sym = "TQQQ" if direction == "LONG_TQQQ" else "SQQQ"
+                    if is_approved and direction in ["LONG", "SHORT"]:
+                        winner_sym = config.BASE_ASSET_LONG if direction == "LONG" else config.BASE_ASSET_SHORT
                         
-                        if winner_sym == "TQQQ":
-                            base_px = cur_tqqq_px
+                        if winner_sym == config.BASE_ASSET_LONG:
+                            base_px = cur_long_px
                         else:
-                            sqqq_m = data_15m['SQQQ'][data_15m['SQQQ']['datetime'] == row['datetime']]
-                            base_px = sqqq_m['Close'].iloc[0] if not sqqq_m.empty else 40.0
+                            short_m = data_15m[config.BASE_ASSET_SHORT][data_15m[config.BASE_ASSET_SHORT]['datetime'] == row['datetime']]
+                            base_px = short_m['Close'].iloc[0] if not short_m.empty else 40.0
 
                         entry_px = round(base_px + SLIPPAGE_PAYUP, 2)
                         shares = int(capital / entry_px)

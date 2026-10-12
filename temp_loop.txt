@@ -1,0 +1,60 @@
+    max_drawdown = 0.0
+    trades = []
+    weekly_results = []
+    
+    CONFIDENCE_THRESHOLD = config.GBDT_CONFIDENCE_THRESHOLD
+    MAX_TP_PCT = config.MAX_TP_PCT
+    SL_MIN = config.SL_MIN_PCT
+    SL_MAX = config.SL_MAX_PCT
+    SL_ATR_MULT = config.SL_ATR_MULTIPLIER
+    TRAILING_TRIGGER = config.TRAILING_TRIGGER_PCT
+    TRAILING_DROP = config.TRAILING_DROP_PCT
+    TIME_STOP_BARS = int(config.TIME_STOP_MINUTES / 15)
+    SLIPPAGE_PAYUP = config.BUY_SLIPPAGE_ADJUST
+    SELL_SLIPPAGE = config.SELL_SLIPPAGE_ADJUST
+    FEE = config.BACKTEST_FEE_SLIPPAGE
+    ALLOC_RATIO = config.MAX_ALLOCATION_RATIO
+    RSI_OB = config.RSI_OVERBOUGHT_THRESHOLD
+    RSI_OS = config.RSI_OVERSOLD_THRESHOLD
+
+    min_date = master['Datetime'].min()
+    max_date = master['Datetime'].max()
+    test_start = min_date + timedelta(days=730)
+    while test_start.weekday() != 0: test_start += timedelta(days=1)
+    test_start = test_start.replace(hour=0, minute=0, second=0)
+
+    print("\n⏳ [3/4] Walk-Forward 롤링 백테스트 초고속 실행 중...", flush=True)
+    
+    dates = master['Datetime'].values
+    times = master['Datetime'].dt.strftime('%H:%M').values
+    c_tqqq = master['Close'].values
+    h_tqqq = master['High'].values
+    l_tqqq = master['Low'].values
+    c_sqqq = master['SQQQ_Close'].values
+    h_sqqq = master['SQQQ_High'].values
+    l_sqqq = master['SQQQ_Low'].values
+
+    # 크로스에셋 수익률 계산 후 master에 머지
+    df_nvda = all_data["15m"]["NVDA"][['Datetime', 'Close']].copy().reset_index(drop=True)
+    df_nvda['nvda_ret5'] = df_nvda['Close'] / df_nvda['Close'].shift(5) - 1.0
+    master = master.merge(df_nvda[['Datetime', 'nvda_ret5']], on='Datetime', how='left')
+
+    df_qqq = all_data["15m"]["QQQ"][['Datetime', 'Close']].copy().reset_index(drop=True)
+    df_qqq['qqq_ret5'] = df_qqq['Close'] / df_qqq['Close'].shift(5) - 1.0
+    master = master.merge(df_qqq[['Datetime', 'qqq_ret5']], on='Datetime', how='left')
+
+    df_vixy = all_data["15m"]["VIXY"][['Datetime', 'Close']].copy().reset_index(drop=True)
+    df_vixy['vixy_ret5'] = df_vixy['Close'] / df_vixy['Close'].shift(5) - 1.0
+    master = master.merge(df_vixy[['Datetime', 'vixy_ret5']], on='Datetime', how='left')
+
+    master['nvda_ret5'] = master['nvda_ret5'].ffill().fillna(0)
+    master['qqq_ret5'] = master['qqq_ret5'].ffill().fillna(0)
+    master['vixy_ret5'] = master['vixy_ret5'].ffill().fillna(0)
+    master['soxx_ret5'] = master['SOXX_Close'] / master['SOXX_Close'].shift(5) - 1.0
+
+    macro_score = (master['nvda_ret5'] * 0.40) + (master['soxx_ret5'] * 0.30) + (master['qqq_ret5'] * 0.20) - (master['vixy_ret5'] * 0.10)
+    dislocation = macro_score * 3.0 - master['tqqq_ret5']
+    
+    is_60m_trend_long = master['SOXX_Close'] >= master['soxx_ema20_60m'] * 0.998
+    is_60m_trend_short = master['SOXX_Close'] <= master['soxx_ema20_60m'] * 1.002
+    rsi_14 = master['RSI_14'].values

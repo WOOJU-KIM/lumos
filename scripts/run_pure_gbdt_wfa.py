@@ -11,6 +11,7 @@
 import os, sys, json, time
 from pathlib import Path
 import numpy as np
+import config
 import pandas as pd
 from lightgbm import LGBMClassifier
 
@@ -38,7 +39,7 @@ CUT_ENTRY = "14:30"
 CUT_EOD   = "15:45"
 CONFS     = [0.60, 0.62, 0.64]
 
-def run_conf_wfa(df_feat, tqqq_5m_d, sqqq_5m_d, unique_weeks, fcols, conf_thr, label):
+def run_conf_wfa(df_feat, long_5m_d, short_5m_d, unique_weeks, fcols, conf_thr, label):
     """단일 conf 임계값으로 WFA 시뮬레이션 (GBDT 단일 트리거)"""
     print(f"\n{'='*90}\n[{label}] conf>={conf_thr*100:.0f}% WFA 시작\n{'='*90}")
     t0   = time.time()
@@ -85,10 +86,10 @@ def run_conf_wfa(df_feat, tqqq_5m_d, sqqq_5m_d, unique_weeks, fcols, conf_thr, l
         for i in range(len(dts_wk)):
             ps, pn, pl = p_s[i], p_n[i], p_l[i]
             if pl > pn and pl > ps:
-                gbdt_dirs.append("LONG_TQQQ")
+                gbdt_dirs.append("LONG")
                 gbdt_confs.append(min(0.95, max(0.50, 0.50+(pl-0.333)*1.15)))
             elif ps > pn and ps > pl:
-                gbdt_dirs.append("SHORT_SQQQ")
+                gbdt_dirs.append("SHORT")
                 gbdt_confs.append(min(0.95, max(0.50, 0.50+(ps-0.333)*1.15)))
             else:
                 gbdt_dirs.append("NONE"); gbdt_confs.append(0.50)
@@ -116,21 +117,21 @@ def run_conf_wfa(df_feat, tqqq_5m_d, sqqq_5m_d, unique_weeks, fcols, conf_thr, l
                 gbdt_conf = float(row["gbdt_conf"])
 
                 # 오직 GBDT 방향과 신뢰도로만 진입 결정 (필터 일체 없음)
-                if gbdt_dir not in ("LONG_TQQQ","SHORT_SQQQ") or gbdt_conf < conf_thr:
+                if gbdt_dir not in ("LONG","SHORT") or gbdt_conf < conf_thr:
                     b_idx += 1; continue
 
-                sym = "TQQQ" if gbdt_dir=="LONG_TQQQ" else "SQQQ"
+                sym = config.BASE_ASSET_LONG if gbdt_dir=="LONG" else config.BASE_ASSET_SHORT
                 
                 # SHORT_SQQQ인 경우 SQQQ 가격 확인 로직을 위해 원래는 SQQQ 데이터를 조회해야 하나
-                # 여기서는 TQQQ 데이터셋을 루프 돌고 있으므로, 진입가를 찾기 위해 sqqq_5m_d 사용
-                if sym == "TQQQ":
+                # 여기서는 TQQQ 데이터셋을 루프 돌고 있으므로, 진입가를 찾기 위해 short_5m_d 사용
+                if sym == config.BASE_ASSET_LONG:
                     base_px = float(row["Close"])
                 else:
-                    d5_sqqq = sqqq_5m_d.get(d_str, pd.DataFrame())
-                    sqqq_at_time = d5_sqqq[d5_sqqq["datetime"] <= cur_dt]
-                    if sqqq_at_time.empty:
+                    d5_short = short_5m_d.get(d_str, pd.DataFrame())
+                    short_at_time = d5_short[d5_short["datetime"] <= cur_dt]
+                    if short_at_time.empty:
                         b_idx += 1; continue
-                    base_px = float(sqqq_at_time.iloc[-1]["Close"])
+                    base_px = float(short_at_time.iloc[-1]["Close"])
 
                 entry_px = round(base_px + SLIP, 2)
                 shares   = int(cap / entry_px)
@@ -139,7 +140,7 @@ def run_conf_wfa(df_feat, tqqq_5m_d, sqqq_5m_d, unique_weeks, fcols, conf_thr, l
                     b_idx += 1; continue
 
                 # 5분봉 Path Dissection
-                day5 = tqqq_5m_d.get(d_str, pd.DataFrame()) if sym=="TQQQ" else sqqq_5m_d.get(d_str, pd.DataFrame())
+                day5 = long_5m_d.get(d_str, pd.DataFrame()) if sym==config.BASE_ASSET_LONG else short_5m_d.get(d_str, pd.DataFrame())
                 if day5.empty:
                     b_idx += 1; continue
                 post5 = day5[day5["datetime"] > cur_dt]
@@ -229,17 +230,17 @@ def main():
     ml   = MLFeatureEngine() # 여기에 CrossAsset 피처 포함됨
 
     print("="*90+"\n📦 데이터 로드 및 피처 추출 (순수 GBDT)\n"+"="*90)
-    tqqq_15m = lake.load_candles("TQQQ","15m").sort_values("datetime").reset_index(drop=True)
-    tqqq_5m  = lake.load_candles("TQQQ","5m").sort_values("datetime").reset_index(drop=True)
-    sqqq_5m  = lake.load_candles("SQQQ","5m").sort_values("datetime").reset_index(drop=True)
+    long_15m = lake.load_candles(config.BASE_ASSET_LONG,"15m").sort_values("datetime").reset_index(drop=True)
+    long_5m  = lake.load_candles(config.BASE_ASSET_LONG,"5m").sort_values("datetime").reset_index(drop=True)
+    short_5m  = lake.load_candles(config.BASE_ASSET_SHORT,"5m").sort_values("datetime").reset_index(drop=True)
 
-    for df in [tqqq_15m, tqqq_5m, sqqq_5m]:
+    for df in [long_15m, long_5m, short_5m]:
         df["datetime_dt"] = pd.to_datetime(df["datetime"])
         df["date_str"]    = df["datetime_dt"].dt.strftime("%Y-%m-%d")
         df["time_str"]    = df["datetime_dt"].dt.strftime("%H:%M")
 
     print("⏳ MLFeatureEngine 피처 추출 중 (CrossAsset 내부 계산 포함)...")
-    df_feat = ml.extract_features(tqqq_15m)
+    df_feat = ml.extract_features(long_15m)
     df_feat["datetime_dt"] = pd.to_datetime(df_feat["datetime"])
     df_feat["date_str"] = df_feat["datetime_dt"].dt.strftime("%Y-%m-%d")
     df_feat["time_str"] = df_feat["datetime_dt"].dt.strftime("%H:%M")
@@ -251,8 +252,8 @@ def main():
     fcols = [c for c in df_feat.columns if c not in EX and pd.api.types.is_numeric_dtype(df_feat[c])]
     print(f"📊 사용된 피처 수: {len(fcols)}개 (CrossAsset 반환값 등 모두 GBDT가 학습)")
 
-    tqqq_5m_d = {d:g for d,g in tqqq_5m.groupby("date_str")}
-    sqqq_5m_d = {d:g for d,g in sqqq_5m.groupby("date_str")}
+    long_5m_d = {d:g for d,g in long_5m.groupby("date_str")}
+    short_5m_d = {d:g for d,g in short_5m.groupby("date_str")}
 
     wks = sorted(df_feat["week_id"].unique())
     n_oos = len(wks) - ROLL_WKS
@@ -261,7 +262,7 @@ def main():
     all_res = []
     for conf in CONFS:
         lbl = f"Conf≥{int(conf*100)}%"
-        res = run_conf_wfa(df_feat, tqqq_5m_d, sqqq_5m_d, wks, fcols, conf, lbl)
+        res = run_conf_wfa(df_feat, long_5m_d, short_5m_d, wks, fcols, conf, lbl)
         res = summarize(res); all_res.append(res)
 
     print("\n\n"+"="*90)

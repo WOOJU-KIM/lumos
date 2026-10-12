@@ -2,6 +2,7 @@ import os
 import sys
 import shutil
 import joblib
+import config
 import pandas as pd
 import numpy as np
 from pathlib import Path
@@ -62,10 +63,10 @@ def run_cold_start_v5():
     # [2단계: 실전 메인 챔피언 및 골든 베이스라인 직렬화]
     # ----------------------------------------------------
     print("\n⏳ [2/6] Track 0: 실전 메인 챔피언 및 골든 베이스라인 모델 생성...")
-    tqqq_15m = data_lake.load_candles("TQQQ", "15m")
+    long_15m = data_lake.load_candles(config.BASE_ASSET_LONG, "15m")
     ml_engine = MLFeatureEngine(confidence_threshold=0.40)
-    tqqq_feat = ml_engine.extract_features(tqqq_15m)
-    trained_model, top_10, _ = ml_engine.train_and_select_top_features(tqqq_feat)
+    long_feat = ml_engine.extract_features(long_15m)
+    trained_model, top_10, _ = ml_engine.train_and_select_top_features(long_feat)
 
     registry.register_model(
         model_id="M-20260815-GOLDEN-V1",

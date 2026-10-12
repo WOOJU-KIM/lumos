@@ -8,6 +8,7 @@ import os
 import sys
 import joblib
 import numpy as np
+import config
 import pandas as pd
 from pathlib import Path
 from typing import Dict, Any, List, Optional
@@ -80,7 +81,7 @@ class PowerHourSniper:
     def train_and_save(self, df_5m: Optional[pd.DataFrame] = None) -> LGBMClassifier:
         """5분봉 데이터로 Triple Barrier (+2.5% / -1.67% / 30m) 라벨링 후 모델 학습 및 저장"""
         if df_5m is None:
-            df_5m = self.data_lake.load_candles("TQQQ", "5m")
+            df_5m = self.data_lake.load_candles(config.BASE_ASSET_LONG, "5m")
 
         df_5m = df_5m.copy()
         if 'datetime' in df_5m.columns:
@@ -208,13 +209,13 @@ class PowerHourSniper:
         direction = "NONE"
         confidence = p_flat
         if p_long >= p_short and p_long >= p_flat:
-            direction = "LONG_TQQQ"
+            direction = "LONG"
             confidence = p_long
         elif p_short >= p_long and p_short >= p_flat:
-            direction = "SHORT_SQQQ"
+            direction = "SHORT"
             confidence = p_short
 
-        is_gbdt_trigger = (direction in ["LONG_TQQQ", "SHORT_SQQQ"]) and (confidence >= T)
+        is_gbdt_trigger = (direction in ["LONG", "SHORT"]) and (confidence >= T)
 
         # 🛡️ Cross-Asset Veto 방패 검증 (선행 매크로 상충 역풍 차단)
         is_cross_veto = False
@@ -224,45 +225,45 @@ class PowerHourSniper:
             if current_time_str:
                 nvda_5m = self.data_lake.load_candles("NVDA", "5m", end_dt=current_time_str)
                 qqq_5m = self.data_lake.load_candles("QQQ", "5m", end_dt=current_time_str)
-                soxx_5m = self.data_lake.load_candles("SOXX", "5m", end_dt=current_time_str)
+                macro_5m = self.data_lake.load_candles(config.MACRO_TREND_SYMBOL, "5m", end_dt=current_time_str)
                 vix_5m = self.data_lake.load_candles("^VIX", "5m", end_dt=current_time_str)
             else:
                 nvda_5m = self.data_lake.load_candles("NVDA", "5m")
                 qqq_5m = self.data_lake.load_candles("QQQ", "5m")
-                soxx_5m = self.data_lake.load_candles("SOXX", "5m")
+                macro_5m = self.data_lake.load_candles(config.MACRO_TREND_SYMBOL, "5m")
                 vix_5m = self.data_lake.load_candles("^VIX", "5m")
 
             if not nvda_5m.empty and not qqq_5m.empty and not vix_5m.empty:
                 n_c = nvda_5m['Close'] if 'Close' in nvda_5m else nvda_5m['close']
                 q_c = qqq_5m['Close'] if 'Close' in qqq_5m else qqq_5m['close']
                 v_c = vix_5m['Close'] if 'Close' in vix_5m else vix_5m['close']
-                soxx_c = soxx_5m['Close'] if 'Close' in soxx_5m else soxx_5m['close'] if not soxx_5m.empty else n_c
+                macro_c = macro_5m['Close'] if 'Close' in macro_5m else macro_5m['close'] if not macro_5m.empty else n_c
                 s_c = df_candle_5m['Close'] if 'Close' in df_candle_5m else df_candle_5m['close']
 
                 nvda_r = float(n_c.iloc[-1] / n_c.iloc[-5] - 1.0)
                 qqq_r = float(q_c.iloc[-1] / q_c.iloc[-5] - 1.0)
                 vix_r = float(v_c.iloc[-1] / v_c.iloc[-5] - 1.0)
-                soxx_r = float(soxx_c.iloc[-1] / soxx_c.iloc[-5] - 1.0) if not soxx_5m.empty else nvda_r
-                tqqq_r = float(s_c.iloc[-1] / s_c.iloc[-5] - 1.0)
+                macro_r = float(macro_c.iloc[-1] / macro_c.iloc[-5] - 1.0) if not macro_5m.empty else nvda_r
+                long_r = float(s_c.iloc[-1] / s_c.iloc[-5] - 1.0)
 
                 sig_code, exp_conf, _ = self.cross_asset_model.predict_signal(
-                    tqqq_ret=tqqq_r,
+                    long_ret=long_r,
                     nvda_ret=nvda_r,
-                    soxx_ret=soxx_r,
+                    macro_ret=macro_r,
                     qqq_ret=qqq_r,
                     vix_ret=vix_r,
                     tnx_ret=0.0
                 )
                 conf_cross = exp_conf
                 if sig_code > 0:
-                    dir_cross = "LONG_TQQQ"
+                    dir_cross = "LONG"
                 elif sig_code < 0:
-                    dir_cross = "SHORT_SQQQ"
+                    dir_cross = "SHORT"
 
                 dir_gbdt = direction
                 is_cross_veto = (
-                    (dir_gbdt == "LONG_TQQQ" and dir_cross == "SHORT_SQQQ") or
-                    (dir_gbdt == "SHORT_SQQQ" and dir_cross == "LONG_TQQQ")
+                    (dir_gbdt == "LONG" and dir_cross == "SHORT") or
+                    (dir_gbdt == "SHORT" and dir_cross == "LONG")
                 )
                 if not getattr(config, "USE_CROSS_ASSET_VETO", True):
                     is_cross_veto = False
@@ -272,15 +273,15 @@ class PowerHourSniper:
         # Screen 1: 상위 60분봉 추세 정렬
         is_60m_trend_ok = True
         try:
-            soxx_60m = self.data_lake.load_candles("SOXX", "60m")
-            if not soxx_60m.empty and len(soxx_60m) >= 20:
-                s_c = soxx_60m['Close'] if 'Close' in soxx_60m else soxx_60m['close']
-                soxx_c = s_c.iloc[-1]
-                soxx_ema = s_c.ewm(span=20, adjust=False).mean().iloc[-1]
-                if direction == "LONG_TQQQ":
-                    is_60m_trend_ok = (soxx_c >= soxx_ema * 0.998)
-                elif direction == "SHORT_SQQQ":
-                    is_60m_trend_ok = (soxx_c <= soxx_ema * 1.002)
+            macro_60m = self.data_lake.load_candles(config.MACRO_TREND_SYMBOL, "60m")
+            if not macro_60m.empty and len(macro_60m) >= 20:
+                s_c = macro_60m['Close'] if 'Close' in macro_60m else macro_60m['close']
+                macro_c = s_c.iloc[-1]
+                macro_ema = s_c.ewm(span=20, adjust=False).mean().iloc[-1]
+                if direction == "LONG":
+                    is_60m_trend_ok = (macro_c >= macro_ema * 0.998)
+                elif direction == "SHORT":
+                    is_60m_trend_ok = (macro_c <= macro_ema * 1.002)
         except Exception:
             pass
 
@@ -290,9 +291,9 @@ class PowerHourSniper:
         # Screen 3: 단기 5분봉 과열 필터
         rsi_5m = float(last_row.get("RSI_14", 50.0))
         is_dip_ok = True
-        if direction == "LONG_TQQQ" and rsi_5m > 68.0:
+        if direction == "LONG" and rsi_5m > 68.0:
             is_dip_ok = False
-        elif direction == "SHORT_SQQQ" and rsi_5m < 32.0:
+        elif direction == "SHORT" and rsi_5m < 32.0:
             is_dip_ok = False
 
         is_approved = bool(is_gbdt_trigger and (not is_cross_veto) and is_60m_trend_ok and is_dip_ok)

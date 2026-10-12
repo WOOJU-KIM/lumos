@@ -31,22 +31,22 @@ from core.backtest_engine import GranularBacktestEngine
 
 def run_weekend_data_refresh():
     print("=" * 80)
-    print("🏛 [Lumos 주말 정기 데이터 최신화 (Data Refresh) 504 거래일 롤링 윈도우 파이프라인]")
+    print("🏛 [Lumos 주말 정기 데이터 최신화 (Data Refresh) 최대 10년 누적(Expanding Window) 파이프라인]")
     print(f"⏰ 실행 시각: {datetime.now().strftime('%Y-%m-%d %H:%M:%S KST')}")
     print("=" * 80)
-    system_logger.log("INFO", "DataRefresh", "🏛 주말 정기 데이터 최신화 504 거래일 롤링 윈도우 파이프라인 가동")
+    system_logger.log("INFO", "DataRefresh", "🏛 주말 정기 데이터 최신화 최대 10년 누적(Expanding Window) 파이프라인 가동")
 
     data_lake = MarketDataLake()
     registry = ModelRegistry()
 
-    # 1. 최근 504 거래일(Trading Days) 하드코딩 롤링 윈도우 쿼리 로드
-    print("\n⏳ [1/5] market_data.db에서 최근 504 거래일(2년) 롤링 윈도우 데이터 추출...")
-    df_15m = data_lake.load_rolling_candles("TQQQ", "15m", max_trading_days=config.ROLLING_TRAINING_WEEKS * 5)
+    # 1. 최대 10년 누적(Expanding Window) 롤링 윈도우 쿼리 로드
+    print("\n⏳ [1/5] market_data.db에서 최대 10년치 누적(Expanding Window) 롤링 윈도우 데이터 추출...")
+    df_15m = data_lake.load_candles(config.BASE_ASSET_LONG, "15m")
 
     if df_15m.empty or len(df_15m) < 100:
         print("⚠️ 로컬 DB 데이터 부족으로 Yahoo Finance에서 60일치 수집 후 재시도...")
-        data_lake.harvest_symbol("TQQQ", "15m", period="60d")
-        df_15m = data_lake.load_rolling_candles("TQQQ", "15m", max_trading_days=config.ROLLING_TRAINING_WEEKS * 5)
+        data_lake.harvest_symbol(config.BASE_ASSET_LONG, "15m", period="60d")
+        df_15m = data_lake.load_candles(config.BASE_ASSET_LONG, "15m")
 
     trading_days = sorted(df_15m.index.strftime('%Y-%m-%d').unique())
     num_days = len(trading_days)
@@ -54,9 +54,9 @@ def run_weekend_data_refresh():
     end_day = trading_days[-1] if trading_days else "N/A"
 
     print(f"   • 데이터 추출 완료: 총 {len(df_15m):,}개 15분봉 캔들")
-    print(f"   • 거래일 윈도우: {num_days}일 (최대 504일 고정 롤링)")
+    print(f"   • 거래일 윈도우: {num_days}일 (최대 10년 누적 Expanding)")
     print(f"   • 데이터 기간: {start_day} ~ {end_day}")
-    print(f"   • 꼬리 절삭(Drop) 메커니즘: 신규 1주일치 추가 시 2년 전 과거 데이터 자동 절삭 완료")
+    print(f"   • 꼬리 절삭(Drop) 메커니즘: 신규 1주일치 추가 시 모든 과거 데이터 보존 (절삭 없음)")
 
     # 2. 피처 추출 및 Triple Barrier 정답지 라벨링
     print("\n⏳ [2/5] 28개 종합 피처 추출 및 Triple Barrier (+3.0% TP / -2.0% SL / 90m) 라벨링...")
@@ -64,9 +64,9 @@ def run_weekend_data_refresh():
     feat_df = ml_engine.extract_features(df_15m)
     labels = MLFeatureEngine.compute_triple_barrier_labels(
         feat_df,
-        take_profit=config.MAX_TP_PCT,
+        take_profit=config.LABEL_TP_PCT,
         stop_loss=config.SL_MIN_PCT,
-        horizon=6
+        horizon=int(config.TIME_STOP_MINUTES / 15)
     )
     feat_df['Target'] = labels
 
@@ -114,12 +114,12 @@ def run_weekend_data_refresh():
     print(f"   ✅ [Lumos 레거시 안전 모델(100% 합의) 동시 최신화 완료] ➔ {safe_path.name}")
 
     today_str = datetime.now().strftime('%Y-%m-%d')
-    cand2_model_id = f"M-{datetime.now().strftime('%Y%m%d')}-REFRESH-504D"
+    cand2_model_id = f"M-{datetime.now().strftime('%Y%m%d')}-REFRESH-EXPANDING"
     print(f"   ✅ 단독 GBDT 모델 저장 완료: {cand2_path.name}, {main_refresh_path.name}")
 
     # [5] (비활성화됨) 기존에는 여기서 구모델과 경쟁(토너먼트)을 시켰으나, 사용자 요청으로 무조건 최신 롤링 모델을 사용합니다.
     print('\n' + '=' * 80)
-    print('✅ [Lumos 주말 504D 롤링 학습 및 실전 모델 즉시 교체 완료]')
+    print('✅ [Lumos 주말 최대 10년 누적 학습 및 실전 모델 즉시 교체 완료]')
     print('   -> 토너먼트 경쟁 없이 최신 롤링 모델(model_champion.pkl) 적용 완료')
     print('=' * 80)
 if __name__ == "__main__":

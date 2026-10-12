@@ -16,7 +16,7 @@ if sys.platform.startswith('win'):
 from config import DATA_DIR
 
 def run_monte_carlo_analysis(n_simulations: int = 20000, initial_capital: float = 10_000_000.0):
-    trade_logs_path = DATA_DIR / "wfa_tqqq_trades.csv"
+    trade_logs_path = DATA_DIR / "wfa_long_trades.csv"
     if not trade_logs_path.exists():
         raise FileNotFoundError(f"{trade_logs_path}가 존재하지 않습니다.")
 
@@ -34,7 +34,7 @@ def run_monte_carlo_analysis(n_simulations: int = 20000, initial_capital: float 
     print("=" * 105)
     print("🎲 [Lumos 퀀트 트레이딩 모델 몬테카를로 리스크 & 파산 확률 정밀 분석 보고서]")
     print("=" * 105)
-    print(f"📊 [입력 데이터 기초 통계 (data/wfa_tqqq_trades.csv 기준)]")
+    print(f"📊 [입력 데이터 기초 통계 (data/wfa_long_trades.csv 기준)]")
     print(f"- 총 백테스트 표본: {len(df)}회 거래 (TQQQ/SQQQ)")
     print(f"- 현재 모델 승률: {current_win_rate * 100:.2f}% ({len(wins)}승 / {len(losses)}패)")
     print(f"- 승리 시 평균 수익률: {avg_win * 100:+.2f}% (최대 +3.00%)")

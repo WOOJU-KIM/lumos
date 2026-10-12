@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import sqlite3
+import config
 import pandas as pd
 import numpy as np
 from pathlib import Path
@@ -31,68 +32,68 @@ def run_profit_protect_comparison():
 
     # 1. 다중 타임프레임 데이터 로드
     lake = MarketDataLake()
-    tqqq_15m = lake.load_rolling_candles('TQQQ', '15m', max_trading_days=504)
-    sqqq_15m = lake.load_rolling_candles('SQQQ', '15m', max_trading_days=504)
-    tqqq_5m  = lake.load_candles('TQQQ', '5m')
-    sqqq_5m  = lake.load_candles('SQQQ', '5m')
-    soxx_60m = lake.load_candles('SOXX', '60m')
-    tqqq_60m = lake.load_candles('TQQQ', '60m')
+    long_15m = lake.load_rolling_candles(config.BASE_ASSET_LONG, '15m', max_trading_days=504)
+    short_15m = lake.load_rolling_candles(config.BASE_ASSET_SHORT, '15m', max_trading_days=504)
+    long_5m  = lake.load_candles(config.BASE_ASSET_LONG, '5m')
+    short_5m  = lake.load_candles(config.BASE_ASSET_SHORT, '5m')
+    macro_60m = lake.load_candles(config.MACRO_TREND_SYMBOL, '60m')
+    long_60m = lake.load_candles(config.BASE_ASSET_LONG, '60m')
     nvda_15m = lake.load_candles('NVDA', '15m')
     qqq_15m  = lake.load_candles('QQQ', '15m')
     vix_15m  = lake.load_candles('^VIX', '15m')
 
-    for df in [tqqq_15m, sqqq_15m, tqqq_5m, sqqq_5m, soxx_60m, tqqq_60m, nvda_15m, qqq_15m, vix_15m]:
+    for df in [long_15m, short_15m, long_5m, short_5m, macro_60m, long_60m, nvda_15m, qqq_15m, vix_15m]:
         df['date_str'] = df.index.strftime('%Y-%m-%d')
         df['time_str'] = df.index.strftime('%H:%M')
 
-    unique_dates = sorted(tqqq_15m['date_str'].unique())
+    unique_dates = sorted(long_15m['date_str'].unique())
     num_days = len(unique_dates)
     num_months = num_days / 21.0
 
     # 2. 피처 사전 계산
-    soxx_60m['ema20'] = soxx_60m['Close'].ewm(span=20, adjust=False).mean()
-    tqqq_60m['ema20'] = tqqq_60m['Close'].ewm(span=20, adjust=False).mean()
+    macro_60m['ema20'] = macro_60m['Close'].ewm(span=20, adjust=False).mean()
+    long_60m['ema20'] = long_60m['Close'].ewm(span=20, adjust=False).mean()
 
     moe = MoEMetaOrchestrator()
-    tqqq_15m_feat = moe.gbdt_engine.extract_features(tqqq_15m)
-    tqqq_15m_feat = moe.gbdt_engine.add_confidence_columns(tqqq_15m_feat)
-    sqqq_15m_feat = moe.gbdt_engine.extract_features(sqqq_15m)
-    sqqq_15m_feat = moe.gbdt_engine.add_confidence_columns(sqqq_15m_feat)
+    long_15m_feat = moe.gbdt_engine.extract_features(long_15m)
+    long_15m_feat = moe.gbdt_engine.add_confidence_columns(long_15m_feat)
+    short_15m_feat = moe.gbdt_engine.extract_features(short_15m)
+    short_15m_feat = moe.gbdt_engine.add_confidence_columns(short_15m_feat)
 
     cross_mod = CrossAssetDislocationModel(dislocation_z_threshold=1.6)
     cross_sigs, cross_confs, cross_dirs = [], [], []
 
-    for i in range(len(tqqq_15m)):
-        t = tqqq_15m.index[i]
+    for i in range(len(long_15m)):
+        t = long_15m.index[i]
         past_nvda = nvda_15m[nvda_15m.index <= t]
         past_qqq  = qqq_15m[qqq_15m.index <= t]
         past_vix  = vix_15m[vix_15m.index <= t]
-        past_tqqq = tqqq_15m[tqqq_15m.index <= t]
+        past_long = long_15m[long_15m.index <= t]
         
         c_sig, c_conf, c_dir = 0, 0.50, "NONE"
-        if len(past_nvda) >= 5 and len(past_qqq) >= 5 and len(past_vix) >= 5 and len(past_tqqq) >= 5:
+        if len(past_nvda) >= 5 and len(past_qqq) >= 5 and len(past_vix) >= 5 and len(past_long) >= 5:
             n_r = float(past_nvda['Close'].iloc[-1] / past_nvda['Close'].iloc[-5] - 1.0)
             q_r = float(past_qqq['Close'].iloc[-1] / past_qqq['Close'].iloc[-5] - 1.0)
             v_r = float(past_vix['Close'].iloc[-1] / past_vix['Close'].iloc[-5] - 1.0)
-            s_r = float(past_tqqq['Close'].iloc[-1] / past_tqqq['Close'].iloc[-5] - 1.0)
+            s_r = float(past_long['Close'].iloc[-1] / past_long['Close'].iloc[-5] - 1.0)
             
             sig_code, exp_conf, _ = cross_mod.predict_signal(
-                tqqq_ret=s_r, nvda_ret=n_r, qqq_ret=q_r, soxx_ret=s_r, vix_ret=v_r, tnx_ret=0.0
+                long_ret=s_r, nvda_ret=n_r, qqq_ret=q_r, macro_ret=s_r, vix_ret=v_r, tnx_ret=0.0
             )
             c_sig = sig_code
             c_conf = exp_conf
             if sig_code > 0:
-                c_dir = "LONG_TQQQ"
+                c_dir = "LONG"
             elif sig_code < 0:
-                c_dir = "SHORT_SQQQ"
+                c_dir = "SHORT"
                 
         cross_sigs.append(c_sig)
         cross_confs.append(c_conf)
         cross_dirs.append(c_dir)
 
-    tqqq_15m_feat['cross_sig'] = cross_sigs
-    tqqq_15m_feat['cross_conf'] = cross_confs
-    tqqq_15m_feat['cross_dir'] = cross_dirs
+    long_15m_feat['cross_sig'] = cross_sigs
+    long_15m_feat['cross_conf'] = cross_confs
+    long_15m_feat['cross_dir'] = cross_dirs
 
     # 시뮬레이션 파라미터
     INITIAL_CAPITAL = 10_000_000.0
@@ -121,59 +122,59 @@ def run_profit_protect_comparison():
         equity_curve = [capital]
 
         for d_str in unique_dates:
-            day_tqqq_15 = tqqq_15m_feat[tqqq_15m_feat['date_str'] == d_str]
-            if len(day_tqqq_15) < 5:
+            day_long_15 = long_15m_feat[long_15m_feat['date_str'] == d_str]
+            if len(day_long_15) < 5:
                 continue
 
-            day_tqqq_5 = tqqq_5m[tqqq_5m['date_str'] == d_str]
-            day_sqqq_5 = sqqq_5m[sqqq_5m['date_str'] == d_str]
+            day_long_5 = long_5m[long_5m['date_str'] == d_str]
+            day_short_5 = short_5m[short_5m['date_str'] == d_str]
 
             b_idx = 0
-            n_bars = len(day_tqqq_15)
+            n_bars = len(day_long_15)
 
             while b_idx < n_bars:
-                cur_15m_time = day_tqqq_15.index[b_idx]
+                cur_15m_time = day_long_15.index[b_idx]
                 time_str = cur_15m_time.strftime('%H:%M')
 
                 if b_idx < 1 or time_str > "14:30":
                     b_idx += 1
                     continue
 
-                row_l = day_tqqq_15.iloc[b_idx]
-                row_s = sqqq_15m_feat.loc[cur_15m_time] if cur_15m_time in sqqq_15m_feat.index else None
+                row_l = day_long_15.iloc[b_idx]
+                row_s = short_15m_feat.loc[cur_15m_time] if cur_15m_time in short_15m_feat.index else None
 
                 # Screen 1
-                past_soxx = soxx_60m[soxx_60m.index <= cur_15m_time]
-                past_tqqq = tqqq_60m[tqqq_60m.index <= cur_15m_time]
+                past_macro = macro_60m[macro_60m.index <= cur_15m_time]
+                past_long = long_60m[long_60m.index <= cur_15m_time]
                 is_60m_bull = False
                 is_60m_bear = False
-                if len(past_soxx) >= 20 and len(past_tqqq) >= 20:
-                    soxx_c = past_soxx['Close'].iloc[-1]
-                    tqqq_c = past_tqqq['Close'].iloc[-1]
-                    soxx_ema = past_soxx['ema20'].iloc[-1]
-                    tqqq_ema = past_tqqq['ema20'].iloc[-1]
-                    is_60m_bull = (soxx_c >= soxx_ema * 0.998) and (tqqq_c >= tqqq_ema * 0.998)
-                    is_60m_bear = (soxx_c <= soxx_ema * 1.002)
+                if len(past_macro) >= 20 and len(past_long) >= 20:
+                    macro_c = past_macro['Close'].iloc[-1]
+                    long_c = past_long['Close'].iloc[-1]
+                    macro_ema = past_macro['ema20'].iloc[-1]
+                    long_ema = past_long['ema20'].iloc[-1]
+                    is_60m_bull = (macro_c >= macro_ema * 0.998) and (long_c >= long_ema * 0.998)
+                    is_60m_bear = (macro_c <= macro_ema * 1.002)
 
                 # Screen 3
                 vwap_diff_l = float(row_l.get("VWAP_Diff", 0.0))
                 rsi_14_l = float(row_l.get("RSI_14", 50.0))
                 bb_lower_l = float(row_l.get("BB_Lower", 0.0))
                 cur_close_l = float(row_l['Close'])
-                dip_ok_tqqq = (vwap_diff_l <= 1.5) and (rsi_14_l <= 62.0)
+                dip_ok_long = (vwap_diff_l <= 1.5) and (rsi_14_l <= 62.0)
                 if bb_lower_l > 0:
-                    dip_ok_tqqq = dip_ok_tqqq and (cur_close_l >= bb_lower_l * 1.001)
+                    dip_ok_long = dip_ok_long and (cur_close_l >= bb_lower_l * 1.001)
 
-                dip_ok_sqqq = False
+                dip_ok_short = False
                 cur_close_s = 40.0
                 if row_s is not None:
                     vwap_diff_s = float(row_s.get("VWAP_Diff", 0.0))
                     rsi_14_s = float(row_s.get("RSI_14", 50.0))
                     bb_lower_s = float(row_s.get("BB_Lower", 0.0))
                     cur_close_s = float(row_s['Close'])
-                    dip_ok_sqqq = (vwap_diff_s <= 1.5) and (rsi_14_s <= 62.0)
+                    dip_ok_short = (vwap_diff_s <= 1.5) and (rsi_14_s <= 62.0)
                     if bb_lower_s > 0:
-                        dip_ok_sqqq = dip_ok_sqqq and (cur_close_s >= bb_lower_s * 1.001)
+                        dip_ok_short = dip_ok_short and (cur_close_s >= bb_lower_s * 1.001)
 
                 # Dual Consensus
                 dir_cross = row_l['cross_dir']
@@ -184,15 +185,15 @@ def run_profit_protect_comparison():
                 chosen_symbol = None
                 entry_px = 0.0
 
-                if (dir_cross == "LONG_TQQQ" and dir_gbdt == "LONG_TQQQ" and
+                if (dir_cross == "LONG" and dir_gbdt == "LONG" and
                     conf_cross >= C_TH and conf_gbdt >= G_TH and
-                    is_60m_bull and dip_ok_tqqq):
-                    chosen_symbol = "TQQQ"
+                    is_60m_bull and dip_ok_long):
+                    chosen_symbol = config.BASE_ASSET_LONG
                     entry_px = cur_close_l
-                elif (dir_cross == "SHORT_SQQQ" and dir_gbdt == "SHORT_SQQQ" and
+                elif (dir_cross == "SHORT" and dir_gbdt == "SHORT" and
                       conf_cross >= C_TH and conf_gbdt >= G_TH and
-                      is_60m_bear and dip_ok_sqqq):
-                    chosen_symbol = "SQQQ"
+                      is_60m_bear and dip_ok_short):
+                    chosen_symbol = config.BASE_ASSET_SHORT
                     entry_px = cur_close_s
 
                 if chosen_symbol is None:
@@ -200,7 +201,7 @@ def run_profit_protect_comparison():
                     continue
 
                 # 5분봉 궤적 추적 청산 시뮬레이션
-                df_5m_target = day_tqqq_5 if chosen_symbol == "TQQQ" else day_sqqq_5
+                df_5m_target = day_long_5 if chosen_symbol == config.BASE_ASSET_LONG else day_short_5
                 post_5m = df_5m_target[df_5m_target.index > cur_15m_time]
                 if post_5m.empty:
                     b_idx += 1
@@ -319,9 +320,9 @@ def run_profit_protect_comparison():
                 })
 
                 if exit_5m_time:
-                    remaining_15m = day_tqqq_15[day_tqqq_15.index > exit_5m_time]
+                    remaining_15m = day_long_15[day_long_15.index > exit_5m_time]
                     if not remaining_15m.empty:
-                        b_idx = day_tqqq_15.index.get_loc(remaining_15m.index[0])
+                        b_idx = day_long_15.index.get_loc(remaining_15m.index[0])
                     else:
                         break
                 else:

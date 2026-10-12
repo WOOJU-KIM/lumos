@@ -1,4 +1,5 @@
 import os
+import config
 import sys
 from pathlib import Path
 
@@ -46,10 +47,10 @@ def run_cold_start():
     # [2단계: 24% 검증 모델 학습 및 불변 파일 생성]
     # ----------------------------------------------------
     print("\n⏳ [2/4] 24% 검증 챔피언 머신러닝 모델 학습 및 불변 파일 직렬화...")
-    tqqq_15m = data_lake.load_candles("TQQQ", "15m")
+    long_15m = data_lake.load_candles(config.BASE_ASSET_LONG, "15m")
     ml_engine = MLFeatureEngine(confidence_threshold=0.40)
-    tqqq_feat = ml_engine.extract_features(tqqq_15m)
-    trained_model, top_10, top_3 = ml_engine.train_and_select_top_features(tqqq_feat)
+    long_feat = ml_engine.extract_features(long_15m)
+    trained_model, top_10, top_3 = ml_engine.train_and_select_top_features(long_feat)
 
     # ----------------------------------------------------
     # [3단계: 모델 레지스트리 공식 등록 (M-20260815-GOLDEN-V1)]

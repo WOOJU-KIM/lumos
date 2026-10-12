@@ -4,6 +4,7 @@ import json
 import time
 import urllib.request
 import sqlite3
+import config
 import pandas as pd
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -23,7 +24,7 @@ load_dotenv(PROJECT_ROOT / ".env")
 from config import DATA_DIR
 
 DB_PATH = DATA_DIR / "market_data.db"
-SYMBOLS = ["SOXL", "SOXS", "TQQQ", "SQQQ", "SOXX", "NVDA", "QQQ", "VIXY", "IEF"]
+SYMBOLS = ["SOXL", "SOXS", config.BASE_ASSET_LONG, config.BASE_ASSET_SHORT, config.MACRO_TREND_SYMBOL, "NVDA", "QQQ", "VIXY", "IEF"]
 TIMEFRAMES = [("15m", "15Min"), ("5m", "5Min"), ("60m", "1Hour")]
 
 def fetch_alpaca_history(symbol: str, alpaca_tf: str, start_dt: str, end_dt: str):

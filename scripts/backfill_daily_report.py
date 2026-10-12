@@ -2,6 +2,7 @@ import os
 import sys
 import json
 from datetime import datetime, timedelta
+import config
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -22,11 +23,12 @@ def main():
     
     print("Loading historical TQQQ data to simulate past 3 months' realistic equity curve...")
     dl = MarketDataLake()
-    df = dl.load_candles('TQQQ', '15m')
+    df = dl.load_candles(config.BASE_ASSET_LONG, '15m')
     
     if df.empty:
         print("No historical data found. Falling back to synthetic mock data.")
-        dates = [datetime.now() - timedelta(days=i) for i in range(90)][::-1]
+        from zoneinfo import ZoneInfo
+        dates = [datetime.now(ZoneInfo("America/New_York")) - timedelta(days=i) for i in range(90)][::-1]
         history = []
         bal = current_balance * 0.8
         for d in dates:
@@ -63,7 +65,8 @@ def main():
                 "return_pct": round(returns[i] * 100, 2)
             })
             
-    today_date = datetime.now().strftime("%Y-%m-%d")
+    from zoneinfo import ZoneInfo
+    today_date = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
     
     if history[-1]['date'] != today_date:
         today_ret = 0.0
@@ -92,7 +95,8 @@ def main():
     }
     
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    inbox_dir = os.path.join(base_dir, "owl-editor", "inbox")
+    desktop_dir = os.path.dirname(base_dir) # lumos is in Desktop
+    inbox_dir = os.path.join(desktop_dir, "owl-editor", "inbox")
     os.makedirs(inbox_dir, exist_ok=True)
     report_path = os.path.join(inbox_dir, "lumos_daily_report.json")
     

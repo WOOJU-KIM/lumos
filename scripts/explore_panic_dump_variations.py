@@ -1,5 +1,6 @@
 import sqlite3
 import sys
+import config
 import pandas as pd
 import numpy as np
 
@@ -14,8 +15,8 @@ def explore_variations():
     conn = sqlite3.connect('data/market_data.db')
     
     # Load 5m TQQQ and SQQQ
-    df_l = pd.read_sql_query("SELECT datetime, open, high, low, close, volume FROM market_candles WHERE symbol='TQQQ' AND timeframe='5m' ORDER BY datetime ASC", conn)
-    df_s = pd.read_sql_query("SELECT datetime, open, high, low, close, volume FROM market_candles WHERE symbol='SQQQ' AND timeframe='5m' ORDER BY datetime ASC", conn)
+    df_l = pd.read_sql_query("SELECT datetime, open, high, low, close, volume FROM market_candles WHERE symbol=config.BASE_ASSET_LONG AND timeframe='5m' ORDER BY datetime ASC", conn)
+    df_s = pd.read_sql_query("SELECT datetime, open, high, low, close, volume FROM market_candles WHERE symbol=config.BASE_ASSET_SHORT AND timeframe='5m' ORDER BY datetime ASC", conn)
     
     df_l['datetime'] = pd.to_datetime(df_l['datetime'])
     df_l['date'] = df_l['datetime'].dt.strftime('%Y-%m-%d')

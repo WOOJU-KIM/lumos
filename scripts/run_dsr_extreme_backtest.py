@@ -1,6 +1,7 @@
 import os
 import sys
 import sqlite3
+import config
 import pandas as pd
 import numpy as np
 import random
@@ -51,7 +52,7 @@ def calculate_dsr(srs, best_sr, returns, n_trials):
     dsr = norm.cdf((best_sr - expected_max_sr) / psr_std)
     return dsr, expected_max_sr
 
-def run_single_backtest(tqqq_df, data_15m, params, moe):
+def run_single_backtest(long_df, data_15m, params, moe):
     INITIAL_CAPITAL = 10000.0
     CONF_TH = params['conf_th']
     TP_PCT = params['tp_pct']
@@ -64,16 +65,16 @@ def run_single_backtest(tqqq_df, data_15m, params, moe):
     equity_curve = [capital]
     returns = []
     
-    unique_dates = sorted(tqqq_df['date_str'].unique())
+    unique_dates = sorted(long_df['date_str'].unique())
     
     for d_str in unique_dates:
-        day_tqqq = tqqq_df[tqqq_df['date_str'] == d_str].reset_index(drop=True)
-        if len(day_tqqq) < 5:
+        day_long = long_df[long_df['date_str'] == d_str].reset_index(drop=True)
+        if len(day_long) < 5:
             continue
             
         active_pos = None
-        for b_idx in range(len(day_tqqq)):
-            row = day_tqqq.iloc[b_idx]
+        for b_idx in range(len(day_long)):
+            row = day_long.iloc[b_idx]
             bar_time = row['datetime'].strftime('%H:%M')
             cur_c = row['Close']
             
@@ -82,11 +83,11 @@ def run_single_backtest(tqqq_df, data_15m, params, moe):
                 sym = active_pos['symbol']
                 bars_held = b_idx - active_pos['entry_bar_idx']
                 
-                if sym == 'TQQQ':
+                if sym == config.BASE_ASSET_LONG:
                     cur_h = row['High']
                     cur_l = row['Low']
                 else:
-                    sq_df = data_15m['SQQQ'][data_15m['SQQQ']['datetime'] == row['datetime']]
+                    sq_df = data_15m[config.BASE_ASSET_SHORT][data_15m[config.BASE_ASSET_SHORT]['datetime'] == row['datetime']]
                     if not sq_df.empty:
                         cur_h = sq_df['High'].iloc[0]
                         cur_l = sq_df['Low'].iloc[0]
@@ -101,7 +102,7 @@ def run_single_backtest(tqqq_df, data_15m, params, moe):
                 if max_ret >= TP_PCT: exit_price = buy_px * (1 + TP_PCT) - SLIPPAGE
                 elif min_ret <= SL_PCT: exit_price = buy_px * (1 + SL_PCT) - SLIPPAGE
                 elif bars_held >= TIME_STOP_BARS: exit_price = cur_c - SLIPPAGE
-                elif b_idx >= len(day_tqqq) - 1 or bar_time >= "15:45": exit_price = cur_c - SLIPPAGE
+                elif b_idx >= len(day_long) - 1 or bar_time >= "15:45": exit_price = cur_c - SLIPPAGE
                 
                 if exit_price > 0:
                     pnl_amt = (active_pos['shares'] * (exit_price - buy_px)) - (active_pos['invested'] * FEE_RATE)
@@ -111,19 +112,19 @@ def run_single_backtest(tqqq_df, data_15m, params, moe):
                     active_pos = None
                     
             if active_pos is None and bar_time <= "14:30":
-                global_idx = tqqq_df[tqqq_df['datetime'] == row['datetime']].index[0]
+                global_idx = long_df[long_df['datetime'] == row['datetime']].index[0]
                 if global_idx >= 60:
-                    tqqq_sub = tqqq_df.iloc[global_idx-59:global_idx+1]
+                    long_sub = long_df.iloc[global_idx-59:global_idx+1]
                     cur_t_str = row['datetime'].strftime("%Y-%m-%d %H:%M:%S")
                     
                     # Call evaluate
-                    moe_res = moe.evaluate_dual_filter_signal(tqqq_sub, current_time_str=cur_t_str, threshold=CONF_TH)
+                    moe_res = moe.evaluate_dual_filter_signal(long_sub, current_time_str=cur_t_str, threshold=CONF_TH)
                     
-                    if moe_res.get("is_approved", False) and moe_res.get("direction") in ["LONG_TQQQ", "SHORT_SQQQ"]:
-                        sym = "TQQQ" if moe_res["direction"] == "LONG_TQQQ" else "SQQQ"
+                    if moe_res.get("is_approved", False) and moe_res.get("direction") in ["LONG", "SHORT"]:
+                        sym = config.BASE_ASSET_LONG if moe_res["direction"] == "LONG" else config.BASE_ASSET_SHORT
                         base_px = cur_c
-                        if sym == "SQQQ":
-                            sq_df = data_15m['SQQQ'][data_15m['SQQQ']['datetime'] == row['datetime']]
+                        if sym == config.BASE_ASSET_SHORT:
+                            sq_df = data_15m[config.BASE_ASSET_SHORT][data_15m[config.BASE_ASSET_SHORT]['datetime'] == row['datetime']]
                             if not sq_df.empty: base_px = sq_df['Close'].iloc[0]
                         
                         entry_px = base_px + SLIPPAGE
@@ -156,17 +157,17 @@ def main():
     
     # Preload all data into memory
     print("메모리에 데이터를 캐싱 중입니다...")
-    for s in ["TQQQ", "SQQQ", "NVDA", "QQQ", "^VIX", "SOXX"]:
+    for s in [config.BASE_ASSET_LONG, config.BASE_ASSET_SHORT, "NVDA", "QQQ", "^VIX", config.MACRO_TREND_SYMBOL]:
         df = pd.read_sql_query(f"SELECT datetime, open, high, low, close, volume FROM market_candles WHERE symbol='{s}' AND timeframe='15m'", conn)
         df['datetime'] = pd.to_datetime(df['datetime'])
         df.rename(columns={'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'volume': 'Volume'}, inplace=True)
         # Sort by datetime to ensure proper slicing
         df.sort_values('datetime', inplace=True)
         data_dict[(s.replace("^VIX", "VIX"), "15m")] = df
-        if s in ["TQQQ", "SQQQ"]:
+        if s in [config.BASE_ASSET_LONG, config.BASE_ASSET_SHORT]:
             data_15m[s] = df
             
-    for s in ["TQQQ", "NVDA", "QQQ"]:
+    for s in [config.BASE_ASSET_LONG, "NVDA", "QQQ"]:
         df = pd.read_sql_query(f"SELECT datetime, open, high, low, close, volume FROM market_candles WHERE symbol='{s}' AND timeframe='5m'", conn)
         df['datetime'] = pd.to_datetime(df['datetime'])
         df.rename(columns={'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'volume': 'Volume'}, inplace=True)
@@ -180,9 +181,9 @@ def main():
     data_dict[("QQQ", "60m")] = df
     conn.close()
     
-    tqqq_df = data_15m["TQQQ"]
-    tqqq_df = tqqq_df[tqqq_df['datetime'] >= "2026-08-01"].reset_index(drop=True)
-    tqqq_df['date_str'] = tqqq_df['datetime'].dt.strftime('%Y-%m-%d')
+    long_df = data_15m[config.BASE_ASSET_LONG]
+    long_df = long_df[long_df['datetime'] >= "2026-08-01"].reset_index(drop=True)
+    long_df['date_str'] = long_df['datetime'].dt.strftime('%Y-%m-%d')
     
     moe = MoEMetaOrchestrator()
     # OVERRIDE data_lake to use FastDataLake
@@ -204,7 +205,7 @@ def main():
             'time_stop': random.randint(4, 12)
         }
         
-        sr, returns, cap = run_single_backtest(tqqq_df, data_15m, params, moe)
+        sr, returns, cap = run_single_backtest(long_df, data_15m, params, moe)
         results.append(sr)
         
         dur = time.time() - start_t

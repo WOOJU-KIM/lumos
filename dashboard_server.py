@@ -56,40 +56,46 @@ def get_cached_broker_report(force_refresh: bool = False) -> Dict[str, Any]:
     """키움증권 공식 원장 캐싱 (UI 초고속 1초 폴링 응답 보장 및 증권사 TR 빈도 보호)"""
     global _broker_cache
     now = time.time()
+    cached = True
     if force_refresh or _broker_cache["report"] is None or (now - _broker_cache["timestamp"] > 2.5):
+        cached = False
         try:
             rep = kiwoom_broker.get_official_broker_report()
-            if rep and rep.get("ok"):
+            if (isinstance(rep, dict) and rep.get("ok") is True
+                    and all(rep.get(key) is not None for key in ("avail_usd", "total_eval_krw", "holdings_count"))
+                    and isinstance(rep.get("holdings"), list)):
                 _broker_cache["report"] = rep
                 _broker_cache["timestamp"] = now
-        except Exception as e:
-            if not _broker_cache["report"]:
-                _broker_cache["report"] = {
-                    "ok": True,
-                    "broker_name": kiwoom_broker.broker_name,
-                    "mode_str": kiwoom_broker.mode_str,
-                    "account_no": f"{kiwoom_broker.account_no}-{kiwoom_broker.account_type}",
-                    "avail_usd": 71840.78,
-                    "total_eval_usd": 71840.78,
-                    "total_eval_krw": 96726431,
-                    "holdings_count": 0,
-                    "holdings": [],
-                    "realized_pnl_usd": 0.0,
-                    "msg": f"정상 캐시 데이터 (API 통신 중: {e})"
-                }
-    return _broker_cache["report"] or {
-        "ok": True,
+                _broker_cache["error"] = None
+            else:
+                _broker_cache["error"] = "BROKER_REPORT_FAILED"
+        except Exception:
+            # 원시 예외에는 인증정보가 포함될 수 있으므로 화면에는 고정 오류만 전달한다.
+            _broker_cache["error"] = "BROKER_REPORT_EXCEPTION"
+    report = dict(_broker_cache["report"] or {
+        "ok": False,
         "broker_name": kiwoom_broker.broker_name,
         "mode_str": kiwoom_broker.mode_str,
         "account_no": f"{kiwoom_broker.account_no}-{kiwoom_broker.account_type}",
-        "avail_usd": 71840.78,
-        "total_eval_usd": 71840.78,
-        "total_eval_krw": 96726431,
-        "holdings_count": 0,
+        "avail_usd": None,
+        "total_eval_usd": None,
+        "total_eval_krw": None,
+        "holdings_count": None,
         "holdings": [],
-        "realized_pnl_usd": 0.0,
-        "msg": "정상 캐시 데이터"
-    }
+        "realized_pnl_usd": None
+    })
+    error = _broker_cache.get("error")
+    report.update({
+        "ok": bool(_broker_cache["report"]) and error is None,
+        "stale": bool(_broker_cache["report"]) and error is not None,
+        "cached": cached or (error is not None and bool(_broker_cache["report"])),
+        "last_success_at": _broker_cache["timestamp"] if _broker_cache["report"] else None,
+        "cache_scope": "dashboard",  # 증권사 내부 캐시의 실제 조회 시각은 제공되지 않는다.
+        "error": error
+    })
+    if error:
+        report["msg"] = "원장 조회 실패: 마지막 성공 캐시 표시" if report["stale"] else "원장 조회 실패: 잔고 확인 불가"
+    return report
 
 def get_main_trade_records(limit: int = 50) -> List[Dict[str, Any]]:
     """실제 검증된 trade_logs.csv 및 실시간 live_trades.csv 체결 내역 통합 반환"""
@@ -363,8 +369,20 @@ class CockpitHTTPHandler(BaseHTTPRequestHandler):
         if path == '/api/return_charts':
             try:
                 conn = sqlite3.connect(DATA_DIR / 'live_experience.db')
-                df = pd.read_sql_query("SELECT * FROM daily_portfolio_history ORDER BY date ASC", conn)
-                conn.close()
+                query_failed = False
+                try:
+                    df = pd.read_sql_query("SELECT * FROM daily_portfolio_history ORDER BY date ASC", conn)
+                    trades_df = pd.read_sql_query("SELECT symbol, entry_time, pnl_usd, actual_entry_price, actual_exit_price, quantity, pnl_pct FROM live_trades", conn)
+                except BaseException:
+                    query_failed = True
+                    raise
+                finally:
+                    try:
+                        conn.close()
+                    except Exception:
+                        # Preserve the original query error if cleanup also fails.
+                        if not query_failed:
+                            raise
                 
                 if df.empty:
                     self._send_json({"monthly": [], "weekly": [], "daily": []})
@@ -372,10 +390,11 @@ class CockpitHTTPHandler(BaseHTTPRequestHandler):
                 
                 df['date'] = pd.to_datetime(df['date'])
                 
-                import datetime
                 today = df['date'].max()
+
                 
-                full_dates = pd.date_range(start=df['date'].min(), end=today)
+                start_date = min(df['date'].min(), today - timedelta(days=14))
+                full_dates = pd.date_range(start=start_date, end=today)
                 df_full = pd.DataFrame({'date': full_dates})
                 df_full = pd.merge(df_full, df[['date', 'balance_usd']], on='date', how='left').ffill()
                 df_full['balance_usd'] = df_full['balance_usd'].bfill()
@@ -383,24 +402,24 @@ class CockpitHTTPHandler(BaseHTTPRequestHandler):
                 if df_full['balance_usd'].isna().all():
                     df_full['balance_usd'] = 630.0 
 
-                # 1. Daily (Last 7 days)
+                # 1. Daily (Last 14 days)
                 daily_labels, daily_usd, daily_pct = [], [], []
-                for i in range(6, -1, -1):
+                for i in range(13, -1, -1):
                     d = today - timedelta(days=i)
                     daily_labels.append(d.strftime('%Y-%m-%d'))
                     
                     row = df_full[df_full['date'] == d]
                     prev = df_full[df_full['date'] == d - timedelta(days=1)]
                     
-                    if not row.empty:
+                    if not row.empty and d >= df['date'].min():
                         bal = row['balance_usd'].values[0]
                         pval = prev['balance_usd'].values[0] if not prev.empty else bal
                         pct = ((bal - pval) / pval * 100) if pval != 0 and not prev.empty else 0
                         daily_usd.append(round(bal, 2))
                         daily_pct.append(round(pct, 2))
                     else:
-                        daily_usd.append(0.0)
-                        daily_pct.append(0.0)
+                        daily_usd.append(None)
+                        daily_pct.append(None)
 
                 # 2. Weekly (Last 5 weeks, formatted as YYYY-Wxx)
                 weekly_labels, weekly_usd, weekly_pct = [], [], []
@@ -471,10 +490,84 @@ class CockpitHTTPHandler(BaseHTTPRequestHandler):
                         monthly_usd.append(0.0)
                         monthly_pct.append(0.0)
 
+                trades_df['entry_time'] = pd.to_datetime(trades_df['entry_time'])
+                trades_df['entry_time_ny'] = trades_df['entry_time'].dt.tz_localize('Asia/Seoul').dt.tz_convert('America/New_York').dt.tz_localize(None)
+                
+                def get_stats_and_trades(tdf, start_dt, end_dt, period_type="daily"):
+                    if tdf.empty: return "거래 없음", []
+                    mask = (tdf['entry_time_ny'] >= pd.to_datetime(start_dt)) & (tdf['entry_time_ny'] < pd.to_datetime(end_dt) + pd.Timedelta(days=1))
+                    sub = tdf[mask]
+                    if sub.empty: return "거래 없음", []
+                    
+                    sub = sub.sort_values(by='entry_time_ny', ascending=False)
+                    stats = {}
+                    trades_list = []
+                    
+                    for _, row in sub.iterrows():
+                        sym = row['symbol']
+                        entry_dt = row['entry_time_ny']
+                        
+                        if period_type == "monthly":
+                            date_str = f"{entry_dt.year}-{entry_dt.month:02d}"
+                        elif period_type == "weekly":
+                            iso = entry_dt.isocalendar()
+                            date_str = f"{iso.year}-W{iso.week:02d}"
+                        else:
+                            date_str = entry_dt.strftime('%Y-%m-%d')
+                            
+                        buy_amt = row['actual_entry_price']
+                        sell_amt = row['actual_exit_price']
+                        pct = row['pnl_pct']
+                        pnl = row['pnl_usd']
+                        res = "승" if pnl > 0 else "패"
+                        qty = row['quantity']
+                        
+                        trades_list.append({
+                            "date": date_str,
+                            "symbol": sym,
+                            "qty": qty,
+                            "result": res,
+                            "buy": buy_amt,
+                            "sell": sell_amt,
+                            "pct": pct
+                        })
+                        
+                    if trades_list:
+                        latest_date = trades_list[0]['date']
+                        
+                        # 최신 기간(월/주/일)에 해당하는 row만 필터링하여 승률 계산
+                        latest_sub = sub.copy()
+                        if period_type == "monthly":
+                            latest_sub['date_str'] = latest_sub['entry_time_ny'].apply(lambda dt: f"{dt.year}-{dt.month:02d}")
+                        elif period_type == "weekly":
+                            latest_sub['date_str'] = latest_sub['entry_time_ny'].apply(lambda dt: f"{dt.isocalendar().year}-W{dt.isocalendar().week:02d}")
+                        else:
+                            latest_sub['date_str'] = latest_sub['entry_time_ny'].dt.strftime('%Y-%m-%d')
+                            
+                        latest_sub = latest_sub[latest_sub['date_str'] == latest_date]
+                        
+                        for sym in latest_sub['symbol'].unique():
+                            sym_sub = latest_sub[latest_sub['symbol'] == sym]
+                            tot = len(sym_sub)
+                            w = len(sym_sub[sym_sub['pnl_usd'] > 0])
+                            l = tot - w
+                            rate = (w / tot * 100) if tot > 0 else 0
+                            stats[sym] = f"{tot}전 {w}승 {l}패 ({rate:.1f}%)"
+                            
+                        stats_str = f"[{latest_date}]\n" + "\n".join([f"{k}: {v}" for k, v in stats.items()])
+                    else:
+                        stats_str = "거래 없음"
+                        
+                    return stats_str, trades_list
+
+                d_stats, d_trades = get_stats_and_trades(trades_df, today - timedelta(days=13), today, "daily")
+                w_stats, w_trades = get_stats_and_trades(trades_df, today - timedelta(days=34), today, "weekly")
+                m_stats, m_trades = get_stats_and_trades(trades_df, today - timedelta(days=89), today, "monthly")
+
                 self._send_json({
-                    "monthly": {"labels": monthly_labels, "usd": monthly_usd, "pct": monthly_pct},
-                    "weekly": {"labels": weekly_labels, "usd": weekly_usd, "pct": weekly_pct},
-                    "daily": {"labels": daily_labels, "usd": daily_usd, "pct": daily_pct}
+                    "monthly": {"labels": monthly_labels, "usd": monthly_usd, "pct": monthly_pct, "stats": m_stats, "trades": m_trades},
+                    "weekly": {"labels": weekly_labels, "usd": weekly_usd, "pct": weekly_pct, "stats": w_stats, "trades": w_trades},
+                    "daily": {"labels": daily_labels, "usd": daily_usd, "pct": daily_pct, "stats": d_stats, "trades": d_trades}
                 })
             except Exception as e:
                 self._send_json({"error": str(e)})
@@ -492,8 +585,8 @@ class CockpitHTTPHandler(BaseHTTPRequestHandler):
             
             # 🏛 [100% 증권사 원장 통신 동기화: Single Source of Truth] 키움증권 공식 원장
             b_rep = get_cached_broker_report()
-            avail_usd = float(b_rep.get("avail_usd", 71840.78))
-            krw_converted = int(b_rep.get("total_eval_krw", 96726431))
+            avail_usd = float(b_rep["avail_usd"]) if b_rep.get("avail_usd") is not None else None
+            krw_converted = int(b_rep["total_eval_krw"]) if b_rep.get("total_eval_krw") is not None else None
             holdings = b_rep.get("holdings", [])
             broker_name = b_rep.get("broker_name", "키움증권(Kiwoom)")
             mode_str = b_rep.get("mode_str", "VIRTUAL (모의투자)")
@@ -572,9 +665,16 @@ class CockpitHTTPHandler(BaseHTTPRequestHandler):
                 "broker_name": broker_name,
                 "mode_str": mode_str,
                 "account_no": account_no,
+                "broker_ok": b_rep["ok"],
+                "broker_stale": b_rep["stale"],
+                "broker_cached": b_rep["cached"],
+                "broker_last_success_at": b_rep["last_success_at"],
+                "broker_cache_scope": b_rep["cache_scope"],
+                "broker_error": b_rep["error"],
+                "broker_msg": b_rep.get("msg", ""),
                 "avail_usd": avail_usd,
                 "krw_converted": krw_converted,
-                "holdings_count": len(holdings),
+                "holdings_count": len(holdings) if b_rep.get("holdings_count") is not None else None,
                 "holdings": holdings,
                 "active_position": active_pos,
                 "daily_circuit_breaker": daily_cb,
@@ -748,25 +848,98 @@ class CockpitHTTPHandler(BaseHTTPRequestHandler):
 
         if path == '/api/action/refresh':
             # 즉시 캐시 무효화 및 원장 강제 동기화
-            get_cached_broker_report(force_refresh=True)
+            try:
+                b_rep = get_cached_broker_report(force_refresh=True)
+            except Exception:
+                self._send_json({"ok": False, "error": "REFRESH_EXCEPTION",
+                                 "msg": "원장 새로고침 중 오류가 발생했습니다."})
+                return
+            if (not isinstance(b_rep, dict)
+                    or not isinstance(b_rep.get("ok"), bool)
+                    or not isinstance(b_rep.get("stale"), bool)
+                    or not isinstance(b_rep.get("cached"), bool)
+                    or not all(key in b_rep for key in
+                               ("last_success_at", "cache_scope", "error"))
+                    or (b_rep["ok"] and (b_rep["stale"] or b_rep["error"] is not None))):
+                self._send_json({"ok": False, "error": "REFRESH_RESULT_UNVERIFIED",
+                                 "msg": "원장 새로고침 결과를 확인할 수 없습니다."})
+                return
             self._send_json({
-                "ok": True,
-                "msg": "⚡ [즉시 동기화 완료] 최신 키움증권 원장 잔고 및 시세가 갱신되었습니다."
+                "ok": b_rep["ok"],
+                "stale": b_rep["stale"],
+                "cached": b_rep["cached"],
+                "last_success_at": b_rep["last_success_at"],
+                "cache_scope": b_rep["cache_scope"],
+                "error": b_rep["error"],
+                "msg": "⚡ [조회 완료] 키움증권 원장 응답이 갱신되었습니다 (증권사 내부 캐시 포함 가능)." if b_rep["ok"] else b_rep.get("msg", "원장 새로고침에 실패했습니다.")
             })
             return
 
         if path == '/api/action/kill_switch':
-            circuit_breaker._save_status("CIRCUIT_BREAKER_HALT", 3, "Cockpit UX 웹 대시보드 Emergency Kill Switch")
+            result = {
+                "ok": False,
+                "request_received": True,
+                "halt_flag_written": None,
+                "trading_halted": None,
+                "cancel_request_status": "not_attempted",
+                "orders_cancelled": None,
+                "position_snapshot": "unverified",
+                "liquidation_confirmed": None,
+                "errors": [],
+                "msg": "킬스위치 요청을 접수했습니다. 실제 매매 중단, 주문 취소 및 청산 완료는 확인되지 않았습니다."
+            }
             try:
-                kiwoom_broker.cancel_all_orders()
+                saved = circuit_breaker._save_status("CIRCUIT_BREAKER_HALT", 3, "Cockpit UX 웹 대시보드 Emergency Kill Switch")
             except Exception:
-                pass
-            get_cached_broker_report(force_refresh=True)
-            system_logger.log("WARN", "KillSwitch", "🛑 [EMERGENCY KILL SWITCH] 웹 관제소에서 킬스위치가 발동되었습니다! 매매 중단 및 100% 현금화.")
-            self._send_json({
-                "ok": True,
-                "msg": "🛑 [EMERGENCY KILL SWITCH] 실전 매매가 즉시 중단되었으며, 전량 100% 현금화되었습니다."
-            })
+                # 기록 예외 후에는 기존과 같이 취소/잔고 조회를 실행하지 않는다.
+                result["errors"].append("HALT_WRITE_EXCEPTION")
+                result["error"] = "HALT_WRITE_EXCEPTION"
+                result["msg"] = "정지 상태 기록 중 오류가 발생했습니다. 기록 및 실제 매매 중단 여부를 확인할 수 없습니다."
+                self._send_json(result)
+                return
+            # 현재 기록 함수는 정상 반환 시 None이다. 매매 러너의 정지는 별도 미확인이다.
+            result["halt_flag_written"] = saved is None or saved is True or (isinstance(saved, dict) and saved.get("ok") is True)
+            if not result["halt_flag_written"]:
+                result["errors"].append("HALT_WRITE_UNCONFIRMED")
+            try:
+                cancelled = kiwoom_broker.cancel_all_orders()
+                if cancelled is True or (isinstance(cancelled, dict) and cancelled.get("ok") is True):
+                    result["cancel_request_status"] = "accepted_completion_unverified"
+                elif cancelled is False or (isinstance(cancelled, dict) and cancelled.get("ok") is False):
+                    result["cancel_request_status"] = "failed"
+                    result["errors"].append("CANCEL_REQUEST_FAILED")
+                else:
+                    result["cancel_request_status"] = "unconfirmed"
+                    result["errors"].append("CANCEL_REQUEST_UNCONFIRMED")
+            except Exception:
+                result["cancel_request_status"] = "failed"
+                result["errors"].append("CANCEL_REQUEST_EXCEPTION")
+            try:
+                b_rep = get_cached_broker_report(force_refresh=True)
+            except Exception:
+                # 조회 예외 후에는 기존과 같이 후속 운영 로그를 호출하지 않는다.
+                result["errors"].append("KILL_SWITCH_REFRESH_EXCEPTION")
+                result["error"] = "KILL_SWITCH_REFRESH_EXCEPTION"
+                self._send_json(result)
+                return
+            if (isinstance(b_rep, dict) and b_rep.get("ok") is True
+                    and b_rep.get("stale") is False and b_rep.get("cached") is False):
+                count = b_rep.get("holdings_count")
+                holdings = b_rep.get("holdings")
+                if type(count) is int and count >= 0 and isinstance(holdings, list) and len(holdings) == count:
+                    # 조회 응답의 빈 보유 목록은 이 요청에 의한 청산 완료의 증거가 아니다.
+                    result["position_snapshot"] = "empty_reported" if count == 0 else "holdings_reported"
+                else:
+                    result["errors"].append("POSITION_SNAPSHOT_INVALID")
+            else:
+                result["errors"].append("POSITION_SNAPSHOT_UNVERIFIED")
+            result["error"] = result["errors"][0] if result["errors"] else "KILL_SWITCH_COMPLETION_UNVERIFIED"
+            try:
+                system_logger.log("WARN", "KillSwitch", "🛑 [KILL SWITCH 요청] 정지 상태 기록 호출 후 기존 취소 요청 및 원장 조회를 처리했습니다. 실제 매매 중단, 주문 취소 및 청산 완료는 미확인입니다.")
+            except Exception:
+                result["errors"].append("KILL_SWITCH_LOG_EXCEPTION")
+                result["error"] = "KILL_SWITCH_LOG_EXCEPTION"
+            self._send_json(result)
             return
 
         if path == '/api/action/resume':
@@ -780,15 +953,47 @@ class CockpitHTTPHandler(BaseHTTPRequestHandler):
             return
 
         if path == '/api/action/rollback':
-            rb = registry.promote_sub_model_to_champion("골든")
-            if circuit_breaker.is_halted():
-                circuit_breaker.release_circuit_breaker(command_by="골든 베이스라인 롤백")
-            get_cached_broker_report(force_refresh=True)
-            system_logger.log("INFO", "ModelRegistry", "🛡 [골든 롤백] Track 0: 골든 베이스라인(+18.37%) 모델로 즉시 복원되었습니다.")
-            self._send_json({
-                "ok": True,
-                "msg": "🛡 [골든 롤백] Track 0: 골든 베이스라인(+18.37%) 모델로 즉시 복원되었습니다."
-            })
+            stage = "ROLLBACK"
+            try:
+                rb = registry.promote_sub_model_to_champion("골든")
+                stage = "CIRCUIT_BREAKER_STATE"
+                halted = circuit_breaker.is_halted()
+                release = None
+                if halted:
+                    stage = "CIRCUIT_BREAKER_RELEASE"
+                    release = circuit_breaker.release_circuit_breaker(command_by="골든 베이스라인 롤백")
+                stage = "ROLLBACK_REFRESH"
+                b_rep = get_cached_broker_report(force_refresh=True)
+            except Exception:
+                result = {"ok": False, "error": f"{stage}_EXCEPTION",
+                          "msg": "롤백 처리 중 오류가 발생했습니다. 일부 작업은 이미 실행되었을 수 있습니다."}
+            else:
+                # 실행 순서는 보존하고, 각 작업의 확인된 반환 상태만 응답에 반영한다.
+                error = None
+                for name, value in (("ROLLBACK", rb),
+                                    ("CIRCUIT_BREAKER_STATE", {"ok": True} if isinstance(halted, bool) else None),
+                                    ("CIRCUIT_BREAKER_RELEASE", release) if halted else ("CIRCUIT_BREAKER_RELEASE", {"ok": True}),
+                                    ("ROLLBACK_REFRESH", b_rep)):
+                    if not isinstance(value, dict) or value.get("ok") is not True:
+                        error = f"{name}_FAILED" if isinstance(value, dict) and value.get("ok") is False else f"{name}_RESULT_UNVERIFIED"
+                        break
+                if error is None and (not isinstance(b_rep.get("stale"), bool)
+                                      or not isinstance(b_rep.get("cached"), bool)
+                                      or not all(key in b_rep for key in ("last_success_at", "cache_scope", "error"))
+                                      or b_rep["stale"] or b_rep["error"] is not None):
+                    error = "ROLLBACK_REFRESH_RESULT_UNVERIFIED"
+                if error:
+                    result = {"ok": False, "error": error,
+                              "msg": "롤백 처리의 완료를 확인하지 못했습니다. 일부 작업은 이미 실행되었을 수 있습니다."}
+                else:
+                    result = {"ok": True,
+                              "msg": "🛡 [골든 롤백] Track 0: 골든 베이스라인(+18.37%) 모델로 즉시 복원되었습니다."}
+            try:
+                system_logger.log("INFO" if result["ok"] else "WARN", "ModelRegistry", result["msg"])
+            except Exception:
+                result = {"ok": False, "error": "ROLLBACK_LOG_EXCEPTION",
+                          "msg": "롤백 결과 기록 중 오류가 발생했습니다. 일부 작업은 이미 실행되었을 수 있습니다."}
+            self._send_json(result)
             return
 
         if path == '/api/action/hotswap':

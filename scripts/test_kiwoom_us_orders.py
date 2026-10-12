@@ -25,11 +25,11 @@ headers = {
 test_cases = [
     ("ND", "NVDA", "216.85"),
     ("ND", "QQQ", "710.00"),
-    ("NA", "TQQQ", "122.00"),
-    ("NY", "TQQQ", "122.00"),
-    ("ND", "TQQQ", "122.00"),
-    ("AMS", "TQQQ", "122.00"),
-    ("ND", "SQQQ", "45.50")
+    ("NA", config.BASE_ASSET_LONG, "122.00"),
+    ("NY", config.BASE_ASSET_LONG, "122.00"),
+    ("ND", config.BASE_ASSET_LONG, "122.00"),
+    ("AMS", config.BASE_ASSET_LONG, "122.00"),
+    ("ND", config.BASE_ASSET_SHORT, "45.50")
 ]
 
 print("=" * 80)

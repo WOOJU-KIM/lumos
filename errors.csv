@@ -1,0 +1,6 @@
+﻿error_id,timestamp,source,error_type,error_code,message,payload_json
+21643,2026-09-30 00:30:57,LiveRunner,SELL_CHASE_EXCEPTION,ERROR,❌ [TR_ERROR] API_ID=ust20001 | Code=20 | Msg=[2000](RC4024:모의투자 매도가능수량을 확인하세요.),{}
+21642,2026-09-26 02:45:57,LiveRunner,SELL_CHASE_EXCEPTION,ERROR,❌ [TR_ERROR] API_ID=ust20001 | Code=20 | Msg=[2000](RC4024:모의투자 매도가능수량을 확인하세요.),{}
+21641,2026-09-26 02:45:51,LiveRunner,SELL_CHASE_EXCEPTION,ERROR,❌ [TR_ERROR] API_ID=ust20001 | Code=20 | Msg=[2000](RC4024:모의투자 매도가능수량을 확인하세요.),{}
+21640,2026-09-24 11:09:11,LiveRunner,BUY_CHASE_EXCEPTION,ERROR,❌ [TR_ERROR] API_ID=ust20000 | Code=20 | Msg=[2000](RC4058:모의투자 장종료),{}
+21639,2026-09-24 11:00:55,LiveRunner,BUY_CHASE_EXCEPTION,ERROR,❌ [TR_ERROR] API_ID=ust20000 | Code=20 | Msg=[2000](RC4058:모의투자 장종료),{}

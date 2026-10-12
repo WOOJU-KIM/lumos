@@ -1,0 +1,11 @@
+            for h in stk_bal.get("holdings", []):
+        holdings = stk_bal.get("holdings", [])
+        if not holdings:
+        for h in holdings:
+                for h in stk_bal.get("holdings", []):
+                for h in stk_bal_1.get("holdings", []):
+                for h in stk_bal_final.get("holdings", []):
+                for h in stk_bal_check.get("holdings", []):
+                        if stk_bal.get("ok") and stk_bal.get("holdings"):
+                                for h in stk_bal.get("holdings"):
+📦 **현재 보유종목:** {conn_res['holdings_count']}종목

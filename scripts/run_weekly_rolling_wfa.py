@@ -49,13 +49,13 @@ def run_weekly_rolling_walk_forward():
 
     # 1. 6개년 시계열 전량 로드
     print("⏳ [1/4] 데이터 레이크에서 6개년 데이터 로드 중 (5분봉 포함)...")
-    tqqq_15m = lake.load_candles("TQQQ", "15m")
-    sqqq_15m = lake.load_candles("SQQQ", "15m")
-    tqqq_5m = lake.load_candles("TQQQ", "5m")
-    sqqq_5m = lake.load_candles("SQQQ", "5m")
+    long_15m = lake.load_candles(config.BASE_ASSET_LONG, "15m")
+    short_15m = lake.load_candles(config.BASE_ASSET_SHORT, "15m")
+    long_5m = lake.load_candles(config.BASE_ASSET_LONG, "5m")
+    short_5m = lake.load_candles(config.BASE_ASSET_SHORT, "5m")
     qqq_60m = lake.load_candles("QQQ", "60m")
     nvda_15m = lake.load_candles("NVDA", "15m")
-    soxx_15m = lake.load_candles("SOXX", "15m")
+    macro_15m = lake.load_candles(config.MACRO_TREND_SYMBOL, "15m")
     qqq_15m  = lake.load_candles("QQQ", "15m")
     vixy_15m = lake.load_candles("VIXY", "15m")
     ief_15m  = lake.load_candles("IEF", "15m")
@@ -66,44 +66,43 @@ def run_weekly_rolling_walk_forward():
     # 2. 피처 및 타겟 추출 (전체 시계열 사전 계산)
     print("⏳ [2/4] 머신러닝 피처 및 Triple Barrier 타겟 사전 추출 중...")
     ml_engine = MLFeatureEngine(confidence_threshold=config.GBDT_CONFIDENCE_THRESHOLD)
-    tqqq_feat = ml_engine.extract_features(tqqq_15m)
-    labels = ml_engine.compute_triple_barrier_labels(tqqq_feat)
+    long_feat = ml_engine.extract_features(long_15m)
+    labels = ml_engine.compute_triple_barrier_labels(long_feat, take_profit=getattr(config, "LABEL_TP_PCT", config.MAX_TP_PCT))
 
     # 타겟 라벨 매핑: 1 -> 2 (Long TP), -1 -> 0 (Short TP), 0 -> 1 (Neutral)
     target_series = labels.map({1: 2, -1: 0, 0: 1}).fillna(1).astype(int)
-    tqqq_feat['target'] = target_series
+    long_feat['target'] = target_series
 
     # ISO 주차(Year-Week) 태깅
-    tqqq_feat['datetime_dt'] = pd.to_datetime(tqqq_feat['datetime'])
-    tqqq_feat['date_str'] = tqqq_feat['datetime_dt'].dt.strftime('%Y-%m-%d')
-    tqqq_feat['time_str'] = tqqq_feat['datetime_dt'].dt.strftime('%H:%M')
-    tqqq_feat['week_id'] = tqqq_feat['datetime_dt'].dt.isocalendar().year.astype(str) + '-' + tqqq_feat['datetime_dt'].dt.isocalendar().week.astype(str).str.zfill(2)
+    long_feat['datetime_dt'] = pd.to_datetime(long_feat['datetime'])
+    long_feat['date_str'] = long_feat['datetime_dt'].dt.strftime('%Y-%m-%d')
+    long_feat['time_str'] = long_feat['datetime_dt'].dt.strftime('%H:%M')
+    long_feat['week_id'] = long_feat['datetime_dt'].dt.isocalendar().year.astype(str) + '-' + long_feat['datetime_dt'].dt.isocalendar().week.astype(str).str.zfill(2)
 
     # 크로스에셋 딕셔너리 고속 캐싱
     nvda_map = nvda_15m.set_index('datetime')['Close'].to_dict()
-    soxx_map = soxx_15m.set_index('datetime')['Close'].to_dict()
+    macro_map = macro_15m.set_index('datetime')['Close'].to_dict()
     qqq_map  = qqq_15m.set_index('datetime')['Close'].to_dict()
     vix_map  = vixy_15m.set_index('datetime')['Close'].to_dict()
     ief_map  = ief_15m.set_index('datetime')['Close'].to_dict()
-    sqqq_dict = sqqq_15m.set_index('datetime').to_dict(orient='index')
+    short_dict = short_15m.set_index('datetime').to_dict(orient='index')
 
     cross_mod = CrossAssetDislocationModel(dislocation_z_threshold=1.6)
-
-    # 피처 컬럼 선별
-    exclude_cols = {'open', 'high', 'low', 'close', 'volume', 'Open', 'High', 'Low', 'Close', 'Volume',
-                    'datetime', 'datetime_dt', 'date_str', 'time_str', 'week_id', 'target', 'date'}
-    feature_cols = [c for c in tqqq_feat.columns if c not in exclude_cols and pd.api.types.is_numeric_dtype(tqqq_feat[c])]
-    print(f"📊 학습 피처 수: {len(feature_cols)}개 피처")
+    # 피처 컬럼 식별
+    feature_cols = MLFeatureEngine.get_feature_columns(long_feat)
+    print(f"총 학습 피처 수: {len(feature_cols)}개 피처")
 
     # 주차 목록 정렬
-    unique_weeks = sorted(tqqq_feat['week_id'].unique())
+    unique_weeks = sorted(long_feat['week_id'].unique())
     print(f"📅 총 가용 주차: {len(unique_weeks)}주 ({unique_weeks[0]} ~ {unique_weeks[-1]})")
 
-    ROLLING_WINDOW_WEEKS = 104  # 2년 (104주)
-    if len(unique_weeks) <= ROLLING_WINDOW_WEEKS:
+    import config
+    MIN_TRAIN_WEEKS = 104
+    MAX_TRAIN_WEEKS = config.ROLLING_TRAINING_WEEKS
+    if len(unique_weeks) <= MIN_TRAIN_WEEKS:
         raise RuntimeError("데이터 주차가 104주보다 적습니다.")
 
-    test_start_idx = ROLLING_WINDOW_WEEKS  # 104번째 주부터 첫 테스트 시작
+    test_start_idx = MIN_TRAIN_WEEKS  # 104번째 주부터 첫 테스트 시작
     total_test_weeks = len(unique_weeks) - test_start_idx
     print(f"🎯 주간 롤링 테스트 주차: 총 {total_test_weeks}주 ({unique_weeks[test_start_idx]} ~ {unique_weeks[-1]})\n")
 
@@ -124,21 +123,21 @@ def run_weekly_rolling_walk_forward():
     week_progress = 0
 
     # 5m df set index for speed
-    tqqq_5m['datetime'] = pd.to_datetime(tqqq_5m['datetime'])
-    sqqq_5m['datetime'] = pd.to_datetime(sqqq_5m['datetime'])
-    tqqq_5m.set_index('datetime', inplace=True)
-    sqqq_5m.set_index('datetime', inplace=True)
-    tqqq_5m['date_str'] = tqqq_5m.index.strftime('%Y-%m-%d')
-    sqqq_5m['date_str'] = sqqq_5m.index.strftime('%Y-%m-%d')
+    long_5m['datetime'] = pd.to_datetime(long_5m['datetime'])
+    short_5m['datetime'] = pd.to_datetime(short_5m['datetime'])
+    long_5m.set_index('datetime', inplace=True)
+    short_5m.set_index('datetime', inplace=True)
+    long_5m['date_str'] = long_5m.index.strftime('%Y-%m-%d')
+    short_5m['date_str'] = short_5m.index.strftime('%Y-%m-%d')
 
     for w_idx in range(test_start_idx, len(unique_weeks)):
         cur_test_week = unique_weeks[w_idx]
-        train_weeks = unique_weeks[w_idx - ROLLING_WINDOW_WEEKS : w_idx]
+        train_weeks = unique_weeks[max(0, w_idx - MAX_TRAIN_WEEKS) : w_idx]
         
         # A. 직전 104주(2년) 학습 데이터 슬라이스
-        train_mask = tqqq_feat['week_id'].isin(train_weeks)
-        X_train = tqqq_feat.loc[train_mask, feature_cols].fillna(0.0)
-        y_train = tqqq_feat.loc[train_mask, 'target']
+        train_mask = long_feat['week_id'].isin(train_weeks)
+        X_train = long_feat.loc[train_mask, feature_cols].fillna(0.0)
+        y_train = long_feat.loc[train_mask, 'target']
 
         # B. 경량 고속 LightGBM 학습 (1회당 ~0.08초)
         clf = LGBMClassifier(
@@ -146,8 +145,11 @@ def run_weekly_rolling_walk_forward():
             num_class=3,
             class_weight='balanced',
             n_estimators=config.GBDT_N_ESTIMATORS,
-            max_depth=4,
+            max_depth=config.GBDT_MAX_DEPTH,
             learning_rate=config.GBDT_LEARNING_RATE,
+            subsample=config.GBDT_FEATURE_FRACTION,
+            colsample_bytree=config.GBDT_FEATURE_FRACTION,
+            subsample_freq=1,
             random_state=42,
             deterministic=True,
             force_col_wise=True,
@@ -157,8 +159,8 @@ def run_weekly_rolling_walk_forward():
         clf.fit(X_train, y_train)
 
         # C. 이번 1주일(완전 미학습 미래 OOS) 추론
-        test_mask = tqqq_feat['week_id'] == cur_test_week
-        test_df = tqqq_feat[test_mask].copy()
+        test_mask = long_feat['week_id'] == cur_test_week
+        test_df = long_feat[test_mask].copy()
         if test_df.empty:
             continue
 
@@ -175,13 +177,13 @@ def run_weekly_rolling_walk_forward():
         for i in range(len(test_df)):
             ps, pn, pl = prob_short[i], prob_neutral[i], prob_long[i]
             if pl > pn and pl > ps:
-                calib_conf = min(0.95, max(0.50, 0.50 + (pl - 0.333) * 1.15))
+                calib_conf = min(0.95, max(config.CALIB_BASE, config.CALIB_BASE + (pl - config.CALIB_PIVOT) * config.CALIB_SCALE))
                 confidences[i] = calib_conf
-                directions[i] = "LONG_TQQQ"
+                directions[i] = "LONG"
             elif ps > pn and ps > pl:
-                calib_conf = min(0.95, max(0.50, 0.50 + (ps - 0.333) * 1.15))
+                calib_conf = min(0.95, max(config.CALIB_BASE, config.CALIB_BASE + (ps - config.CALIB_PIVOT) * config.CALIB_SCALE))
                 confidences[i] = calib_conf
-                directions[i] = "SHORT_SQQQ"
+                directions[i] = "SHORT"
 
         test_df['Confidence'] = confidences
         test_df['Direction'] = directions
@@ -192,8 +194,8 @@ def run_weekly_rolling_walk_forward():
 
         for d_str in test_dates:
             day_bars = test_df[test_df['date_str'] == d_str]
-            day_tqqq_5m = tqqq_5m[tqqq_5m['date_str'] == d_str]
-            day_sqqq_5m = sqqq_5m[sqqq_5m['date_str'] == d_str]
+            day_long_5m = long_5m[long_5m['date_str'] == d_str]
+            day_short_5m = short_5m[short_5m['date_str'] == d_str]
 
             for idx, row in day_bars.iterrows():
                 curr_dt_ts = row['datetime_dt']
@@ -203,9 +205,9 @@ def run_weekly_rolling_walk_forward():
                 if curr_dt_ts <= last_exit_time:
                     continue
 
-                cur_tqqq_close = float(row['Close'])
-                sqqq_row = sqqq_dict.get(curr_dt_str)
-                cur_sqqq_close = float(sqqq_row['Close']) if sqqq_row else 0.0
+                cur_long_close = float(row['Close'])
+                short_row = short_dict.get(curr_dt_str)
+                cur_short_close = float(short_row['Close']) if short_row else 0.0
 
                 # 신규 진입 검토
                 if active_pos is None and time_str < config.PHASE_MAIN_END:
@@ -222,7 +224,7 @@ def run_weekly_rolling_walk_forward():
                     conf_gbdt = float(row.get('Confidence', 0.50))
 
                     n_px = nvda_map.get(curr_dt_str)
-                    sx_px = soxx_map.get(curr_dt_str)
+                    sx_px = macro_map.get(curr_dt_str)
                     q_px = qqq_map.get(curr_dt_str)
                     v_px = vix_map.get(curr_dt_str)
                     i_px = ief_map.get(curr_dt_str)
@@ -232,71 +234,73 @@ def run_weekly_rolling_walk_forward():
                     if cur_bar_idx >= 5 and n_px and sx_px and q_px:
                         prev_dt = day_bars.iloc[cur_bar_idx - 5]['datetime']
                         p_n = nvda_map.get(prev_dt, n_px)
-                        p_sx = soxx_map.get(prev_dt, sx_px)
+                        p_sx = macro_map.get(prev_dt, sx_px)
                         p_q = qqq_map.get(prev_dt, q_px)
                         p_v = vix_map.get(prev_dt, v_px) if v_px else None
                         p_i = ief_map.get(prev_dt, i_px) if i_px else None
 
                         nvda_r = (n_px / p_n - 1.0) if p_n else 0.0
-                        soxx_r = (sx_px / p_sx - 1.0) if p_sx else 0.0
+                        macro_r = (sx_px / p_sx - 1.0) if p_sx else 0.0
                         qqq_r  = (q_px / p_q - 1.0) if p_q else 0.0
                         vix_r  = (v_px / p_v - 1.0) if (v_px and p_v) else 0.0
                         ief_r  = (i_px / p_i - 1.0) if (i_px and p_i) else 0.0
                         tnx_proxy_ret = -ief_r
 
-                        tqqq_r = (cur_tqqq_close / day_bars.iloc[cur_bar_idx - 5]['Close']) - 1.0
+                        long_r = (cur_long_close / day_bars.iloc[cur_bar_idx - 5]['Close']) - 1.0
                         sig_code, _, _ = cross_mod.predict_signal(
-                            tqqq_ret=tqqq_r,
+                            long_ret=long_r,
                             nvda_ret=nvda_r,
-                            soxx_ret=soxx_r,
+                            macro_ret=macro_r,
                             qqq_ret=qqq_r,
                             vix_ret=vix_r,
                             tnx_ret=tnx_proxy_ret
                         )
                         if sig_code > 0:
-                            cross_dir = "LONG_TQQQ"
+                            cross_dir = "LONG"
                         elif sig_code < 0:
-                            cross_dir = "SHORT_SQQQ"
+                            cross_dir = "SHORT"
 
                     # config.py 설정 존중 (방패 켜기/끄기)
                     pass_60m_bull = qqq_60m_bull if config.USE_60M_TREND_FILTER else True
                     pass_60m_bear = qqq_60m_bear if config.USE_60M_TREND_FILTER else True
-                    pass_cross_long = (cross_dir != "SHORT_SQQQ") if config.USE_CROSS_ASSET_VETO else True
-                    pass_cross_short = (cross_dir != "LONG_TQQQ") if config.USE_CROSS_ASSET_VETO else True
+                    pass_cross_long = (cross_dir != "SHORT") if config.USE_CROSS_ASSET_VETO else True
+                    pass_cross_short = (cross_dir != "LONG") if config.USE_CROSS_ASSET_VETO else True
 
-                    if dir_gbdt == "LONG_TQQQ" and conf_gbdt >= config.GBDT_CONFIDENCE_THRESHOLD and pass_60m_bull and pass_cross_long:
-                        cur_atr = float(row.get('ATR_14', cur_tqqq_close * 0.015))
-                        atr_sl_pct = (cur_atr * config.SL_ATR_MULTIPLIER) / cur_tqqq_close
+                    if dir_gbdt == "LONG" and conf_gbdt >= config.GBDT_CONFIDENCE_THRESHOLD and pass_60m_bull and pass_cross_long:
+                        cur_atr = float(row.get('ATR_14', cur_long_close * 0.015))
+                        atr_sl_pct = (cur_atr * config.SL_ATR_MULTIPLIER) / cur_long_close
                         dyn_sl_pct = max(config.SL_MIN_PCT, min(config.SL_MAX_PCT, atr_sl_pct))
                         
                         active_pos = {
-                            'sym': 'TQQQ',
-                            'entry_px': cur_tqqq_close,
+                            'sym': config.BASE_ASSET_LONG,
+                            'entry_px': cur_long_close,
                             'entry_dt': curr_dt_ts,
                             'bars_5m': 0,
-                            'peak_high': cur_tqqq_close,
+                            'peak_high': cur_long_close,
                             'sl_pct': dyn_sl_pct
                         }
-                    elif dir_gbdt == "SHORT_SQQQ" and conf_gbdt >= config.GBDT_CONFIDENCE_THRESHOLD and pass_60m_bear and pass_cross_short:
-                        if cur_sqqq_close > 0:
-                            cur_atr = float(row.get('ATR_14', cur_sqqq_close * 0.015))
-                            atr_sl_pct = (cur_atr * config.SL_ATR_MULTIPLIER) / cur_sqqq_close
+                    elif dir_gbdt == "SHORT" and conf_gbdt >= config.GBDT_CONFIDENCE_THRESHOLD and pass_60m_bear and pass_cross_short:
+                        if cur_short_close > 0:
+                            cur_atr = float(row.get('ATR_14', cur_short_close * 0.015))
+                            atr_sl_pct = (cur_atr * config.SL_ATR_MULTIPLIER) / cur_short_close
                             dyn_sl_pct = max(config.SL_MIN_PCT, min(config.SL_MAX_PCT, atr_sl_pct))
                         
                             active_pos = {
-                                'sym': 'SQQQ',
-                                'entry_px': cur_sqqq_close,
+                                'sym': config.BASE_ASSET_SHORT,
+                                'entry_px': cur_short_close,
                                 'entry_dt': curr_dt_ts,
                                 'bars_5m': 0,
-                                'peak_high': cur_sqqq_close,
+                                'peak_high': cur_short_close,
                                 'sl_pct': dyn_sl_pct
                             }
 
                 # 5분봉 정밀 청산 루프 (포지션이 있으면 즉시 실행)
                 if active_pos is not None:
                     sym = active_pos['sym']
-                    future_5m = day_tqqq_5m if sym == 'TQQQ' else day_sqqq_5m
-                    future_5m = future_5m[future_5m.index > curr_dt_ts]
+                    future_5m = day_long_5m if sym == config.BASE_ASSET_LONG else day_short_5m
+                    # 15분봉(curr_dt_ts)은 시작 시간 기준이므로, 실제 캔들이 끝나는 시간은 +15분 뒤임.
+                    # 따라서 미래참조를 막기 위해, 진입 이후의 5분봉은 curr_dt_ts + 15분부터 스캔해야 함.
+                    future_5m = future_5m[future_5m.index >= curr_dt_ts + pd.Timedelta(minutes=15)]
                     
                     for cur_5m_dt, row_5m in future_5m.iterrows():
                         cur_5m_time_str = cur_5m_dt.strftime('%H:%M')
@@ -306,10 +310,8 @@ def run_weekly_rolling_walk_forward():
                         
                         active_pos['bars_5m'] += 1
                         
-                        if 'peak_high' not in active_pos:
-                            active_pos['peak_high'] = cur_high
-                        else:
-                            active_pos['peak_high'] = max(active_pos['peak_high'], cur_high)
+                        # 미래참조 방지: '이전' 캔들까지의 peak_high를 기준으로 SL 계산
+                        prev_peak_high = active_pos.get('peak_high', active_pos['entry_px'])
 
                         entry_px = active_pos['entry_px']
                         dyn_sl_pct = active_pos['sl_pct']
@@ -319,26 +321,32 @@ def run_weekly_rolling_walk_forward():
 
                         current_sl_px = sl_px
                         trailing_trigger_px = entry_px * (1.0 + config.TRAILING_TRIGGER_PCT)
-                        if active_pos['peak_high'] >= trailing_trigger_px:
-                            safety_sl_px = entry_px * (1.0 + max(0.0, config.TRAILING_TRIGGER_PCT - 0.015))
-                            current_sl_px = max(safety_sl_px, active_pos['peak_high'] * (1.0 - config.TRAILING_DROP_PCT))
+                        if prev_peak_high >= trailing_trigger_px:
+                            safety_sl_px = entry_px * (1.0 + max(0.0, config.TRAILING_TRIGGER_PCT - config.TRAILING_TRIGGER_PCT)) # Ensures breakeven
+                            current_sl_px = max(safety_sl_px, prev_peak_high * (1.0 - config.TRAILING_DROP_PCT))
 
                         exit_price = None
                         exit_reason = None
                         
-                        # 손절선을 최우선적으로 비관적 평가
+                        # 1. 손절선을 최우선적으로 비관적 평가
                         if cur_low <= current_sl_px:
                             exit_price = current_sl_px
                             exit_reason = "TRAILING_SL" if current_sl_px > sl_px else "STOP_LOSS"
+                        # 2. 손절에 걸리지 않았다면 익절(TP) 평가
                         elif cur_high >= tp_px:
                             exit_price = tp_px
                             exit_reason = "MAX_TP"
+                        # 3. 타임스탑 및 장 마감 청산
                         elif active_pos['bars_5m'] * 5 >= config.TIME_STOP_MINUTES:
                             exit_price = cur_close
                             exit_reason = "TIME_STOP"
                         elif cur_5m_time_str >= config.PHASE_EOD_CLEAR:
                             exit_price = cur_close
                             exit_reason = "EOD_CLEAR"
+
+                        # 청산되지 않았다면 다음 캔들을 위해 peak_high 갱신 (현재 캔들 고가 반영)
+                        if exit_price is None:
+                            active_pos['peak_high'] = max(prev_peak_high, cur_high)
 
                         if exit_price is not None:
                             raw_ret = (exit_price / entry_px) - 1.0
@@ -398,7 +406,7 @@ def run_weekly_rolling_walk_forward():
         if sub_df.empty:
             return {
                 'trades': 0, 'win_rate': 0.0, 'pf': 0.0, 'pnl': 0, 'ret_pct': 0.0, 'end_cap': int(start_cap),
-                'tqqq_trades': 0, 'sqqq_trades': 0
+                'long_trades': 0, 'short_trades': 0
             }
         wins = sub_df[sub_df['net_ret_pct'] > 0]
         losses = sub_df[sub_df['net_ret_pct'] <= 0]
@@ -416,8 +424,8 @@ def run_weekly_rolling_walk_forward():
             'pnl': int(tot_pnl),
             'ret_pct': round(ret_pct, 1),
             'end_cap': int(end_cap),
-            'tqqq_trades': len(sub_df[sub_df['symbol'] == 'TQQQ']),
-            'sqqq_trades': len(sub_df[sub_df['symbol'] == 'SQQQ'])
+            'long_trades': len(sub_df[sub_df['symbol'] == config.BASE_ASSET_LONG]),
+            'short_trades': len(sub_df[sub_df['symbol'] == config.BASE_ASSET_SHORT])
         }
 
     # 전체 통산
@@ -439,8 +447,8 @@ def run_weekly_rolling_walk_forward():
             'trades': int(st['trades']),
             'win_rate': float(st['win_rate']),
             'pf': float(st['pf']),
-            'tqqq_cnt': int(st['tqqq_trades']),
-            'sqqq_cnt': int(st['sqqq_trades'])
+            'long_cnt': int(st['long_trades']),
+            'short_cnt': int(st['short_trades'])
         })
         y_start_cap = st['end_cap']
 
@@ -460,8 +468,8 @@ def run_weekly_rolling_walk_forward():
             'trades': int(st['trades']),
             'win_rate': float(st['win_rate']),
             'pf': float(st['pf']),
-            'tqqq_cnt': int(st['tqqq_trades']),
-            'sqqq_cnt': int(st['sqqq_trades'])
+            'long_cnt': int(st['long_trades']),
+            'short_cnt': int(st['short_trades'])
         })
         m_start_cap = st['end_cap']
 
@@ -470,7 +478,7 @@ def run_weekly_rolling_walk_forward():
         'final_capital': int(df_trades['ending_capital'].iloc[-1]) if not df_trades.empty else initial_capital,
         'total_trades': int(len(df_trades)),
         'total_weeks_tested': total_test_weeks,
-        'rolling_window_weeks': ROLLING_WINDOW_WEEKS,
+        'rolling_window_weeks': MAX_TRAIN_WEEKS,
         'mdd_pct': round(max_drawdown_pct, 2),
         'total_stats': total_stats,
         'yearly': yearly_rows,
@@ -485,7 +493,7 @@ def run_weekly_rolling_walk_forward():
     print(f"• 롤링 재학습 윈도우: 매주 직전 104주 (2개년, 504거래일)")
     print(f"• 시작 원금: {initial_capital:,.0f}원 ➔ 최종 기말 잔고: {total_stats['end_cap']:,}원")
     print(f"• 총 누적 수익률: {total_stats['ret_pct']:+,.1f}% (총 손익: {total_stats['pnl']:+,}원)")
-    print(f"• 총 거래 횟수: {total_stats['trades']}회 (TQQQ: {total_stats['tqqq_trades']}회 / SQQQ: {total_stats['sqqq_trades']}회)")
+    print(f"• 총 거래 횟수: {total_stats['trades']}회 (TQQQ: {total_stats['long_trades']}회 / SQQQ: {total_stats['short_trades']}회)")
     print(f"• 주간 롤링 승률 (Win Rate): {total_stats['win_rate']:.1f}%")
     print(f"• 손익비 (Profit Factor): {total_stats['pf']:.2f}")
     print(f"• 4개년 최대 낙폭 (MDD): {max_drawdown_pct:.2f}%")
@@ -497,7 +505,7 @@ def run_weekly_rolling_walk_forward():
     print(f"{'년도':<6} | {'시작 잔고':<16} | {'기말 잔고':<16} | {'연간 손익':<16} | {'수익률':<9} | {'거래수':<6} | {'승률':<7} | {'PF':<6} | {'TQQQ/SQQQ':<10}")
     print("-" * 115)
     for r in yearly_rows:
-        print(f"{r['year']:<6} | {r['start_cap']:>14,}원 | {r['end_cap']:>14,}원 | {r['pnl']:>+14,}원 | {r['ret_pct']:>+7.1f}% | {r['trades']:>4}회 | {r['win_rate']:>5.1f}% | {r['pf']:>5.2f} | {r['tqqq_cnt']:>2}/{r['sqqq_cnt']:<2}회")
+        print(f"{r['year']:<6} | {r['start_cap']:>14,}원 | {r['end_cap']:>14,}원 | {r['pnl']:>+14,}원 | {r['ret_pct']:>+7.1f}% | {r['trades']:>4}회 | {r['win_rate']:>5.1f}% | {r['pf']:>5.2f} | {r['long_cnt']:>2}/{r['short_cnt']:<2}회")
     print("=" * 115)
 
     print("\n" + "=" * 115)
@@ -506,7 +514,7 @@ def run_weekly_rolling_walk_forward():
     print(f"{'연월':<7} | {'시작 잔고':<16} | {'기말 잔고':<16} | {'월간 손익':<16} | {'수익률':<9} | {'거래수':<6} | {'승률':<7} | {'PF':<6} | {'TQQQ/SQQQ':<10}")
     print("-" * 115)
     for r in monthly_rows:
-        print(f"{r['month']:<7} | {r['start_cap']:>14,}원 | {r['end_cap']:>14,}원 | {r['pnl']:>+14,}원 | {r['ret_pct']:>+7.2f}% | {r['trades']:>4}회 | {r['win_rate']:>5.1f}% | {r['pf']:>5.2f} | {r['tqqq_cnt']:>2}/{r['sqqq_cnt']:<2}회")
+        print(f"{r['month']:<7} | {r['start_cap']:>14,}원 | {r['end_cap']:>14,}원 | {r['pnl']:>+14,}원 | {r['ret_pct']:>+7.2f}% | {r['trades']:>4}회 | {r['win_rate']:>5.1f}% | {r['pf']:>5.2f} | {r['long_cnt']:>2}/{r['short_cnt']:<2}회")
     print("=" * 115)
 
     # 저장

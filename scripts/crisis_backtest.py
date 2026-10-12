@@ -1,6 +1,7 @@
 ﻿import sys
 sys.path.append('.')
 import yfinance as yf
+import config
 import pandas as pd
 import numpy as np
 import warnings
@@ -64,8 +65,8 @@ def run_crisis(name, test_start, test_end):
     df_daily.ffill(inplace=True)
     df_daily.dropna(inplace=True)
     
-    tqqq_c = [100.0]; tqqq_o, tqqq_h, tqqq_l = [], [], []
-    sqqq_c = [100.0]; sqqq_o, sqqq_h, sqqq_l = [], [], []
+    long_c = [100.0]; long_o, long_h, long_l = [], [], []
+    short_c = [100.0]; short_o, short_h, short_l = [], [], []
     
     ndx_c_prev = df_daily['NDX_C'].iloc[0]
     for i in range(len(df_daily)):
@@ -74,24 +75,24 @@ def run_crisis(name, test_start, test_end):
         ret_h = (row['NDX_H'] / ndx_c_prev) - 1.0
         ret_l = (row['NDX_L'] / ndx_c_prev) - 1.0
         ret_c = (row['NDX_C'] / ndx_c_prev) - 1.0
-        c_prev_t = tqqq_c[-1]
+        c_prev_t = long_c[-1]
         t_o = max(0.1, c_prev_t * (1 + 3 * ret_o))
         t_h = max(0.1, c_prev_t * (1 + 3 * ret_h))
         t_l = max(0.1, c_prev_t * (1 + 3 * ret_l))
         t_c = max(0.1, c_prev_t * (1 + 3 * ret_c))
         t_h = max(t_o, t_c, t_h); t_l = min(t_o, t_c, t_l)
-        tqqq_o.append(t_o); tqqq_h.append(t_h); tqqq_l.append(t_l); tqqq_c.append(t_c)
-        c_prev_s = sqqq_c[-1]
+        long_o.append(t_o); long_h.append(t_h); long_l.append(t_l); long_c.append(t_c)
+        c_prev_s = short_c[-1]
         s_o = max(0.1, c_prev_s * (1 - 3 * ret_o))
         s_h = max(0.1, c_prev_s * (1 - 3 * ret_l))
         s_l = max(0.1, c_prev_s * (1 - 3 * ret_h))
         s_c = max(0.1, c_prev_s * (1 - 3 * ret_c))
         s_h = max(s_o, s_c, s_h); s_l = min(s_o, s_c, s_l)
-        sqqq_o.append(s_o); sqqq_h.append(s_h); sqqq_l.append(s_l); sqqq_c.append(s_c)
+        short_o.append(s_o); short_h.append(s_h); short_l.append(s_l); short_c.append(s_c)
         ndx_c_prev = row['NDX_C']
         
-    df_daily['TQQQ_O'] = tqqq_o; df_daily['TQQQ_H'] = tqqq_h; df_daily['TQQQ_L'] = tqqq_l; df_daily['TQQQ_C'] = tqqq_c[1:]
-    df_daily['SQQQ_O'] = sqqq_o; df_daily['SQQQ_H'] = sqqq_h; df_daily['SQQQ_L'] = sqqq_l; df_daily['SQQQ_C'] = sqqq_c[1:]
+    df_daily['TQQQ_O'] = long_o; df_daily['TQQQ_H'] = long_h; df_daily['TQQQ_L'] = long_l; df_daily['TQQQ_C'] = long_c[1:]
+    df_daily['SQQQ_O'] = short_o; df_daily['SQQQ_H'] = short_h; df_daily['SQQQ_L'] = short_l; df_daily['SQQQ_C'] = short_c[1:]
     
     print("Generating Master 15m Path for WFA...")
     dfs_5m_master = []
@@ -100,22 +101,22 @@ def run_crisis(name, test_start, test_end):
         d5['VIX'] = row['VIX_C']
         d5['TNX'] = row['TNX_C']
         dfs_5m_master.append(d5)
-    tqqq_5m_m = pd.concat(dfs_5m_master, ignore_index=True)
-    tqqq_15m = tqqq_5m_m.set_index('datetime').resample('15Min').agg({
+    long_5m_m = pd.concat(dfs_5m_master, ignore_index=True)
+    long_15m = long_5m_m.set_index('datetime').resample('15Min').agg({
         'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum', 'VIX': 'last', 'TNX': 'last'
     }).dropna().reset_index()
     
     for col in ['NVDA_Close', 'QQQ_Close', 'VIXY_Close', 'IEF_Close']:
-        tqqq_15m[col] = tqqq_15m['Close']
+        long_15m[col] = long_15m['Close']
         
     ml = MLFeatureEngine(confidence_threshold=0.60)
-    tqqq_feat = ml.extract_features(tqqq_15m)
-    labels = ml.compute_triple_barrier_labels(tqqq_feat)
-    tqqq_feat['target'] = labels.map({1: 2, -1: 0, 0: 1}).fillna(1).astype(int)
+    long_feat = ml.extract_features(long_15m)
+    labels = ml.compute_triple_barrier_labels(long_feat)
+    long_feat['target'] = labels.map({1: 2, -1: 0, 0: 1}).fillna(1).astype(int)
     
-    tqqq_feat['datetime_dt'] = pd.to_datetime(tqqq_feat['datetime'])
-    tqqq_feat['date_str'] = tqqq_feat['datetime_dt'].dt.strftime('%Y-%m-%d')
-    tqqq_feat['week_id'] = tqqq_feat['datetime_dt'].dt.isocalendar().year.astype(str) + "_" + tqqq_feat['datetime_dt'].dt.isocalendar().week.astype(str).str.zfill(2)
+    long_feat['datetime_dt'] = pd.to_datetime(long_feat['datetime'])
+    long_feat['date_str'] = long_feat['datetime_dt'].dt.strftime('%Y-%m-%d')
+    long_feat['week_id'] = long_feat['datetime_dt'].dt.isocalendar().year.astype(str) + "_" + long_feat['datetime_dt'].dt.isocalendar().week.astype(str).str.zfill(2)
     
     raw_price_features = {
         'open', 'high', 'low', 'close', 'volume', 'Open', 'High', 'Low', 'Close', 'Volume',
@@ -123,9 +124,9 @@ def run_crisis(name, test_start, test_end):
         'cum_vp', 'vwap', 'EMA_9', 'EMA_21', 'EMA_50', 'EMA_200',
         'BB_Upper', 'BB_Lower', 'KC_Upper', 'KC_Lower', 'ATR_14', 'MACD', 'MACD_Signal', 'MACD_Hist'
     }
-    feature_cols = [c for c in tqqq_feat.columns if c not in raw_price_features and pd.api.types.is_numeric_dtype(tqqq_feat[c])]
+    feature_cols = [c for c in long_feat.columns if c not in raw_price_features and pd.api.types.is_numeric_dtype(long_feat[c])]
     
-    unique_weeks = tqqq_feat['week_id'].unique().tolist()
+    unique_weeks = long_feat['week_id'].unique().tolist()
     ROLLING_WINDOW_WEEKS = 104
     
     print(f"Running WFA on {len(unique_weeks) - ROLLING_WINDOW_WEEKS} weeks...")
@@ -135,9 +136,9 @@ def run_crisis(name, test_start, test_end):
         cur_test_week = unique_weeks[w_idx]
         train_weeks = unique_weeks[w_idx - ROLLING_WINDOW_WEEKS : w_idx]
         
-        train_mask = tqqq_feat['week_id'].isin(train_weeks)
-        X_tr = tqqq_feat.loc[train_mask, feature_cols].fillna(0.0)
-        y_tr = tqqq_feat.loc[train_mask, 'target']
+        train_mask = long_feat['week_id'].isin(train_weeks)
+        X_tr = long_feat.loc[train_mask, feature_cols].fillna(0.0)
+        y_tr = long_feat.loc[train_mask, 'target']
         
         clf = LGBMClassifier(
             objective='multiclass', num_class=3, class_weight='balanced',
@@ -146,8 +147,8 @@ def run_crisis(name, test_start, test_end):
         )
         clf.fit(X_tr, y_tr)
         
-        test_mask = tqqq_feat['week_id'] == cur_test_week
-        w_test_df = tqqq_feat.loc[test_mask].copy()
+        test_mask = long_feat['week_id'] == cur_test_week
+        w_test_df = long_feat.loc[test_mask].copy()
         if w_test_df.empty: continue
         
         X_te = w_test_df[feature_cols].fillna(0.0)
@@ -162,22 +163,22 @@ def run_crisis(name, test_start, test_end):
         print("No predictions generated. Check data.")
         return
         
-    tqqq_feat_pred = pd.concat(preds, ignore_index=True)
-    tqqq_feat_pred = tqqq_feat_pred[tqqq_feat_pred['date_str'] >= test_start].copy()
+    long_feat_pred = pd.concat(preds, ignore_index=True)
+    long_feat_pred = long_feat_pred[long_feat_pred['date_str'] >= test_start].copy()
     
-    tqqq_feat_pred['Sig'] = 0
-    tqqq_feat_pred['ema20'] = tqqq_feat_pred['Close'].ewm(span=20, adjust=False).mean()
-    tqqq_feat_pred = tqqq_feat_pred.reset_index(drop=True)
+    long_feat_pred['Sig'] = 0
+    long_feat_pred['ema20'] = long_feat_pred['Close'].ewm(span=20, adjust=False).mean()
+    long_feat_pred = long_feat_pred.reset_index(drop=True)
     
-    long_mask = (tqqq_feat_pred['Prob_Long'] > tqqq_feat_pred['Prob_Short']) & (tqqq_feat_pred['Prob_Long'] > tqqq_feat_pred['Prob_Neutral']) & (tqqq_feat_pred['Prob_Long'] >= 0.60) & (tqqq_feat_pred['Close'] > tqqq_feat_pred['ema20'])
-    short_mask = (tqqq_feat_pred['Prob_Short'] > tqqq_feat_pred['Prob_Long']) & (tqqq_feat_pred['Prob_Short'] > tqqq_feat_pred['Prob_Neutral']) & (tqqq_feat_pred['Prob_Short'] >= 0.60) & (tqqq_feat_pred['Close'] < tqqq_feat_pred['ema20'])
-    tqqq_feat_pred.loc[long_mask, 'Sig'] = 1
-    tqqq_feat_pred.loc[short_mask, 'Sig'] = -1
+    long_mask = (long_feat_pred['Prob_Long'] > long_feat_pred['Prob_Short']) & (long_feat_pred['Prob_Long'] > long_feat_pred['Prob_Neutral']) & (long_feat_pred['Prob_Long'] >= 0.60) & (long_feat_pred['Close'] > long_feat_pred['ema20'])
+    short_mask = (long_feat_pred['Prob_Short'] > long_feat_pred['Prob_Long']) & (long_feat_pred['Prob_Short'] > long_feat_pred['Prob_Neutral']) & (long_feat_pred['Prob_Short'] >= 0.60) & (long_feat_pred['Close'] < long_feat_pred['ema20'])
+    long_feat_pred.loc[long_mask, 'Sig'] = 1
+    long_feat_pred.loc[short_mask, 'Sig'] = -1
     
-    print(f"Num Long Signals: {(tqqq_feat_pred['Sig'] == 1).sum()}")
-    print(f"Num Short Signals: {(tqqq_feat_pred['Sig'] == -1).sum()}")
+    print(f"Num Long Signals: {(long_feat_pred['Sig'] == 1).sum()}")
+    print(f"Num Short Signals: {(long_feat_pred['Sig'] == -1).sum()}")
     
-    tqqq_feat_pred['datetime'] = pd.to_datetime(tqqq_feat_pred['datetime'])
+    long_feat_pred['datetime'] = pd.to_datetime(long_feat_pred['datetime'])
     
     n_paths = 5
     final_caps = []
@@ -189,29 +190,29 @@ def run_crisis(name, test_start, test_end):
     
     for sim in range(n_paths):
         dfs_5m = []
-        dfs_sqqq_5m = []
+        dfs_short_5m = []
         
         for dt, row in df_daily_test.iterrows():
             d5 = generate_synthetic_5m_day(dt, row['TQQQ_O'], row['TQQQ_H'], row['TQQQ_L'], row['TQQQ_C'])
             s5 = generate_synthetic_5m_day(dt, row['SQQQ_O'], row['SQQQ_H'], row['SQQQ_L'], row['SQQQ_C'])
             dfs_5m.append(d5)
-            dfs_sqqq_5m.append(s5)
+            dfs_short_5m.append(s5)
             
-        tqqq_5m = pd.concat(dfs_5m, ignore_index=True)
-        sqqq_5m = pd.concat(dfs_sqqq_5m, ignore_index=True)
+        long_5m = pd.concat(dfs_5m, ignore_index=True)
+        short_5m = pd.concat(dfs_short_5m, ignore_index=True)
         
-        tqqq_5m['datetime'] = pd.to_datetime(tqqq_5m['datetime'])
-        sqqq_5m['datetime'] = pd.to_datetime(sqqq_5m['datetime'])
+        long_5m['datetime'] = pd.to_datetime(long_5m['datetime'])
+        short_5m['datetime'] = pd.to_datetime(short_5m['datetime'])
         
-        df_merged = pd.merge_asof(tqqq_5m.sort_values('datetime'), 
-                                  tqqq_feat_pred[['datetime', 'Sig']].sort_values('datetime'),
+        df_merged = pd.merge_asof(long_5m.sort_values('datetime'), 
+                                  long_feat_pred[['datetime', 'Sig']].sort_values('datetime'),
                                   on='datetime', direction='backward')
         
-        df_merged_sqqq = pd.merge_asof(sqqq_5m.sort_values('datetime'), 
-                                  tqqq_feat_pred[['datetime', 'Sig']].sort_values('datetime'),
+        df_merged_short = pd.merge_asof(short_5m.sort_values('datetime'), 
+                                  long_feat_pred[['datetime', 'Sig']].sort_values('datetime'),
                                   on='datetime', direction='backward')
                                   
-        df_merged['SQQQ_Close'] = df_merged_sqqq['Close']
+        df_merged['SQQQ_Close'] = df_merged_short['Close']
         
         capital = 10_000_000.0
         pos = 0
@@ -225,21 +226,21 @@ def run_crisis(name, test_start, test_end):
             
             if pos == 0:
                 if sig == 1:
-                    current_sym = 'TQQQ'
+                    current_sym = config.BASE_ASSET_LONG
                     cur_px = row.Close
                     pos = (capital * 0.98) / cur_px
                     entry_px = cur_px
                     peak_px = entry_px
                     capital -= pos * entry_px
                 elif sig == -1:
-                    current_sym = 'SQQQ'
+                    current_sym = config.BASE_ASSET_SHORT
                     cur_px = row.SQQQ_Close
                     pos = (capital * 0.98) / cur_px
                     entry_px = cur_px
                     peak_px = entry_px
                     capital -= pos * entry_px
             elif pos > 0:
-                if current_sym == 'TQQQ':
+                if current_sym == config.BASE_ASSET_LONG:
                     cur_px = row.Close
                 else:
                     cur_px = row.SQQQ_Close
@@ -261,7 +262,7 @@ def run_crisis(name, test_start, test_end):
                     cap_curve.append(capital)
                     
         if pos > 0:
-            if current_sym == 'TQQQ':
+            if current_sym == config.BASE_ASSET_LONG:
                 last_px = df_merged.iloc[-1]['Close']
             else:
                 last_px = df_merged.iloc[-1]['SQQQ_Close']
