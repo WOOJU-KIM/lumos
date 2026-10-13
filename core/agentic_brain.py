@@ -307,49 +307,49 @@ class AgenticTelegramBrain:
         # [1. 명시적인 실전 거래 중단/긴급 정지 명령]
         # ----------------------------------------------------
         if any(k in p for k in ["거래 멈춰", "매매 멈춰", "매매 정지", "긴급 정지", "매매 셧다운", "/stop"]):
-            self.circuit_breaker._save_status("CIRCUIT_BREAKER_HALT", 0, "대표님 수동 매매 일시정지 명령")
             try:
-                from core.kiwoom_broker import KiwoomBroker
-                kb = KiwoomBroker()
-                bal = kb.get_overseas_stock_balance()
-                for h in bal.get("holdings", []):
-                    kb.send_order(h.get("symbol", config.BASE_ASSET_LONG), "SELL", h.get("quantity", 0), price=0.0)
+                self.circuit_breaker._save_status("CIRCUIT_BREAKER_HALT", 0, "대표님 수동 매매 일시정지 명령")
             except Exception:
-                pass
-            return "🛑 **[실전 매매 긴급 일시 정지]**\n대표님의 명령에 따라 매매가 즉시 중단되었으며, 보유 포지션이 100% 현금으로 안전하게 보존되었습니다. '매매 재개해줘'를 입력하시면 다시 가동됩니다.", True
+                return "🛑 HALT 저장 실패: 주문 차단 상태를 확인하고 명시적 복구가 필요합니다. 취소·청산은 실행하지 않았습니다.", False
+            return "🛑 HALT 요청이 저장되었습니다. 신규 BUY는 차단하며, 주문 취소·포지션 청산 완료를 의미하지 않습니다.", True
 
         # ----------------------------------------------------
         # [2. 명시적인 실전 거래 재개 명령]
         # ----------------------------------------------------
         if any(k in p for k in ["매매 재개", "거래 재개", "서킷 해제", "다시 시작", "/resume"]):
-            self.circuit_breaker.release_circuit_breaker(command_by="대표님 텔레그램 지시")
+            try:
+                result = self.circuit_breaker.release_circuit_breaker(command_by="대표님 텔레그램 지시")
+            except Exception:
+                return "매매 재개 실패: 상태 검증 및 명시적 복구가 필요합니다.", False
+            if not isinstance(result, dict) or result.get("ok") is not True:
+                return "매매 재개 보류: 최초 전환·주문 이력 검증이 완료되지 않았습니다. HALT는 유지됩니다.", False
             return "🟢 **[실전 매매 정상 재개 보고]**\n서킷 브레이커 및 매매 중단이 정상 해제되었습니다. 키움 메인 주문 엔진이 유효 타점 대기에 돌입합니다.", True
 
         # ----------------------------------------------------
         # [3. 명시적인 1주 핑 테스트 명령]
         # ----------------------------------------------------
         if any(p == k or p.startswith(k) for k in ["핑", "ping", "1주 테스트", "발주 테스트", "테스트", "/ping"]):
-            from core.kiwoom_broker import KiwoomBroker
-            kb = KiwoomBroker()
-            b_res = kb.send_order(config.BASE_ASSET_LONG, "BUY", 1, price=0.0)
-            time.sleep(1)
-            s_res = kb.send_order(config.BASE_ASSET_LONG, "SELL", 1, price=0.0)
-            reply = f"""🧪 **[키움증권 1주 핑 테스트 즉시 집행 완료]**
-━━━━━━━━━━━━━━━━━━━━
-📊 **대상 종목:** `TQQQ 1주`
-⚡ **매수 결과:** `{'✅ 성공' if b_res.get('ok') else '⚠️ 접수'} (단가: ${b_res.get('price', 0):.2f})`
-⚡ **매도 결과:** `{'✅ 성공' if s_res.get('ok') else '⚠️ 접수'} (단가: ${s_res.get('price', 0):.2f})`
-🏛 **운용 계좌:** `{kb.account_no}` ({kb.mode_str})
-💡 **검증 상태:** `키움 REST 발주 및 체결 통신 정상 작동 확인`"""
-            return reply, True
+            return "핑 요청 접수: 실제 주문은 실행하지 않았으며, 증권사 통신·체결 성공은 확인하지 않았습니다.", True
 
         # ----------------------------------------------------
         # [4. 단축 명령어: 실시간 원장 잔고 조회]
         # ----------------------------------------------------
         if p in ["잔고", "계좌", "내 잔고", "잔고 확인", "계좌 확인", "/balance"]:
             from core.kiwoom_broker import KiwoomBroker
-            kb = KiwoomBroker()
-            rep = kb.get_official_broker_report()
+            try:
+                kb = KiwoomBroker()
+                rep = kb.get_official_broker_report()
+            except Exception:
+                return "잔고 조회 실패: 계좌·보유 수량·현금 상태를 확인할 수 없습니다.", False
+            if not isinstance(rep, dict) or rep.get("ok") is not True:
+                return "잔고 조회 실패: 계좌·보유 수량·현금 상태를 확인할 수 없습니다.", False
+            numeric_fields = ("avail_usd", "total_eval_krw", "total_eval_usd", "realized_pnl_usd")
+            holdings = rep.get("holdings", [])
+            if (any(not isinstance(rep.get(key, 0), (int, float)) for key in numeric_fields)
+                    or not isinstance(holdings, list)
+                    or any(not isinstance(h, dict) or any(not isinstance(h.get(key, 0), (int, float))
+                           for key in ("eval_amount_usd", "eval_rate_pct")) for h in holdings)):
+                return "잔고 조회 실패: 계좌·보유 수량·현금 상태를 확인할 수 없습니다.", False
             holdings_str = "  • 보유 주식: 0주 (100% 외화 현금 대기 중)\n"
             if rep.get("holdings"):
                 holdings_str = ""
@@ -457,13 +457,10 @@ class AgenticTelegramBrain:
         if any(k in p for k in ["골든 베이스라인", "골든으로", "처음으로", "원래대로", "롤백"]):
             rb_res = self.registry.promote_sub_model_to_champion("골든")
             if rb_res.get("ok"):
-                if self.circuit_breaker.is_halted():
-                    self.circuit_breaker.release_circuit_breaker(command_by="골든 베이스라인 롤백")
-
                 reply = f"""🛡 **[Lumos 골든 베이스라인 즉시 롤백 완료 보고]**
 ━━━━━━━━━━━━━━━━━━━━
 📌 **롤백 모델:** `M-20260815-GOLDEN-V1` (+24.38% 영구 안전 기준점)
-✅ **상태:** 골든 베이스라인 챔피언으로 실전 메인 엔진이 즉시 무중단 원복되었습니다."""
+✅ **상태:** 모델 롤백 요청이 완료되었습니다. HALT 및 전환 상태는 유지하며 거래를 자동 재개하지 않습니다."""
                 return reply, True
 
         # ----------------------------------------------------
