@@ -1076,46 +1076,53 @@ class KiwoomLiveRunner:
                             self.dispatcher.send_telegram_message(briefing_msg)
                             system_logger.log("INFO", "AI", f"15???? ? (?: {conf:.1f}%)")
                             
+                            # 1. 쉐도우 트래커(가상 매매): 70.4% 컷 무시, NONE 판단 무시. 매 15분마다 무조건 진입
+                            shadow_dir = "LONG" if p_long >= p_short else "SHORT"
+                            shadow_sym = config.BASE_ASSET_LONG if shadow_dir == "LONG" else config.BASE_ASSET_SHORT
+                            shadow_px = live_prices.get(shadow_sym, 0.0)
+                            
+                            try:
+                                shadow_atr = self._get_5m_atr_pct(shadow_sym, shadow_px) if shadow_px > 0 else 1.8
+                                self.shadow_tracker.try_enter_shadow_trade(
+                                    symbol=shadow_sym,
+                                    price=shadow_px,
+                                    current_time=ny_dt,
+                                    atr_pct=(shadow_atr / 100.0)
+                                )
+                            except Exception as e:
+                                system_logger.log("ERROR", "ShadowTracker", self._redact_log(f"가상 진입 추가 중 에러: {e}"))
+                            
+                            # 2. 실전 매매 로직 (기존 70.4% 룰 및 릴레이 원칙 유지)
                             if is_appr:
                                 if direction in ["LONG", "SHORT"]:
                                     winner_sym = config.BASE_ASSET_LONG if direction == "LONG" else config.BASE_ASSET_SHORT
                                     cur_px = live_prices.get(winner_sym, 0.0)
                                     
-                                    if active_pos:
-                                        if cur_px > 0:
-                                            try:
-                                                atr_pct = self._get_5m_atr_pct(winner_sym, cur_px)
-                                                dyn_sl_pct = max(config.SL_MIN_PCT * 100.0, min(config.SL_MAX_PCT * 100.0, atr_pct * config.SL_ATR_MULTIPLIER))
-                                                self.shadow_tracker.add_virtual_trade(winner_sym, cur_px, conf, dyn_sl_pct)
-                                            except Exception as e:
-                                                system_logger.log("ERROR", "ShadowTracker", self._redact_log(f"가상 진입 추가 중 에러: {e}"))
-                                    else:
-                                        if cur_px > 0:
-                                            conn_res = self.broker.test_connection()
-                                            usd_avail = float(conn_res.get("usd_order_available", 0.0))
-                                            order_qty = int((usd_avail * config.MAX_ALLOCATION_RATIO) / (cur_px + config.QTY_CALC_BUFFER))
+                                    if cur_px > 0 and not active_pos:
+                                        conn_res = self.broker.test_connection()
+                                        usd_avail = float(conn_res.get("usd_order_available", 0.0))
+                                        order_qty = int((usd_avail * config.MAX_ALLOCATION_RATIO) / (cur_px + config.QTY_CALC_BUFFER))
+                                        if order_qty > 0:
+                                            system_logger.log("TRADE", "AI", f"V3 AI 신호 발생! {winner_sym} {order_qty}주 매수")
+                                            atr_pct = self._get_5m_atr_pct(winner_sym, cur_px)
+                                            sl_pct = max(config.SL_MIN_PCT * 100.0, min(config.SL_MAX_PCT * 100.0, atr_pct * config.SL_ATR_MULTIPLIER))
+                                            tp_pct = config.MAX_TP_PCT * 100.0
                                             
-                                            if order_qty > 0:
-                                                system_logger.log("TRADE", "AI", f"V3 AI  ? ?! {winner_sym} {order_qty}? ?")
-                                                atr_pct = self._get_5m_atr_pct(winner_sym, cur_px)
-                                                sl_pct = max(config.SL_MIN_PCT * 100.0, min(config.SL_MAX_PCT * 100.0, atr_pct * config.SL_ATR_MULTIPLIER))
-                                                tp_pct = config.MAX_TP_PCT * 100.0
-                                                
-                                                targets = {
-                                                    "dynamic_tp_px": round(cur_px * (1.0 + tp_pct/100.0), 2),
-                                                    "dynamic_sl_px": round(cur_px * (1.0 - sl_pct/100.0), 2),
-                                                    "tp_pct": tp_pct,
-                                                    "sl_pct": sl_pct,
-                                                    "time_stop_minutes": config.TIME_STOP_MINUTES,
-                                                    "strategy_tag": "Lumos V4 Optimal"
-                                                }
-                                                self._execute_buy_with_10s_chase(
-                                                    symbol=winner_sym,
-                                                    target_qty=order_qty,
-                                                    ref_price=cur_px,
-                                                    moe_res=moe_res,
-                                                    targets=targets
-                                                )
+                                            targets = {
+                                                "dynamic_tp_px": round(cur_px * (1.0 + tp_pct/100.0), 2),
+                                                "dynamic_sl_px": round(cur_px * (1.0 - sl_pct/100.0), 2),
+                                                "tp_pct": tp_pct,
+                                                "sl_pct": sl_pct,
+                                                "time_stop_minutes": config.TIME_STOP_MINUTES,
+                                                "strategy_tag": "Lumos V4 Optimal"
+                                            }
+                                            self._execute_buy_with_10s_chase(
+                                                symbol=winner_sym,
+                                                target_qty=order_qty,
+                                                ref_price=cur_px,
+                                                moe_res=moe_res,
+                                                targets=targets
+                                            )
                         except Exception as e:
                             system_logger.log("ERROR", "AI", self._redact_log(f"AI ? ?? : {e}"))
 
