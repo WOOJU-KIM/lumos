@@ -61,7 +61,7 @@ def validate_env():
 # ==============================================================================
 
 # 1. 吏꾩엯 ?먮떒 ?곗씠??(Entry Logic)
-GBDT_CONFIDENCE_THRESHOLD = 0.704  # ?섏씠釉뚮━??MoE 吏꾩엯 理쒖냼 ?뺤떊??(65%)
+GBDT_CONFIDENCE_THRESHOLD = 0.64  # 최종 보정 확신도 기준: 64%
 USE_CROSS_ASSET_VETO = False      # ?щ줈?ㅼ뿉??Veto 諛⑺뙣 ?곸슜 ?щ?
 USE_60M_TREND_FILTER = False      # 60遺꾨큺 異붿꽭 ?꾪꽣 ?곸슜 ?щ?
 MACRO_TREND_SYMBOL="QQQ"        # GBDT 대추세 (QQQ 60분봉 추세 방패 기준 종목)
@@ -115,6 +115,7 @@ ALL_SYMBOLS = list(set(TRADE_SYMBOLS + CROSS_ASSET_SYMBOLS + ["SOXL", "SOXS"]))
 # --- POLLING & TIMEOUT SETTINGS ---
 WS_FILL_POLL_INTERVAL = 0.05
 BALANCE_CACHE_TTL_SEC = 5.0
+KIWOOM_ORDER_QUERY_MAX_PAGES = 100  # Query-only page budget; valid range 1..100.
 CANCEL_ORDER_WAIT_TIME = 0.5
 MAIN_LOOP_TICK_OPEN = 3
 MAIN_LOOP_TICK_CLOSED = 15
