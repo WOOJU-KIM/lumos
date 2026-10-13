@@ -45,7 +45,7 @@ class MarketDataLake:
         self._init_db()
 
     def _get_connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
         conn.row_factory = sqlite3.Row
         return conn
 
@@ -264,7 +264,7 @@ class MarketDataLake:
                 "Accept": "application/json"
             })
             try:
-                with urllib.request.urlopen(req, timeout=10) as resp:
+                with urllib.request.urlopen(req, timeout=2) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
                 if "bars" in data and sym in data["bars"]:
                     all_bars.extend(data["bars"][sym])
@@ -310,17 +310,21 @@ class MarketDataLake:
         return results
 
     def sync_live_intraday_candles(self, symbols: Optional[List[str]] = None) -> int:
-        """장중 실시간 5분봉/15분봉 최신 데이터 동기화 (최근 1일치 고속 수집)"""
+        """장중 실시간 5분봉/15분봉 최신 데이터 동기화 (최근 1일치 병렬 초고속 수집)"""
+        import concurrent.futures
         target_syms = symbols or config.ALL_SYMBOLS
-        total_added = 0
-        for sym in target_syms:
-            for tf in ["5m", "15m", "60m"]:
-                try:
-                    cnt = self.harvest_symbol(sym, tf, period="1d")
-                    total_added += cnt
-                except Exception:
-                    pass
-        return total_added
+        tasks = [(sym, tf) for sym in target_syms for tf in ["5m", "15m", "60m"]]
+
+        def _fetch(item):
+            sym, tf = item
+            try:
+                return self.harvest_symbol(sym, tf, period="1d")
+            except Exception:
+                return 0
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+            results = list(ex.map(_fetch, tasks))
+        return sum(results)
 
     def get_candles_with_live_tick(
         self,
