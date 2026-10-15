@@ -186,6 +186,10 @@ class MoEMetaOrchestrator:
         """
         # 방어 가드: 빈 데이터프레임 또는 데이터 부족 시 안전 반환
         if df_candle_15m is None or df_candle_15m.empty or len(df_candle_15m) < 15:
+            early_snap = self.gbdt_engine.get_model_snapshot() if hasattr(self, "gbdt_engine") and hasattr(self.gbdt_engine, "get_model_snapshot") else None
+            e_sha = early_snap.active_model_sha256 if early_snap is not None else getattr(getattr(self, "gbdt_engine", None), "active_model_sha256", "")
+            e_load = early_snap.load_status if early_snap is not None else getattr(getattr(self, "gbdt_engine", None), "model_load_status", "")
+            e_fb = early_snap.fallback_status if early_snap is not None else getattr(getattr(self, "gbdt_engine", None), "model_fallback_status", "")
             return {
                 "selected_expert": "none",
                 "expert_desc": "데이터 부족 (신호 산출 불가)",
@@ -194,10 +198,24 @@ class MoEMetaOrchestrator:
                 "threshold_applied": float(threshold if threshold is not None else self.gbdt_threshold),
                 "regime_snapshot": {},
                 "direction": "NONE",
+                "cross_dir": "NONE",
+                "dir_gbdt": "NONE",
                 "is_approved": False,
+                "is_cross_veto": False,
                 "is_60m_trend_ok": False,
                 "dip_ok": False,
                 "all_gating_confidences": {"cross_asset": 0.5, "gbdt_pattern": 0.5},
+                "gbdt_probs": {"LONG": 0.33, "SHORT": 0.33, "NONE": 0.34},
+                "active_model_id": early_snap.active_model_id if early_snap is not None else getattr(getattr(self, "gbdt_engine", None), "active_model_id", ""),
+                "active_model_sha256": e_sha,
+                "active_model_version": (e_sha or "")[:12] if e_sha else "NONE",
+                "active_model_schema": early_snap.feature_schema if early_snap is not None else getattr(getattr(self, "gbdt_engine", None), "feature_schema", ""),
+                "active_model_num_features": len(early_snap.feature_names) if early_snap is not None else len(getattr(getattr(self, "gbdt_engine", None), "feature_names", []) or []),
+                "active_model_load_status": e_load,
+                "active_model_fallback_status": e_fb,
+                "active_model_is_fallback": bool(e_load == "FALLBACK_TO_CHAMPION" or "FALLBACK" in str(e_fb)),
+                "model_hot_reloaded": False,
+                "model_consistency_ok": bool(early_snap is not None and early_snap.model is not None and e_load != "BLOCKED"),
                 "timestamp": current_time_str or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             }
 
@@ -261,22 +279,34 @@ class MoEMetaOrchestrator:
         conf_gbdt = 0.50
         gbdt_probs = {"LONG": 0.33, "SHORT": 0.33, "NONE": 0.34}
         gbdt_snap = None
+        prev_snap = None
+        model_hot_reloaded = False
+        consistency_res = {"ok": True, "reason": "CONSISTENT"}
         try:
             if hasattr(self, "gbdt_engine"):
+                if hasattr(self.gbdt_engine, "get_model_snapshot"):
+                    prev_snap = self.gbdt_engine.get_model_snapshot()
                 if hasattr(self.gbdt_engine, "ensure_latest_manifest_model"):
-                    self.gbdt_engine.ensure_latest_manifest_model()
+                    model_hot_reloaded = bool(self.gbdt_engine.ensure_latest_manifest_model())
                 if hasattr(self.gbdt_engine, "get_model_snapshot"):
                     gbdt_snap = self.gbdt_engine.get_model_snapshot()
+                if hasattr(self.gbdt_engine, "verify_manifest_memory_snapshot_consistency"):
+                    consistency_res = self.gbdt_engine.verify_manifest_memory_snapshot_consistency(snapshot=gbdt_snap)
             live_long_15m = _get_live_df(config.TRADE_SYMBOLS[0], current_time_str) if "live_prices" in locals() else df_candle_15m
-            if gbdt_snap is not None:
-                gbdt_sig, gbdt_conf, _, gbdt_probs = self.gbdt_engine.predict_signal_full(live_long_15m, snapshot=gbdt_snap)
+            if consistency_res.get("ok", True):
+                if gbdt_snap is not None:
+                    gbdt_sig, gbdt_conf, _, gbdt_probs = self.gbdt_engine.predict_signal_full(live_long_15m, snapshot=gbdt_snap)
+                else:
+                    gbdt_sig, gbdt_conf, _, gbdt_probs = self.gbdt_engine.predict_signal_full(live_long_15m)
+                conf_gbdt = gbdt_conf
+                if gbdt_sig == 1:
+                    dir_gbdt = "LONG"
+                elif gbdt_sig == -1:
+                    dir_gbdt = "SHORT"
             else:
-                gbdt_sig, gbdt_conf, _, gbdt_probs = self.gbdt_engine.predict_signal_full(live_long_15m)
-            conf_gbdt = gbdt_conf
-            if gbdt_sig == 1:
-                dir_gbdt = "LONG"
-            elif gbdt_sig == -1:
-                dir_gbdt = "SHORT"
+                logger.error(f"🚨 [신규 진입 차단] 모델 스냅샷/메모리/매니페스트 불일치 또는 BLOCKED 상태 감지: {consistency_res}")
+                dir_gbdt = "NONE"
+                conf_gbdt = 0.34
         except Exception:
             pass
 
@@ -331,6 +361,9 @@ class MoEMetaOrchestrator:
                 direction = "NONE"
                 final_conf = max(conf_cross, conf_gbdt)
 
+        if not consistency_res.get("ok", True):
+            direction = "NONE"
+
         # 5. [3중 스크린 검증] - QQQ 60분봉 추세
         is_60m_trend_ok = True
         try:
@@ -367,8 +400,14 @@ class MoEMetaOrchestrator:
         except Exception:
             pass
 
-        # 6. [최종 매수 승인]
-        is_approved = bool(direction in ["LONG", "SHORT"] and not is_cross_veto and is_60m_trend_ok and dip_ok)
+        # 6. [최종 매수 승인] (모델 무결성/일치성 실패 시 무조건 False 강제)
+        is_approved = bool(
+            consistency_res.get("ok", True)
+            and direction in ["LONG", "SHORT"]
+            and not is_cross_veto
+            and is_60m_trend_ok
+            and dip_ok
+        )
         all_confidences = {
             "cross_asset": round(conf_cross, 4),
             "gbdt_pattern": round(conf_gbdt, 4)
@@ -384,6 +423,15 @@ class MoEMetaOrchestrator:
         except Exception:
             pass
 
+        snap_id = gbdt_snap.active_model_id if gbdt_snap is not None else getattr(self.gbdt_engine, "active_model_id", "")
+        snap_sha = gbdt_snap.active_model_sha256 if gbdt_snap is not None else getattr(self.gbdt_engine, "active_model_sha256", "")
+        snap_schema = gbdt_snap.feature_schema if gbdt_snap is not None else getattr(self.gbdt_engine, "feature_schema", "")
+        snap_n_feat = len(gbdt_snap.feature_names) if gbdt_snap is not None else len(getattr(self.gbdt_engine, "feature_names", []) or [])
+        snap_load_status = gbdt_snap.load_status if gbdt_snap is not None else getattr(self.gbdt_engine, "model_load_status", "")
+        snap_fb_status = gbdt_snap.fallback_status if gbdt_snap is not None else getattr(self.gbdt_engine, "model_fallback_status", "")
+        snap_path = gbdt_snap.active_model_path if gbdt_snap is not None else getattr(self.gbdt_engine, "active_model_path", "")
+        snap_act_at = gbdt_snap.activated_at if gbdt_snap is not None else getattr(self.gbdt_engine, "activated_at", "")
+
         decision_meta = {
             "selected_expert": str(selected_expert),
             "expert_desc": str(EXPERT_DESCRIPTIONS.get(selected_expert, selected_expert)),
@@ -395,14 +443,26 @@ class MoEMetaOrchestrator:
             "cross_dir": str(dir_cross),
             "dir_gbdt": str(dir_gbdt),
             "is_approved": bool(is_approved),
+            "is_cross_veto": bool(is_cross_veto),
             "is_60m_trend_ok": bool(is_60m_trend_ok),
             "dip_ok": bool(dip_ok),
             "all_gating_confidences": all_confidences,
             "gbdt_probs": gbdt_probs,
             "features": feat_dict,
-            "active_model_id": gbdt_snap.active_model_id if gbdt_snap is not None else getattr(self.gbdt_engine, "active_model_id", ""),
-            "active_model_sha256": gbdt_snap.active_model_sha256 if gbdt_snap is not None else getattr(self.gbdt_engine, "active_model_sha256", ""),
-            "active_model_schema": gbdt_snap.feature_schema if gbdt_snap is not None else getattr(self.gbdt_engine, "feature_schema", ""),
+            "active_model_id": snap_id,
+            "active_model_sha256": snap_sha,
+            "active_model_version": (snap_sha or "")[:12] if snap_sha else "NONE",
+            "active_model_schema": snap_schema,
+            "active_model_num_features": snap_n_feat,
+            "active_model_load_status": snap_load_status,
+            "active_model_fallback_status": snap_fb_status,
+            "active_model_is_fallback": bool(snap_load_status == "FALLBACK_TO_CHAMPION" or "FALLBACK" in str(snap_fb_status)),
+            "active_model_path": snap_path,
+            "active_model_activated_at": snap_act_at,
+            "previous_model_sha256_before_eval": prev_snap.active_model_sha256 if prev_snap is not None else "",
+            "model_hot_reloaded": bool(model_hot_reloaded),
+            "model_consistency_ok": bool(consistency_res.get("ok", True)),
+            "model_consistency_reason": str(consistency_res.get("reason", "CONSISTENT")),
             "timestamp": current_time_str or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
 
@@ -471,6 +531,7 @@ def train_and_save_moe_orchestrator(
     models_dir_override: Optional[Path] = None,
     live_experience_df: Optional[pd.DataFrame] = None,
     _job_started_at_ns: Optional[int] = None,
+    notifier: Optional[Any] = None,
 ) -> MoEMetaOrchestrator:
     """
     [STEP 2 원자적 모델 활성화 아키텍처]
@@ -498,6 +559,13 @@ def train_and_save_moe_orchestrator(
     tmp_model_path = versions_dir / f".model_normalized_72.pkl.tmp.{unique_tag}"
     tmp_manifest_path = target_dir / f".active_model_manifest.json.tmp.{unique_tag}"
 
+    def _safe_notify_retrain(status_code: str, **kwargs):
+        if notifier is not None and hasattr(notifier, "send_retrain_status_alert"):
+            try:
+                notifier.send_retrain_status_alert(status=status_code, **kwargs)
+            except Exception as ne:
+                logger.warning(f"Telegram retrain notification failed (ignored): {ne}")
+
     logger.info(f"🚀 [훈련 개시] Lumos 듀얼 챔피언 MoE 스나이퍼 학습 중... (스키마: {schema}, 임계값 {confidence_threshold*100:.0f}%)")
     orchestrator = MoEMetaOrchestrator(
         confidence_threshold=confidence_threshold,
@@ -514,7 +582,16 @@ def train_and_save_moe_orchestrator(
         long_15m = data_lake.load_candles(config.TRADE_SYMBOLS[0], "15m")
 
     if long_15m is None or long_15m.empty or len(long_15m) < 100:
-        raise RuntimeError("Insufficient training data (<100 bars); aborting retraining to preserve existing active model.")
+        err_msg = "Insufficient training data (<100 bars); aborting retraining to preserve existing active model."
+        system_logger.log("ERROR", "ModelActivation", f"MODEL_ACTIVATION_FAILED | reason={err_msg}")
+        _safe_notify_retrain(
+            "MODEL_ACTIVATION_FAILED",
+            model_id="B_Normalized_72",
+            schema=schema,
+            num_features=72,
+            error_reason=err_msg,
+        )
+        raise RuntimeError(err_msg)
 
     trained_model, _, _ = orchestrator.gbdt_engine.train_and_select_top_features(
         long_15m,
@@ -523,7 +600,16 @@ def train_and_save_moe_orchestrator(
         live_experience_df=live_experience_df
     )
     if trained_model is None or orchestrator.gbdt_engine.model is None:
-        raise RuntimeError("Retraining failed to produce a valid LightGBM model; preserving existing active model.")
+        err_msg = "Retraining failed to produce a valid LightGBM model; preserving existing active model."
+        system_logger.log("ERROR", "ModelActivation", f"MODEL_ACTIVATION_FAILED | reason={err_msg}")
+        _safe_notify_retrain(
+            "MODEL_ACTIVATION_FAILED",
+            model_id="B_Normalized_72",
+            schema=schema,
+            num_features=72,
+            error_reason=err_msg,
+        )
+        raise RuntimeError(err_msg)
 
     canonical_features = list(MLFeatureEngine.CANONICAL_B_NORMALIZED_72_FEATURES)
     canonical_features_sha256 = MLFeatureEngine.compute_feature_names_sha256(canonical_features)
@@ -536,11 +622,20 @@ def train_and_save_moe_orchestrator(
             f_out.flush()
             os.fsync(f_out.fileno())
 
+        cand_sha256 = hashlib.sha256(tmp_model_path.read_bytes()).hexdigest()
         window_meta = getattr(orchestrator.gbdt_engine, "last_training_window_meta", {})
         system_logger.log(
             "INFO",
             "AutoRetrain",
-            f"RETRAIN_COMPLETED | schema={schema} | tmp_path={tmp_model_path} | train_rows={window_meta.get('train_rows', 0)} | span_days={window_meta.get('span_days', 0)}"
+            f"RETRAIN_COMPLETED | schema={schema} | tmp_path={tmp_model_path} | sha256={cand_sha256} | train_rows={window_meta.get('train_rows', 0)} | span_days={window_meta.get('span_days', 0)}"
+        )
+        _safe_notify_retrain(
+            "RETRAIN_COMPLETED",
+            model_id="B_Normalized_72",
+            schema=schema,
+            num_features=72,
+            new_sha256=cand_sha256,
+            training_window_meta=window_meta,
         )
 
         # 2~5. SHA256, 스키마·피처 수·순서, 클래스 매핑([0,1,2]), 추론 self-test 검증
@@ -586,6 +681,20 @@ def train_and_save_moe_orchestrator(
         if not ver_final["ok"]:
             raise RuntimeError(f"Versioned B_normalized artifact failed post-move verification: {ver_final['error']}")
 
+        system_logger.log(
+            "INFO",
+            "ModelValidation",
+            f"MODEL_VALIDATION_PASSED | model_id=B_Normalized_72 | schema=B_normalized | num_features=72 | sha256={actual_sha256} | path={versioned_model_path}"
+        )
+        _safe_notify_retrain(
+            "MODEL_VALIDATION_PASSED",
+            model_id="B_Normalized_72",
+            schema="B_normalized",
+            num_features=72,
+            new_sha256=actual_sha256,
+            training_window_meta=window_meta,
+        )
+
         # 8. 활성화 락 획득 후 manifest 단일 원자적 교체 수행
         with _acquire_manifest_activation_lock(target_dir):
             prev_model_path = "models/model_normalized_72.pkl"
@@ -595,10 +704,20 @@ def train_and_save_moe_orchestrator(
                     existing_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
                     existing_job_ns = int(existing_manifest.get("job_started_at_ns", 0) or 0)
                     if existing_job_ns > job_started_at_ns:
+                        active_sha = str(existing_manifest.get("expected_sha256") or "")
                         system_logger.log(
                             "WARNING",
                             "ModelActivation",
                             f"STALE_RETRAIN_IGNORED | candidate_job_ns={job_started_at_ns} | active_job_ns={existing_job_ns} | candidate_path={versioned_model_path}"
+                        )
+                        _safe_notify_retrain(
+                            "STALE_RETRAIN_IGNORED",
+                            model_id="B_Normalized_72",
+                            schema="B_normalized",
+                            num_features=72,
+                            new_sha256=actual_sha256,
+                            prev_sha256=active_sha,
+                            training_window_meta=window_meta,
                         )
                         raise RuntimeError(
                             f"STALE_RETRAIN_IGNORED: Newer model already activated (active_job_ns={existing_job_ns} > candidate_job_ns={job_started_at_ns})"
@@ -694,7 +813,38 @@ def train_and_save_moe_orchestrator(
             "ModelActivation",
             f"MODEL_ACTIVATION_SUCCEEDED | model_id=B_Normalized_72 | path={versioned_model_path} | sha256={actual_sha256} | previous_path={prev_model_path}"
         )
+        _safe_notify_retrain(
+            "MODEL_ACTIVATION_SUCCEEDED",
+            model_id="B_Normalized_72",
+            schema="B_normalized",
+            num_features=72,
+            new_sha256=actual_sha256,
+            prev_sha256=prev_model_sha256,
+            training_window_meta=window_meta,
+        )
         logger.info(f"✅ [B_Normalized_72 불변 버전 저장 및 단일 매니페스트 원자적 활성화 완료] ➔ {versioned_model_path} (SHA256={actual_sha256[:16]}...)")
+    except Exception as act_err:
+        if "STALE_RETRAIN_IGNORED" not in str(act_err):
+            existing_sha = ""
+            if manifest_path.exists():
+                try:
+                    existing_sha = str(json.loads(manifest_path.read_text(encoding="utf-8")).get("expected_sha256") or "")
+                except Exception:
+                    pass
+            system_logger.log(
+                "ERROR",
+                "ModelActivation",
+                f"MODEL_ACTIVATION_FAILED | reason={act_err} | preserved_sha256={existing_sha}"
+            )
+            _safe_notify_retrain(
+                "MODEL_ACTIVATION_FAILED",
+                model_id="B_Normalized_72",
+                schema="B_normalized",
+                num_features=72,
+                prev_sha256=existing_sha,
+                error_reason=str(act_err),
+            )
+        raise
     finally:
         # 9. 실패 또는 완료 후 임시 파일 정리 (기존 활성 모델 및 버전 PKL 100% 보존 보장)
         for p in (tmp_model_path, tmp_manifest_path):
@@ -710,6 +860,7 @@ def train_and_save_moe_orchestrator(
 def rollback_active_model_manifest(
     target: str = "previous",
     models_dir_override: Optional[Path] = None,
+    notifier: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """
     [Scenario H 롤백 헬퍼]
@@ -810,6 +961,25 @@ def rollback_active_model_manifest(
             "ModelRollback",
             f"MODEL_ROLLBACK_EXECUTED | target={target} | active_model_id={target_id} | path={target_path_str} | sha256={ver['actual_sha256']}"
         )
+        if notifier is not None and hasattr(notifier, "send_model_state_alert"):
+            try:
+                notifier.send_model_state_alert(
+                    model_info={
+                        "active_model_id": target_id,
+                        "feature_schema": target_schema,
+                        "num_features": len(feat_names),
+                        "model_sha256": ver["actual_sha256"],
+                        "model_path": target_path_str,
+                        "previous_model_sha256": cur_sha,
+                        "previous_model_path": cur_path_str,
+                        "load_status": f"ROLLED_BACK_TO_{target.upper()}",
+                        "fallback_status": "ROLLED_BACK",
+                    },
+                    event_type="MODEL_ROLLBACK_EXECUTED",
+                    reason=f"Target={target}",
+                )
+            except Exception as ne:
+                logger.warning(f"Telegram rollback notification failed (ignored): {ne}")
         return updated_manifest
 
 

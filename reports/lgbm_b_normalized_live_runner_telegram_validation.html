@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LUMOS — B_Normalized_72 실전 Live Runner 및 텔레그램 연동 최종 검증 보고서</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card: #1e293b;
+      --border: #334155;
+      --text: #f8fafc;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+      --pass: #22c55e;
+      --warn: #f59e0b;
+      --fail: #ef4444;
+      --code-bg: #0b1120;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 32px 24px 64px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans KR", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+    }
+    .container {
+      max-width: 1240px;
+      margin: 0 auto;
+    }
+    header {
+      background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 28px 32px;
+      margin-bottom: 28px;
+    }
+    h1 {
+      margin: 0 0 10px;
+      font-size: 1.75rem;
+      color: #fff;
+    }
+    h2 {
+      margin: 28px 0 14px;
+      font-size: 1.3rem;
+      color: var(--accent);
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 8px;
+    }
+    h3 {
+      margin: 18px 0 10px;
+      font-size: 1.05rem;
+      color: #e2e8f0;
+    }
+    .badge {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 0.8rem;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+    .badge-pass { background: rgba(34, 197, 94, 0.18); color: var(--pass); border: 1px solid rgba(34, 197, 94, 0.45); }
+    .badge-info { background: rgba(56, 189, 248, 0.18); color: var(--accent); border: 1px solid rgba(56, 189, 248, 0.45); }
+    .badge-warn { background: rgba(245, 158, 11, 0.18); color: var(--warn); border: 1px solid rgba(245, 158, 11, 0.45); }
+    .meta-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+      gap: 14px;
+      margin-top: 18px;
+    }
+    .meta-box {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px 16px;
+    }
+    .meta-label { font-size: 0.78rem; color: var(--muted); text-transform: uppercase; }
+    .meta-val { font-size: 0.96rem; font-weight: 600; color: #fff; margin-top: 4px; word-break: break-all; }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 22px 24px;
+      margin-bottom: 22px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 12px 0;
+      font-size: 0.9rem;
+    }
+    th, td {
+      border: 1px solid var(--border);
+      padding: 10px 12px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      background: #0f172a;
+      color: var(--accent);
+      font-weight: 600;
+    }
+    tr:nth-child(even) td {
+      background: rgba(15, 23, 42, 0.45);
+    }
+    code, pre {
+      font-family: "JetBrains Mono", Consolas, Monaco, monospace;
+      font-size: 0.85rem;
+    }
+    code {
+      background: var(--code-bg);
+      padding: 2px 6px;
+      border-radius: 5px;
+      color: #7dd3fc;
+    }
+    pre {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px 16px;
+      overflow-x: auto;
+      color: #e2e8f0;
+      margin: 10px 0;
+    }
+    .flow-diagram {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px;
+      margin: 12px 0;
+    }
+    .flow-step {
+      background: #1e293b;
+      border: 1px solid #38bdf8;
+      border-radius: 8px;
+      padding: 8px 12px;
+      font-size: 0.85rem;
+      font-weight: 600;
+    }
+    .flow-arrow { color: var(--accent); font-weight: bold; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
+        <h1>LUMOS — B_Normalized_72 실전 Live Runner 및 텔레그램 연동 최종 검증 보고서</h1>
+        <span class="badge badge-pass">ALL STEPS PASS · 실전 운영 준비 완료</span>
+      </div>
+      <p style="color:var(--muted); margin:8px 0 0;">
+        실제 자동매매 실행 진입점(<code>core/live_runner.py</code>)에서의 <code>B_Normalized_72</code> 모델 로딩·추론·스냅샷 3중 일치 검증 및
+        기동·신호·체결·Veto·자동 재학습·핫리로드·폴백·롤백·차단(BLOCKED) 전 구간 텔레그램 연동 최종 점검 결과입니다.
+      </p>
+      <div class="meta-grid">
+        <div class="meta-box">
+          <div class="meta-label">작업 브랜치 / 기준 커밋</div>
+          <div class="meta-val"><code>feat/lgbm-trend-mean-reversion</code><br/>Base: <code>8d34ffbc590a...</code></div>
+        </div>
+        <div class="meta-box">
+          <div class="meta-label">현재 활성 운영 모델 (Single Source of Truth)</div>
+          <div class="meta-val"><code>B_Normalized_72</code> (<code>B_normalized</code>, 72 Features)</div>
+        </div>
+        <div class="meta-box">
+          <div class="meta-label">활성 모델 SHA256 / 버전</div>
+          <div class="meta-val"><code>ef954c3be286d4fd4e429c5ed21b7e3da4842927c53e594ada86460029a0dcae</code><br/>Version: <code>ef954c3be286</code></div>
+        </div>
+        <div class="meta-box">
+          <div class="meta-label">학습 데이터 윈도우 상한 (불변)</div>
+          <div class="meta-val"><code>MAX_TRAINING_WEEKS = 520</code> (10년)<br/><code>TRAINING_LOOKBACK_DAYS = 3640</code></div>
+        </div>
+      </div>
+    </header>
+
+    <!-- 1. 실제 자동매매 실행 경로 다이어그램 -->
+    <section class="card">
+      <h2>1. 실제 자동매매 실행 진입점 및 호출 체인 다이어그램 (STEP 1)</h2>
+      <p>
+        Lumos 프로젝트에는 별도의 루트 <code>main.py</code>가 존재하지 않으며, 실제 운영 자동매매 실행 진입점은
+        <code>python core/live_runner.py</code> (클래스 <code>KiwoomLiveRunner</code>)입니다.
+        단위테스트 로더와 실전 Live Runner가 완전히 동일한 <code>active_model_manifest.json</code> 및 <code>MLFeatureEngine</code>을 사용함을 전수 추적하여 확인했습니다.
+      </p>
+      <div class="flow-diagram">
+        <div class="flow-step">1. CLI 진입점<br/><code>core/live_runner.py:__main__</code></div>
+        <span class="flow-arrow">➔</span>
+        <div class="flow-step">2. 러너 초기화<br/><code>KiwoomLiveRunner.__init__</code></div>
+        <span class="flow-arrow">➔</span>
+        <div class="flow-step">3. 오케스트레이터 생성<br/><code>MoEMetaOrchestrator.__init__</code></div>
+        <span class="flow-arrow">➔</span>
+        <div class="flow-step">4. 매니페스트 검증 로드<br/><code>MLFeatureEngine._try_load_default_model</code></div>
+        <span class="flow-arrow">➔</span>
+        <div class="flow-step">5. 기동 점검 &amp; 시작 알림<br/><code>run_once_and_start_listener()</code></div>
+        <span class="flow-arrow">➔</span>
+        <div class="flow-step">6. 15분 주기 평가<br/><code>evaluate_15m_cycle_once()</code></div>
+        <span class="flow-arrow">➔</span>
+        <div class="flow-step">7. 핫리로드 &amp; 3중 일치 검증<br/><code>evaluate_dual_filter_signal()</code></div>
+        <span class="flow-arrow">➔</span>
+        <div class="flow-step">8. 72피처 생성 &amp; 3-Class 추론<br/><code>predict_signal_full(schema="B_normalized")</code></div>
+        <span class="flow-arrow">➔</span>
+        <div class="flow-step">9. 스냅샷 기반 알림 &amp; 주문 판단<br/><code>compose_signal_briefing_alert</code> / <code>_execute_buy_with_10s_chase</code></div>
+      </div>
+    </section>
+
+    <!-- 2. Live Runner 모델 로딩 및 신호 생성 검증 결과 -->
+    <section class="card">
+      <h2>2. Live Runner 활성 모델 3중 일치 및 무주문 실전 기동 검증 (STEP 2 &amp; STEP 3)</h2>
+      <p>
+        실제 <code>KiwoomLiveRunner</code> 인스턴스에서 <code>run_once_and_start_listener(start_background_threads=False)</code>와
+        <code>evaluate_15m_cycle_once(allow_order_execution=False)</code>를 실행하여
+        <strong>매니페스트 모델 == 메모리 로드 모델 == 신호 생성 스냅샷 모델</strong>의 100% 일치를 검증했습니다.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>검증 항목</th>
+            <th><code>active_model_manifest.json</code></th>
+            <th>메모리 로드 상태 (<code>get_active_model_info</code>)</th>
+            <th>신호 스냅샷 (<code>moe_res</code> / <code>_ModelSnapshot</code>)</th>
+            <th>판정</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>ACTIVE_MODEL_ID</strong></td>
+            <td><code>B_Normalized_72</code></td>
+            <td><code>B_Normalized_72</code></td>
+            <td><code>B_Normalized_72</code></td>
+            <td><span class="badge badge-pass">PASS</span></td>
+          </tr>
+          <tr>
+            <td><strong>ACTIVE_MODEL_SCHEMA</strong></td>
+            <td><code>B_normalized</code></td>
+            <td><code>B_normalized</code></td>
+            <td><code>B_normalized</code></td>
+            <td><span class="badge badge-pass">PASS</span></td>
+          </tr>
+          <tr>
+            <td><strong>ACTIVE_MODEL_FEATURE_COUNT</strong></td>
+            <td><code>72</code></td>
+            <td><code>72</code></td>
+            <td><code>72</code></td>
+            <td><span class="badge badge-pass">PASS</span></td>
+          </tr>
+          <tr>
+            <td><strong>ACTIVE_MODEL_SHA256</strong></td>
+            <td><code>ef954c3be286...29a0dcae</code></td>
+            <td><code>ef954c3be286...29a0dcae</code></td>
+            <td><code>ef954c3be286...29a0dcae</code></td>
+            <td><span class="badge badge-pass">PASS</span></td>
+          </tr>
+          <tr>
+            <td><strong>MODEL_LOAD_STATUS / FALLBACK</strong></td>
+            <td>Primary: <code>model_normalized_72.pkl</code></td>
+            <td><code>ACTIVE_B_NORMALIZED</code> / <code>PRIMARY_ACTIVE</code></td>
+            <td><code>ACTIVE_B_NORMALIZED</code> / <code>PRIMARY_ACTIVE</code></td>
+            <td><span class="badge badge-pass">PASS</span></td>
+          </tr>
+          <tr>
+            <td><strong>불일치 강제 주입 시 방어</strong></td>
+            <td colspan="3">
+              <code>verify_manifest_memory_snapshot_consistency()</code> 불일치 감지 시
+              <code>direction="NONE"</code>, <code>is_approved=False</code>, <code>pre_order_decision="BLOCKED_BY_MODEL_GUARD"</code>로 신규 매수 즉시 차단 및 <code>BLOCKED</code> 알림 발송 확인
+            </td>
+            <td><span class="badge badge-pass">PASS</span></td>
+          </tr>
+          <tr>
+            <td><strong>무주문 기동 안전성</strong></td>
+            <td colspan="3">
+              실제 주문 호출 <code>0건</code>, 활성 포지션 변경 <code>0건</code>, 운영 DB(<code>data/live_experience.db</code>) SHA256 변경 <code>0건</code>
+            </td>
+            <td><span class="badge badge-pass">PASS</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- 3. 텔레그램 알림 전수 점검 표 -->
+    <section class="card">
+      <h2>3. 텔레그램 알림 호출 지점 전수 감사 및 수정 내역 (STEP 4 &amp; STEP 5)</h2>
+      <p>
+        시스템 상태 알림은 <code>MLFeatureEngine.get_active_model_info()</code>를 단일 진실 공급원(Single Source of Truth)으로 참조하며,
+        매매 신호·진입·Veto·청산 알림은 <strong>신호 생성 시점의 불변 스냅샷(<code>moe_res</code> / <code>active_pos</code>)</strong>을 참조하도록 분리하여
+        핫리로드 중에도 과거 신호의 모델 출처가 덮어써지지 않도록 보장했습니다.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>알림 유형</th>
+            <th>파일 및 함수</th>
+            <th>참조 데이터 소스</th>
+            <th>포함 모델 메타데이터</th>
+            <th>예외 격리 / 중복 방지</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>1. 시스템 시작 / 재기동 알림</strong></td>
+            <td><code>core/live_runner.py</code><br/><code>run_once_and_start_listener</code><br/><code>TelegramNotifier.compose_startup_alert</code></td>
+            <td><code>runner.get_active_model_info()</code></td>
+            <td>모델 ID, 스키마(<code>B_normalized</code>), 72피처, 버전(SHA256 12자리), 폴백 상태, 실제 학습 범위 + 520주(10년 상한)</td>
+            <td><code>STARTUP</code> 상태 키 중복 억제 + <code>try-except</code> 격리</td>
+          </tr>
+          <tr>
+            <td><strong>2. 미국 정규장 오픈 알림</strong></td>
+            <td><code>core/live_runner.py</code><br/><code>_market_execution_loop</code><br/><code>compose_market_open_alert</code></td>
+            <td><code>runner.get_active_model_info()</code></td>
+            <td>활성 모델 ID, 스키마, 피처 수, 버전(SHA256 12자리), 폴백 상태</td>
+            <td><code>try-except</code> 격리</td>
+          </tr>
+          <tr>
+            <td><strong>3. 15분 정기 AI 신호 브리핑</strong></td>
+            <td><code>core/live_runner.py</code><br/><code>evaluate_15m_cycle_once</code><br/><code>compose_signal_briefing_alert</code></td>
+            <td>신호 생성 스냅샷 (<code>moe_res</code>)</td>
+            <td>신호 생성 시점 모델 ID, 스키마, 72피처, 버전(SHA256 12자리), 폴백 여부, 3-Class 확률 및 확신도</td>
+            <td><code>try-except</code> 격리 (전송 실패 시 매매 판단 계속)</td>
+          </tr>
+          <tr>
+            <td><strong>4. 크로스에셋 Veto 방어 알림</strong></td>
+            <td><code>core/live_runner.py</code> / <code>core/telegram_notifier.py</code><br/><code>send_veto_alert</code></td>
+            <td>신호 생성 스냅샷 (<code>moe_res</code>)</td>
+            <td>신호 생성 시점 모델 ID, 스키마, 72피처, 버전(SHA256 12자리)</td>
+            <td><code>try-except</code> 격리</td>
+          </tr>
+          <tr>
+            <td><strong>5. 매수 체결 알림 (1차/2차/부분)</strong></td>
+            <td><code>core/live_runner.py</code><br/><code>_execute_buy_with_10s_chase</code><br/><code>send_entry_alert</code></td>
+            <td>신호 생성 스냅샷 (<code>moe_res</code>) ➔ <code>filled_pos</code>에 영구 저장</td>
+            <td>신호 생성 시점 모델 ID, 스키마, 72피처, 버전(SHA256 12자리), 폴백 상태</td>
+            <td>4개 체결 분기 모두 <code>try-except</code> 격리</td>
+          </tr>
+          <tr>
+            <td><strong>6. 매도 청산 알림</strong></td>
+            <td><code>core/live_runner.py</code><br/><code>_execute_sell_with_10s_chase</code><br/><code>send_exit_alert</code></td>
+            <td>진입 시 저장된 <code>active_pos</code> 모델 스냅샷</td>
+            <td>포지션 진입 모델 ID, 스키마, 버전(SHA256 12자리)</td>
+            <td><code>try-except</code> 격리 (장애 시에도 100% 청산 완결)</td>
+          </tr>
+          <tr>
+            <td><strong>7. 자동 재학습 단계별 알림</strong></td>
+            <td><code>core/moe_orchestrator.py</code><br/><code>train_and_save_moe_orchestrator</code><br/><code>scripts/auto_weekend_training.py</code></td>
+            <td>스테이징 검증 통과 메타데이터 &amp; 매니페스트</td>
+            <td><code>RETRAIN_COMPLETED</code>, <code>MODEL_VALIDATION_PASSED</code>, <code>MODEL_ACTIVATION_SUCCEEDED</code>, <code>MODEL_ACTIVATION_FAILED</code>, <code>STALE_RETRAIN_IGNORED</code> + 실제 학습 행/날짜 및 520주 상한</td>
+            <td><code>try-except</code> 격리</td>
+          </tr>
+          <tr>
+            <td><strong>8. 핫리로드 / 폴백 / 롤백 / BLOCKED 알림</strong></td>
+            <td><code>core/live_runner.py</code> / <code>core/moe_orchestrator.py</code><br/><code>send_model_state_alert</code></td>
+            <td><code>moe_res</code> / <code>rollback_active_model_manifest</code></td>
+            <td><code>MODEL_HOT_RELOADED</code> (이전➔신규 SHA256), <code>FALLBACK_TO_CHAMPION</code>, <code>MODEL_ROLLBACK_EXECUTED</code>, <code>BLOCKED</code></td>
+            <td>동일 상태 키 중복 발송 억제(Deduplication) + <code>try-except</code> 격리</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- 4. 시나리오별 실제 텔레그램 메시지 샘플 -->
+    <section class="card">
+      <h2>4. 시나리오별 실제 생성된 텔레그램 메시지 샘플 (STEP 5 &amp; STEP 6)</h2>
+
+      <h3>시나리오 A — 정상 B_Normalized_72 기동 알림</h3>
+      <pre>🚀 **[Lumos 모의투자 거래 시스템 시작]**
+⏰ **현재 시간:** 2026-10-15 22:30:00 KST
+🔄 **시간 동기화:** 100% 일치 (KST-NYT 13h 시차 검증 완료)
+📊 **시장 상태:** 정규장 오픈
+⏳ **다음 개장/폐장:** 2026-10-16 05:00 KST (6h 30m)
+🏢 **연결 증권사:** 키움증권 (모의투자)
+💳 **계좌 번호:** 00000000-01
+💵 **가용 예수금:** $10,000.00 USD
+📦 **현재 보유종목:** 0종목
+🧠 **AI 엔진:** Phase 1: 15m GBDT Model (진입 > 70.4% / 크로스에셋 Veto: X / QQQ 60분 추세방패: X)
+📌 **활성 모델 ID:** `B_Normalized_72` (`PRIMARY_ACTIVE`)
+📐 **피처 스키마:** `B_normalized` (`72개` 피처)
+🔑 **모델 버전(SHA256):** `ef954c3be286`
+🗓️ **학습 데이터 윈도우:** `2024-03-22 ~ 2026-03-20 (12,000 rows) | 상한: 최대 520주 (3640일 / 10년 상한)`
+⚡ **마켓 데이터:** 10ms WebSocket 스트리밍 기반 실시간 체결 처리 중...
+
+✅ 성공적으로 초기화되었습니다. 매매 대기 중...</pre>
+
+      <h3>시나리오 B &amp; H — 15분 정기 신호 브리핑 및 매수 진입 알림 (신호 생성 시점 스냅샷 보존)</h3>
+      <pre>🤖 &lt;b&gt;[Lumos AI 정기 브리핑]&lt;/b&gt;
+⏰ 시간: 09:45 (뉴욕시간)
+⏰ 시간: 22:45 (한국시간)
+🧭 AI 판독 방향: 매수 관망
+🎯 진입 임계값: 70.4%
+📈 SOXL 확률: 31.2%
+📉 SOXS 확률: 28.4%
+⏸ 관망 확률: 40.4%
+🔥 최종 GBDT 확신도: 47.6%
+🧠 사용 모델: &lt;code&gt;B_Normalized_72&lt;/code&gt; (&lt;code&gt;B_normalized&lt;/code&gt; / &lt;code&gt;72개&lt;/code&gt; / &lt;code&gt;ef954c3be286&lt;/code&gt;)
+🛡️ 모델 상태: &lt;code&gt;PRIMARY_ACTIVE&lt;/code&gt;
+🚦 상태: 관망 유지 🟡</pre>
+
+      <h3>시나리오 C &amp; D — 자동 재학습 원자적 활성화 및 핫리로드 알림</h3>
+      <pre>🟢 &lt;b&gt;[Lumos 자동 재학습 상태 알림]&lt;/b&gt;
+━━━━━━━━━━━━━━━━━━━━
+📌 &lt;b&gt;상태 코드:&lt;/b&gt; &lt;code&gt;MODEL_ACTIVATION_SUCCEEDED&lt;/code&gt;
+🧠 &lt;b&gt;모델 ID:&lt;/b&gt; &lt;code&gt;B_Normalized_72&lt;/code&gt;
+📐 &lt;b&gt;피처 스키마:&lt;/b&gt; &lt;code&gt;B_normalized&lt;/code&gt; (&lt;code&gt;72개&lt;/code&gt; 피처)
+🔑 &lt;b&gt;모델 버전(SHA256):&lt;/b&gt; &lt;code&gt;81ca68904f2a&lt;/code&gt;
+🗓️ &lt;b&gt;학습 데이터 범위:&lt;/b&gt; &lt;code&gt;2026-01-01 09:30:00 ~ 2026-01-03 16:45:00 (222 rows) | 상한: 최대 520주 (3640일 / 10년 상한)&lt;/code&gt;
+ℹ️ &lt;b&gt;상세:&lt;/b&gt; active_model_manifest.json 단일 원자적 교체(os.replace) 완료
+
+🔄 &lt;b&gt;[Lumos 모델 상태 전환 알림 — MODEL_HOT_RELOADED]&lt;/b&gt;
+━━━━━━━━━━━━━━━━━━━━
+📌 &lt;b&gt;현재 활성 모델:&lt;/b&gt; &lt;code&gt;B_Normalized_72&lt;/code&gt;
+📐 &lt;b&gt;피처 스키마:&lt;/b&gt; &lt;code&gt;B_normalized&lt;/code&gt; (&lt;code&gt;72개&lt;/code&gt; 피처)
+🔑 &lt;b&gt;모델 버전(SHA256):&lt;/b&gt; &lt;code&gt;ef954c3be286&lt;/code&gt; ➔ &lt;code&gt;81ca68904f2a&lt;/code&gt;
+🛡️ &lt;b&gt;폴백 상태:&lt;/b&gt; &lt;code&gt;PRIMARY_ACTIVE&lt;/code&gt;
+💡 &lt;b&gt;사유:&lt;/b&gt; 자동 재학습 완료 후 핫리로드</pre>
+
+      <h3>시나리오 E, F, G — Champion 폴백, 롤백, BLOCKED 알림</h3>
+      <pre>⚠️ &lt;b&gt;[Lumos 모델 상태 전환 알림 — FALLBACK_TO_CHAMPION]&lt;/b&gt;
+━━━━━━━━━━━━━━━━━━━━
+📌 &lt;b&gt;현재 활성 모델:&lt;/b&gt; &lt;code&gt;A_Champion_72&lt;/code&gt;
+📐 &lt;b&gt;피처 스키마:&lt;/b&gt; &lt;code&gt;v4_champion&lt;/code&gt; (&lt;code&gt;72개&lt;/code&gt; 피처)
+🔑 &lt;b&gt;모델 버전(SHA256):&lt;/b&gt; &lt;code&gt;e1982612a986&lt;/code&gt;
+🛡️ &lt;b&gt;폴백 상태:&lt;/b&gt; &lt;code&gt;CHAMPION_FALLBACK_ACTIVE&lt;/code&gt;
+💡 &lt;b&gt;사유:&lt;/b&gt; Primary B 모델 해시 불일치로 Champion 폴백 활성화
+
+🚨 &lt;b&gt;[Lumos 모델 상태 전환 알림 — BLOCKED]&lt;/b&gt;
+━━━━━━━━━━━━━━━━━━━━
+📌 &lt;b&gt;현재 활성 모델:&lt;/b&gt; &lt;code&gt;BLOCKED&lt;/code&gt;
+📐 &lt;b&gt;피처 스키마:&lt;/b&gt; &lt;code&gt;BLOCKED&lt;/code&gt; (&lt;code&gt;0개&lt;/code&gt; 피처)
+🔑 &lt;b&gt;모델 버전(SHA256):&lt;/b&gt; &lt;code&gt;unknown&lt;/code&gt;
+🛡️ &lt;b&gt;폴백 상태:&lt;/b&gt; &lt;code&gt;ALL_MODELS_FAILED_NEW_ENTRY_BLOCKED&lt;/code&gt;
+💡 &lt;b&gt;사유:&lt;/b&gt; MODEL_NOT_READY_OR_BLOCKED
+🚫 &lt;b&gt;조치:&lt;/b&gt; &lt;code&gt;신규 매수 진입은 전면 차단되었으며, 기존 보유 포지션의 청산/리스크 관리 로직은 정상 유지됩니다.&lt;/code&gt;</pre>
+    </section>
+
+    <!-- 5. 테스트 시나리오 A~J 및 회귀 테스트 결과 -->
+    <section class="card">
+      <h2>5. 시나리오 A ~ J 및 전체 회귀 테스트 결과 (STEP 6, 7, 8, 9)</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>시나리오 / 테스트 스위트</th>
+            <th>검증 내용</th>
+            <th>결과</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>시나리오 A</strong> (정상 B 기동)</td>
+            <td><code>B_Normalized_72</code>, <code>B_normalized</code>, 72개 피처, <code>ef954c3be286</code>, <code>PRIMARY_ACTIVE</code>, 실제 학습 범위 + 520주 상한 표시</td>
+            <td><span class="badge badge-pass">PASS</span></td>
+          </tr>
+          <tr>
+            <td><strong>시나리오 B</strong> (B 모델 매매 신호)</td>
+            <td>15분 브리핑 및 매수 체결 알림에 신호 생성 시점 스냅샷 모델 ID와 해시(<code>ef954c3be286</code>) 정확 표시</td>
+            <td><span class="badge badge-pass">PASS</span></td>
+          </tr>
+          <tr>
+            <td><strong>시나리오 C</strong> (자동 재학습 완료)</td>
+            <td><code>RETRAIN_COMPLETED</code> ➔ <code>MODEL_VALIDATION_PASSED</code> ➔ <code>MODEL_ACTIVATION_SUCCEEDED</code> 및 <code>STALE_RETRAIN_IGNORED</code> 상태 코드 분리 발송</td>
+            <td><span class="badge badge-pass">PASS</span></td>
+          </tr>
+          <tr>
+            <td><strong>시나리오 D</strong> (핫리로드 반영)</td>
+            <td>핫리로드 완료 시 <code>MODEL_HOT_RELOADED</code>(이전➔신규 SHA256) 발송 및 다음 신호부터 신규 해시 반영</td>
+            <td><span class="badge badge-pass">PASS</span></td>
+          </tr>
+          <tr>
+            <td><strong>시나리오 E</strong> (Champion 폴백)</td>
+            <td>Primary B 모델 해시 불일치 시 <code>A_Champion_72</code> / <code>v4_champion</code> / <code>CHAMPION_FALLBACK_ACTIVE</code> 표시 (B 모델 허위 표시 0건)</td>
+            <td><span class="badge badge-pass">PASS</span></td>
+          </tr>
+          <tr>
+            <td><strong>시나리오 F</strong> (롤백 실행)</td>
+            <td><code>rollback_active_model_manifest</code> 실행 시 <code>MODEL_ROLLBACK_EXECUTED</code> 및 롤백 대상 모델 해시 정확 표시</td>
+            <td><span class="badge badge-pass">PASS</span></td>
+          </tr>
+          <tr>
+            <td><strong>시나리오 G</strong> (모든 모델 실패)</td>
+            <td>주 모델 + 폴백 모델 모두 실패 시 <code>BLOCKED</code> 알림 발송, 신규 매수 진입 차단, 보유 포지션 청산 타겟 계산 정상 유지</td>
+            <td><span class="badge badge-pass">PASS</span></td>
+          </tr>
+          <tr>
+            <td><strong>시나리오 H</strong> (신호-알림 사이 핫리로드 경합)</td>
+            <td>신호 S1 생성 직후 모델이 v2로 핫리로드되더라도 S1의 브리핑/매수 알림은 S1 생성 당시 모델 해시를 100% 보존</td>
+            <td><span class="badge badge-pass">PASS</span></td>
+          </tr>
+          <tr>
+            <td><strong>시나리오 I</strong> (텔레그램 전송 장애 복원력)</td>
+            <td>텔레그램 API 예외 발생 시에도 15분 추론·매매 판단 및 보유 포지션 100% 매도 청산(<code>_execute_sell_with_10s_chase</code>) 무중단 완결</td>
+            <td><span class="badge badge-pass">PASS</span></td>
+          </tr>
+          <tr>
+            <td><strong>시나리오 J</strong> (중복 알림 억제)</td>
+            <td>동일 모델 상태(<code>STARTUP</code> / <code>FALLBACK</code> / <code>BLOCKED</code> / <code>HOT_RELOADED</code>) 반복 시 중복 텔레그램 발송 억제 확인</td>
+            <td><span class="badge badge-pass">PASS</span></td>
+          </tr>
+          <tr>
+            <td><strong><code>tests/test_lgbm_trend_mr.py</code></strong></td>
+            <td>총 20개 통합/단위 테스트 스위트 전수 통과</td>
+            <td><span class="badge badge-pass">20 / 20 PASS</span></td>
+          </tr>
+          <tr>
+            <td><strong><code>tests/test_system_integrity.py</code></strong></td>
+            <td>핵심 6대 매매 인터락 무결성 회귀 테스트 전수 통과</td>
+            <td><span class="badge badge-pass">9 / 9 PASS</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- 6. 보호 파일 무결성 해시 검증 -->
+    <section class="card">
+      <h2>6. 보호 파일 SHA256 무결성 검증 및 실전 준비 최종 판정 (STEP 9)</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>보호 대상 파일</th>
+            <th>검증된 SHA256 해시</th>
+            <th>상태</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>models/model_normalized_72.pkl</code></td>
+            <td><code>ef954c3be286d4fd4e429c5ed21b7e3da4842927c53e594ada86460029a0dcae</code></td>
+            <td><span class="badge badge-pass">불변 (100% 일치)</span></td>
+          </tr>
+          <tr>
+            <td><code>models/model_champion.pkl</code></td>
+            <td><code>e1982612a986d08a69044551b92c96ba5f8508375187466af9a9966e63b3ed5f</code></td>
+            <td><span class="badge badge-pass">불변 (100% 일치)</span></td>
+          </tr>
+          <tr>
+            <td><code>models/model_challenger_trend_mr.pkl</code></td>
+            <td><code>c6953d22d407bbf00828c9780f4bba5b80271ae6a74aed18f23ba07a6a54f02d</code></td>
+            <td><span class="badge badge-pass">불변 (100% 일치)</span></td>
+          </tr>
+          <tr>
+            <td><code>config.py</code></td>
+            <td><code>c19b470a5e4db73fb3c2ffc3789d329925a34badc3ccc44f8c1ca88e2317c3ca</code></td>
+            <td><span class="badge badge-pass">불변 (수정 0건)</span></td>
+          </tr>
+          <tr>
+            <td><code>data/live_experience.db</code></td>
+            <td><code>b9cf6d8290a19ab15abaeb0d29b3544c55e2f37f0b78ad962f4aa77497f8f9c3</code></td>
+            <td><span class="badge badge-pass">불변 (수정 0건)</span></td>
+          </tr>
+        </tbody>
+      </table>
+      <p style="margin-top:16px; font-weight:600; color:var(--pass);">
+        ✅ 최종 판정: 실전 자동매매 진입점(<code>core/live_runner.py</code>)에서의 <code>B_Normalized_72</code> 모델 로딩·추론·스냅샷 3중 일치 및 텔레그램 전 구간 알림 정합성이 완벽히 검증되었습니다.
+      </p>
+    </section>
+  </div>
+</body>
+</html>

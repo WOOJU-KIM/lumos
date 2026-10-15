@@ -139,6 +139,27 @@ class KiwoomLiveRunner:
         self._last_briefing_time: float = 0.0
         self._last_moe_res: Optional[Dict[str, Any]] = None
 
+    def get_active_model_info(self, is_daemon_running: Optional[bool] = None) -> Dict[str, Any]:
+        """단일 모델 메타데이터 공급원(MLFeatureEngine.get_active_model_info) 위임 조회"""
+        daemon_flag = bool(self.is_running) if is_daemon_running is None else bool(is_daemon_running)
+        if hasattr(self, "moe_orchestrator") and hasattr(self.moe_orchestrator, "gbdt_engine"):
+            eng = self.moe_orchestrator.gbdt_engine
+            if hasattr(eng, "get_active_model_info"):
+                return eng.get_active_model_info(is_daemon_running=daemon_flag)
+        return {
+            "active_model_id": "UNKNOWN",
+            "feature_schema": "UNKNOWN",
+            "num_features": 0,
+            "model_sha256": "",
+            "sha256": "",
+            "model_version": "NONE",
+            "load_status": "BLOCKED",
+            "fallback_status": "ALL_MODELS_FAILED_ENTRY_BLOCKED",
+            "is_fallback": False,
+            "is_ready": False,
+            "operational_verdict": "BLOCKED",
+        }
+
     def _save_active_position(self, pos_data: Dict[str, Any]):
         """???? ? ???? ???? ? ???"""
         self._active_position = pos_data
@@ -552,6 +573,13 @@ class KiwoomLiveRunner:
                     "features": moe_res.get("features", {}),
                     "high_price_during_hold": real_buy_px,
                     "low_price_during_hold": real_buy_px,
+                    "active_model_id": moe_res.get("active_model_id", "B_Normalized_72"),
+                    "active_model_sha256": moe_res.get("active_model_sha256", ""),
+                    "active_model_version": moe_res.get("active_model_version", ""),
+                    "active_model_schema": moe_res.get("active_model_schema", "B_normalized"),
+                    "active_model_num_features": moe_res.get("active_model_num_features", 72),
+                    "active_model_load_status": moe_res.get("active_model_load_status", "PRIMARY_ACTIVE"),
+                    "active_model_is_fallback": moe_res.get("active_model_is_fallback", False),
                     "buy_attempts": 1
                 }
                 self._save_active_position(filled_pos)
@@ -571,7 +599,8 @@ class KiwoomLiveRunner:
                     sl_price=sl_px_dyn,
                     time_stop_minutes=time_stop_min,
                     strategy_tag=strategy_tag,
-                    is_simulation=self.broker.is_simulation
+                    is_simulation=self.broker.is_simulation,
+                    model_snapshot_info=moe_res,
                 )
                 return True
 
@@ -620,6 +649,13 @@ class KiwoomLiveRunner:
                     "features": moe_res.get("features", {}),
                     "high_price_during_hold": real_buy_px,
                     "low_price_during_hold": real_buy_px,
+                    "active_model_id": moe_res.get("active_model_id", "B_Normalized_72"),
+                    "active_model_sha256": moe_res.get("active_model_sha256", ""),
+                    "active_model_version": moe_res.get("active_model_version", ""),
+                    "active_model_schema": moe_res.get("active_model_schema", "B_normalized"),
+                    "active_model_num_features": moe_res.get("active_model_num_features", 72),
+                    "active_model_load_status": moe_res.get("active_model_load_status", "PRIMARY_ACTIVE"),
+                    "active_model_is_fallback": moe_res.get("active_model_is_fallback", False),
                     "buy_attempts": 1
                 }
                 self._save_active_position(filled_pos)
@@ -633,7 +669,8 @@ class KiwoomLiveRunner:
                     sl_price=sl_px_dyn,
                     time_stop_minutes=time_stop_min,
                     strategy_tag=strategy_tag,
-                    is_simulation=self.broker.is_simulation
+                    is_simulation=self.broker.is_simulation,
+                    model_snapshot_info=moe_res,
                 )
                 return True
 
@@ -679,6 +716,13 @@ class KiwoomLiveRunner:
                     "features": moe_res.get("features", {}),
                     "high_price_during_hold": real_buy_px,
                     "low_price_during_hold": real_buy_px,
+                    "active_model_id": moe_res.get("active_model_id", "B_Normalized_72"),
+                    "active_model_sha256": moe_res.get("active_model_sha256", ""),
+                    "active_model_version": moe_res.get("active_model_version", ""),
+                    "active_model_schema": moe_res.get("active_model_schema", "B_normalized"),
+                    "active_model_num_features": moe_res.get("active_model_num_features", 72),
+                    "active_model_load_status": moe_res.get("active_model_load_status", "PRIMARY_ACTIVE"),
+                    "active_model_is_fallback": moe_res.get("active_model_is_fallback", False),
                     "buy_attempts": 2
                 }
                 self._save_active_position(filled_pos)
@@ -698,7 +742,8 @@ class KiwoomLiveRunner:
                     sl_price=sl_px_dyn,
                     time_stop_minutes=time_stop_min,
                     strategy_tag=strategy_tag,
-                    is_simulation=self.broker.is_simulation
+                    is_simulation=self.broker.is_simulation,
+                    model_snapshot_info=moe_res,
                 )
                 return True
 
@@ -746,6 +791,13 @@ class KiwoomLiveRunner:
                     "features": moe_res.get("features", {}),
                     "high_price_during_hold": real_buy_px,
                     "low_price_during_hold": real_buy_px,
+                    "active_model_id": moe_res.get("active_model_id", "B_Normalized_72"),
+                    "active_model_sha256": moe_res.get("active_model_sha256", ""),
+                    "active_model_version": moe_res.get("active_model_version", ""),
+                    "active_model_schema": moe_res.get("active_model_schema", "B_normalized"),
+                    "active_model_num_features": moe_res.get("active_model_num_features", 72),
+                    "active_model_load_status": moe_res.get("active_model_load_status", "PRIMARY_ACTIVE"),
+                    "active_model_is_fallback": moe_res.get("active_model_is_fallback", False),
                     "buy_attempts": 2
                 }
                 self._save_active_position(filled_pos)
@@ -760,7 +812,8 @@ class KiwoomLiveRunner:
                     sl_price=sl_px_dyn,
                     time_stop_minutes=time_stop_min,
                     strategy_tag=strategy_tag,
-                    is_simulation=self.broker.is_simulation
+                    is_simulation=self.broker.is_simulation,
+                    model_snapshot_info=moe_res,
                 )
                 return True
             else:
@@ -860,7 +913,8 @@ class KiwoomLiveRunner:
                             exit_price=latest_px,
                             exit_reason=reason_desc,
                             qty=sold_qty,
-                            is_simulation=self.broker.is_simulation
+                            is_simulation=self.broker.is_simulation,
+                            model_snapshot_info=active_pos,
                         )
                     except Exception as te:
                         logger.error(self._redact_log(f"텔레그램 매도 알림 1 발송 에러: {te}"))
@@ -944,6 +998,189 @@ class KiwoomLiveRunner:
     _execute_buy_with_chase = _execute_buy_with_10s_chase
     _execute_sell_with_chase = _execute_sell_with_10s_chase
 
+    def _emit_model_state_alerts_from_eval(self, moe_res: Dict[str, Any]):
+        """
+        Inspects model snapshot metadata from a 15m evaluation result and emits
+        deduplicated Telegram alerts for hot-reload, Champion fallback, or BLOCKED state.
+        """
+        try:
+            load_status = str(moe_res.get("active_model_load_status") or "")
+            is_fallback = bool(moe_res.get("active_model_is_fallback", False))
+            consistency_ok = bool(moe_res.get("model_consistency_ok", True))
+            consistency_reason = str(moe_res.get("model_consistency_reason") or "")
+            hot_reloaded = bool(moe_res.get("model_hot_reloaded", False))
+            prev_sha = str(moe_res.get("previous_model_sha256_before_eval") or "")
+
+            if load_status == "BLOCKED" or not consistency_ok:
+                self.notifier.send_model_state_alert(
+                    event_type="BLOCKED",
+                    model_info=moe_res,
+                    reason=consistency_reason or "모든 모델 로드 실패 또는 manifest/메모리 불일치로 신규 매수가 차단되었습니다.",
+                )
+            elif is_fallback or load_status == "FALLBACK":
+                self.notifier.send_model_state_alert(
+                    event_type="FALLBACK_TO_CHAMPION",
+                    model_info=moe_res,
+                    reason="Primary(B_Normalized_72) 모델 비정상 감지로 Champion 폴백 모델이 활성화되었습니다.",
+                )
+            elif hot_reloaded:
+                self.notifier.send_model_state_alert(
+                    event_type="MODEL_HOT_RELOADED",
+                    model_info=moe_res,
+                    previous_model_sha256=prev_sha,
+                    reason="자동 재학습/매니페스트 갱신이 감지되어 최신 모델 스냅샷으로 무중단 핫리로드되었습니다.",
+                )
+        except Exception as e:
+            logger.warning(self._redact_log(f"모델 상태 알림 발송 중 에러(무시됨): {e}"))
+
+    def evaluate_15m_cycle_once(
+        self,
+        allow_order_execution: bool = True,
+        sync_intraday: bool = True,
+        now_dt: Optional[datetime] = None,
+    ) -> Dict[str, Any]:
+        """
+        Executes a single 15-minute AI evaluation cycle (used by _market_execution_loop
+        and by orderless live-entrypoint verification tests).
+        """
+        now_dt = now_dt or datetime.now()
+        ny_dt = now_dt.astimezone(ZoneInfo("America/New_York"))
+        active_pos = self._get_active_position()
+
+        if sync_intraday:
+            try:
+                shadow_live_p = {sym: self.ws_streamer.get_latest_price(sym, 0.0) for sym in config.TRADE_SYMBOLS}
+                self.shadow_tracker.increment_candle(exit_prices=shadow_live_p)
+            except Exception as e:
+                system_logger.log("ERROR", "ShadowTracker", self._redact_log(f"캔들 업데이트 중 에러: {e}"))
+            self.data_lake.sync_live_intraday_candles(config.ALL_SYMBOLS)
+
+        df_15m = self.data_lake.load_candles(config.BASE_ASSET_LONG, "15m")
+        live_prices = {sym: self.ws_streamer.get_latest_price(sym, 0.0) for sym in config.ALL_SYMBOLS}
+
+        moe_res = self.moe_orchestrator.evaluate_dual_filter_signal(
+            df_candle_15m=df_15m,
+            live_prices=live_prices,
+        )
+        self._last_moe_res = moe_res
+
+        # Emit any model state transition alert (HOT_RELOADED / FALLBACK / BLOCKED)
+        self._emit_model_state_alerts_from_eval(moe_res)
+
+        conf = float(moe_res.get("gating_confidence", 0.0)) * 100.0
+        is_appr = bool(moe_res.get("is_approved", False))
+        direction = str(moe_res.get("direction", "NONE"))
+        gbdt_probs = moe_res.get("gbdt_probs", {"LONG": 0.0, "SHORT": 0.0, "NONE": 0.0})
+        p_long = float(gbdt_probs.get("LONG", 0.0)) * 100.0
+        p_short = float(gbdt_probs.get("SHORT", 0.0)) * 100.0
+
+        # Send 15m briefing using the exact model snapshot embedded in moe_res
+        briefing_msg = self.notifier.compose_signal_briefing_alert(
+            moe_res=moe_res,
+            ny_time_str=ny_dt.strftime("%H:%M"),
+            kst_time_str=now_dt.strftime("%H:%M"),
+            has_active_pos=bool(active_pos),
+        )
+        try:
+            self.dispatcher.send_telegram_message(briefing_msg)
+        except Exception as te:
+            logger.warning(self._redact_log(f"텔레그램 15분 브리핑 발송 에러(무시됨): {te}"))
+
+        # If Cross-Asset Veto blocked an otherwise high-confidence signal, send Veto alert with snapshot
+        if bool(moe_res.get("is_cross_veto", False)):
+            try:
+                raw_dir = "LONG" if p_long >= p_short else "SHORT"
+                veto_ticker = config.BASE_ASSET_LONG if raw_dir == "LONG" else config.BASE_ASSET_SHORT
+                self.notifier.send_veto_alert(
+                    ticker=veto_ticker,
+                    gbdt_prob=float(moe_res.get("gating_confidence", 0.0)),
+                    veto_reason=str(moe_res.get("veto_reason", "Cross-Asset Veto")),
+                    model_snapshot_info=moe_res,
+                )
+            except Exception as vte:
+                logger.warning(self._redact_log(f"텔레그램 Veto 알림 발송 에러(무시됨): {vte}"))
+
+        system_logger.log(
+            "INFO",
+            "AI",
+            f"15분 정기 브리핑 완료 (확신도: {conf:.1f}%, 모델: {moe_res.get('active_model_id')}[{moe_res.get('active_model_version')}])",
+        )
+
+        # 1. 쉐도우 트래커(가상 매매): allow_order_execution=True 일 때만 DB에 기록
+        if allow_order_execution:
+            shadow_dir = "LONG" if p_long >= p_short else "SHORT"
+            shadow_sym = config.BASE_ASSET_LONG if shadow_dir == "LONG" else config.BASE_ASSET_SHORT
+            shadow_px = live_prices.get(shadow_sym, 0.0)
+            try:
+                shadow_atr = self._get_5m_atr_pct(shadow_sym, shadow_px) if shadow_px > 0 else 1.8
+                self.shadow_tracker.try_enter_shadow_trade(
+                    symbol=shadow_sym,
+                    price=shadow_px,
+                    current_time=ny_dt,
+                    atr_pct=(shadow_atr / 100.0),
+                )
+            except Exception as e:
+                system_logger.log("ERROR", "ShadowTracker", self._redact_log(f"가상 진입 추가 중 에러: {e}"))
+
+        # 2. 실전 매매 사전 판단 및 (allow_order_execution=True 시) 주문 실행
+        order_attempted = False
+        pre_order_decision = "WAIT_HOLD"
+        winner_sym = None
+        order_qty = 0
+
+        if not bool(moe_res.get("model_consistency_ok", True)) or moe_res.get("active_model_load_status") == "BLOCKED":
+            pre_order_decision = "BLOCKED_BY_MODEL_GUARD"
+        elif is_appr and direction in ["LONG", "SHORT"]:
+            winner_sym = config.BASE_ASSET_LONG if direction == "LONG" else config.BASE_ASSET_SHORT
+            cur_px = live_prices.get(winner_sym, 0.0)
+            if active_pos:
+                pre_order_decision = "SKIP_EXISTING_POSITION"
+            elif cur_px <= 0:
+                pre_order_decision = "SKIP_INVALID_PRICE"
+            elif not allow_order_execution:
+                pre_order_decision = f"READY_TO_BUY_{winner_sym}_ORDER_SUPPRESSED"
+            else:
+                conn_res = self.broker.test_connection()
+                if not conn_res.get("ok", True):
+                    pre_order_decision = "DEFERRED_BALANCE_QUERY_FAILED"
+                    system_logger.log("WARNING", "Trade", f"[B-02 Pre-Buy Guard] 예수금 조회 실패로 {winner_sym} 진입 보류")
+                else:
+                    usd_avail = float(conn_res.get("usd_order_available", 0.0))
+                    order_qty = int((usd_avail * config.MAX_ALLOCATION_RATIO) / (cur_px + config.QTY_CALC_BUFFER))
+                    if order_qty > 0:
+                        pre_order_decision = f"EXECUTE_BUY_{winner_sym}"
+                        system_logger.log("TRADE", "AI", f"V3 AI 신호 발생! {winner_sym} {order_qty}주 매수")
+                        atr_pct = self._get_5m_atr_pct(winner_sym, cur_px)
+                        sl_pct = max(config.SL_MIN_PCT * 100.0, min(config.SL_MAX_PCT * 100.0, atr_pct * config.SL_ATR_MULTIPLIER))
+                        tp_pct = config.MAX_TP_PCT * 100.0
+                        targets = {
+                            "dynamic_tp_px": round(cur_px * (1.0 + tp_pct / 100.0), 2),
+                            "dynamic_sl_px": round(cur_px * (1.0 - sl_pct / 100.0), 2),
+                            "tp_pct": tp_pct,
+                            "sl_pct": sl_pct,
+                            "time_stop_minutes": config.TIME_STOP_MINUTES,
+                            "strategy_tag": "Lumos V4 Optimal",
+                        }
+                        order_attempted = True
+                        self._execute_buy_with_10s_chase(
+                            symbol=winner_sym,
+                            target_qty=order_qty,
+                            ref_price=cur_px,
+                            moe_res=moe_res,
+                            targets=targets,
+                        )
+                    else:
+                        pre_order_decision = "SKIP_INSUFFICIENT_FUNDS"
+
+        return {
+            "moe_res": moe_res,
+            "briefing_msg": briefing_msg,
+            "pre_order_decision": pre_order_decision,
+            "order_attempted": order_attempted,
+            "winner_symbol": winner_sym,
+            "order_qty": order_qty,
+        }
+
     def _market_execution_loop(self):
         logger.info("?? [?  ?????  ? ? (: 15?...")
         system_logger.log("INFO", "LiveRunner", "???  ??????")
@@ -958,15 +1195,15 @@ class KiwoomLiveRunner:
                         self.ws_streamer.reset_session_ticks()
                         
                         system_logger.log("TRADE", "MarketSession", f"??? ?? ? ? ({mkt['now_kst_str']})")
-                        open_msg = f"""🟢 **[미국장 오픈 알림]**
-
-⏰ 현재 시간: `{mkt['now_kst_str']}`
-💼 체결 모드: `{self.broker.mode_str}`
-🧠 AI 엔진: `하이브리드 MoE V5 (09:30~15:30 EDT)`
-🎯 진입 기준: `GBDT {config.GBDT_CONFIDENCE_THRESHOLD*100:.1f}% 이상`
-🛡️ 청산 기준: `Max TP +3.0% / SL -2.0% / 90m 타임스탑 / ATR 트레일링`
-🧹 장마감: `{config.PHASE_EOD_CLEAR} EDT 0% 오버나잇 청산`"""
-                        self.dispatcher.send_telegram_message(open_msg)
+                        open_msg = self.notifier.compose_market_open_alert(
+                            now_kst_str=mkt["now_kst_str"],
+                            mode_str=self.broker.mode_str,
+                            model_info=self.get_active_model_info(),
+                        )
+                        try:
+                            self.dispatcher.send_telegram_message(open_msg)
+                        except Exception as te:
+                            logger.warning(self._redact_log(f"미국장 오픈 텔레그램 발송 에러(무시됨): {te}"))
 
                     elif current_session in ["AFTER_MARKET_CLOSED", "CLOSED"]:
                         eod_date_file = DATA_DIR / "last_eod_date.json"
@@ -1023,106 +1260,18 @@ class KiwoomLiveRunner:
                 # === AI Evaluation & Briefing ===
                 if current_session == "REGULAR_MARKET_OPEN" and not self._is_order_in_progress:
                     now_t = time.time()
-                    active_pos = self._get_active_position()
-                    
                     now_dt = datetime.now()
                     force_first_run = (self._last_briefing_time == 0.0)
                     is_target_minute = (now_dt.minute % 15 == 0)
                     
                     if (is_target_minute or force_first_run) and (now_t - self._last_briefing_time) >= 60:
                         self._last_briefing_time = now_t
-                        
                         try:
-                            self.shadow_tracker.increment_candle()
-                        except Exception as e:
-                            system_logger.log("ERROR", "ShadowTracker", self._redact_log(f"캔들 업데이트 중 에러: {e}"))
-                        
-                        try:                            # 2) 전 종목 Intraday 캔들 동기화
-                            self.data_lake.sync_live_intraday_candles(config.ALL_SYMBOLS)
-                            df_15m = self.data_lake.load_candles(config.BASE_ASSET_LONG, "15m")
-                            live_prices = {sym: self.ws_streamer.get_latest_price(sym, 0.0) for sym in config.ALL_SYMBOLS}
-                            
-                            moe_res = self.moe_orchestrator.evaluate_dual_filter_signal(df_candle_15m=df_15m, live_prices=live_prices)
-                            self._last_moe_res = moe_res
-                            
-                            conf = float(moe_res.get('gating_confidence', 0.0)) * 100.0
-                            is_appr = moe_res.get('is_approved', False)
-                            direction = moe_res.get('direction', 'NONE')
-                            
-                            gbdt_probs = moe_res.get('gbdt_probs', {"LONG": 0.0, "SHORT": 0.0, "NONE": 0.0})
-                            p_long = gbdt_probs.get("LONG", 0.0) * 100
-                            p_short = gbdt_probs.get("SHORT", 0.0) * 100
-                            p_none = gbdt_probs.get("NONE", 0.0) * 100
-                            
-                            ny_dt = now_dt.astimezone(ZoneInfo('America/New_York'))
-                            if direction == "LONG":
-                                dir_str = f"{config.BASE_ASSET_LONG} 매수"
-                            elif direction == "SHORT":
-                                dir_str = f"{config.BASE_ASSET_SHORT} 매수"
-                            else:
-                                dir_str = "매수 관망"
-                                
-                            briefing_msg = f"""🤖 <b>[Lumos AI 정기 브리핑]</b>
-⏰ 시간: {ny_dt.strftime('%H:%M')} (뉴욕시간)
-⏰ 시간: {now_dt.strftime('%H:%M')} (한국시간)
-🧭 AI 판독 방향: {dir_str}
-🎯 진입 임계값: {config.GBDT_CONFIDENCE_THRESHOLD * 100:.1f}%
-📈 {config.BASE_ASSET_LONG} 확률: {p_long:.1f}%
-📉 {config.BASE_ASSET_SHORT} 확률: {p_short:.1f}%
-⏸ 관망 확률: {p_none:.1f}%
-🔥 최종 GBDT 확신도: {conf:.1f}%
-🚦 상태: {'진입 승인 🟢 (보유종목 있어 실제 진입은 Skip)' if (is_appr and active_pos) else '진입 승인 🟢' if is_appr else '관망 유지 🟡'}
-"""
-                            self.dispatcher.send_telegram_message(briefing_msg)
-                            system_logger.log("INFO", "AI", f"15???? ? (?: {conf:.1f}%)")
-                            
-                            # 1. 쉐도우 트래커(가상 매매): 70.4% 컷 무시, NONE 판단 무시. 매 15분마다 무조건 진입
-                            shadow_dir = "LONG" if p_long >= p_short else "SHORT"
-                            shadow_sym = config.BASE_ASSET_LONG if shadow_dir == "LONG" else config.BASE_ASSET_SHORT
-                            shadow_px = live_prices.get(shadow_sym, 0.0)
-                            
-                            try:
-                                shadow_atr = self._get_5m_atr_pct(shadow_sym, shadow_px) if shadow_px > 0 else 1.8
-                                self.shadow_tracker.try_enter_shadow_trade(
-                                    symbol=shadow_sym,
-                                    price=shadow_px,
-                                    current_time=ny_dt,
-                                    atr_pct=(shadow_atr / 100.0)
-                                )
-                            except Exception as e:
-                                system_logger.log("ERROR", "ShadowTracker", self._redact_log(f"가상 진입 추가 중 에러: {e}"))
-                            
-                            # 2. 실전 매매 로직 (기존 70.4% 룰 및 릴레이 원칙 유지)
-                            if is_appr:
-                                if direction in ["LONG", "SHORT"]:
-                                    winner_sym = config.BASE_ASSET_LONG if direction == "LONG" else config.BASE_ASSET_SHORT
-                                    cur_px = live_prices.get(winner_sym, 0.0)
-                                    
-                                    if cur_px > 0 and not active_pos:
-                                        conn_res = self.broker.test_connection()
-                                        usd_avail = float(conn_res.get("usd_order_available", 0.0))
-                                        order_qty = int((usd_avail * config.MAX_ALLOCATION_RATIO) / (cur_px + config.QTY_CALC_BUFFER))
-                                        if order_qty > 0:
-                                            system_logger.log("TRADE", "AI", f"V3 AI 신호 발생! {winner_sym} {order_qty}주 매수")
-                                            atr_pct = self._get_5m_atr_pct(winner_sym, cur_px)
-                                            sl_pct = max(config.SL_MIN_PCT * 100.0, min(config.SL_MAX_PCT * 100.0, atr_pct * config.SL_ATR_MULTIPLIER))
-                                            tp_pct = config.MAX_TP_PCT * 100.0
-                                            
-                                            targets = {
-                                                "dynamic_tp_px": round(cur_px * (1.0 + tp_pct/100.0), 2),
-                                                "dynamic_sl_px": round(cur_px * (1.0 - sl_pct/100.0), 2),
-                                                "tp_pct": tp_pct,
-                                                "sl_pct": sl_pct,
-                                                "time_stop_minutes": config.TIME_STOP_MINUTES,
-                                                "strategy_tag": "Lumos V4 Optimal"
-                                            }
-                                            self._execute_buy_with_10s_chase(
-                                                symbol=winner_sym,
-                                                target_qty=order_qty,
-                                                ref_price=cur_px,
-                                                moe_res=moe_res,
-                                                targets=targets
-                                            )
+                            self.evaluate_15m_cycle_once(
+                                allow_order_execution=True,
+                                sync_intraday=True,
+                                now_dt=now_dt,
+                            )
                         except Exception as e:
                             system_logger.log("ERROR", "AI", self._redact_log(f"AI ? ?? : {e}"))
 
@@ -1172,7 +1321,7 @@ class KiwoomLiveRunner:
                 system_logger.log("ERROR", "LiveRunner", self._redact_log(f" ? : {e}"))
                 time.sleep(config.MAIN_LOOP_ERROR_WAIT)
 
-    def run_once_and_start_listener(self):
+    def run_once_and_start_listener(self, start_background_threads: bool = True) -> Dict[str, Any]:
         """
         1???? ? ??????  ????? ??? ??
         """
@@ -1210,38 +1359,65 @@ class KiwoomLiveRunner:
 
         # 2.5. 기존에 걸려있는 모든 미체결 주문 일괄 취소 (수동 주문 잔재로 인한 예수금 잠김 방지)
         logger.info(f"\\n[2.5/3] 기존 미체결 주문 일괄 취소 확인 중...")
-        try:
-            cancel_res = self.broker.cancel_all_open_orders()
-            if cancel_res:
-                logger.info(f"   => {len(cancel_res)}건의 기존 미체결 주문을 성공적으로 취소했습니다.")
-            else:
-                logger.info(f"   => 취소할 기존 미체결 주문이 없습니다.")
-        except Exception as e:
-            logger.warning(self._redact_log(f"   => 기존 미체결 주문 취소 중 에러 발생 (무시하고 진행): {e}"))
+        if start_background_threads:
+            try:
+                cancel_res = self.broker.cancel_all_open_orders()
+                if cancel_res:
+                    logger.info(f"   => {len(cancel_res)}건의 기존 미체결 주문을 성공적으로 취소했습니다.")
+                else:
+                    logger.info(f"   => 취소할 기존 미체결 주문이 없습니다.")
+            except Exception as e:
+                logger.warning(self._redact_log(f"   => 기존 미체결 주문 취소 중 에러 발생 (무시하고 진행): {e}"))
 
-        # 3. 모델 등 정보 설정
-        cross_asset_txt = "O" if getattr(config, "USE_CROSS_ASSET_VETO", False) else "X"
-        trend_txt = "O" if getattr(config, "USE_60M_TREND_FILTER", False) else "X"
-        ai_engine_desc = f"Phase 1: 15m GBDT Model (진입 > {config.GBDT_CONFIDENCE_THRESHOLD*100:.1f}% / 크로스에셋 Veto: {cross_asset_txt} / QQQ 60분 추세방패: {trend_txt})"
-        start_msg = f"""🚀 **[Lumos {self.broker.mode_str} 거래 시스템 시작]**
-⏰ **현재 시간:** {mkt_status['now_kst_str']}
-🔄 **시간 동기화:** 100% 일치 (KST-NYT {sync_res['delta_hours']:.0f}h 시차 검증 완료)
-📊 **시장 상태:** {mkt_status['status_desc']}
-⏳ **다음 개장/폐장:** {mkt_status['next_open_kst_str']} ({mkt_status['time_until_open_str']})
-🏢 **연결 증권사:** {self.broker.broker_name} ({self.broker.mode_str})
-💳 **계좌 번호:** {self.broker.account_no}-{self.broker.account_type}
-💵 **가용 예수금:** ${conn_res['usd_order_available']:,.2f} USD
-📦 **현재 보유종목:** {conn_res['holdings_count']}종목
-🧠 **AI 엔진:** {ai_engine_desc}
-⚡ **마켓 데이터:** 10ms WebSocket 스트리밍 기반 실시간 체결 처리 중...
-
-✅ 성공적으로 초기화되었습니다. 매매 대기 중..."""
+        # 3. 모델 등 정보 설정 (Single Source of Truth: MLFeatureEngine.get_active_model_info())
+        active_model_info = self.get_active_model_info()
+        start_msg = self.notifier.compose_startup_alert(
+            mode_str=self.broker.mode_str,
+            broker_name=self.broker.broker_name,
+            account_masked=f"{self.broker.account_no}-{self.broker.account_type}",
+            mkt_status=mkt_status,
+            sync_res=sync_res,
+            conn_res=conn_res,
+            model_info=active_model_info,
+        )
         try:
-            self.dispatcher.send_telegram_message(start_msg)
-            system_logger.log("INFO", "LiveRunner", self._redact_log(f"? {self.broker.mode_str} ?  ? ??? (: {self.broker.account_no}, ?? ${conn_res['usd_order_available']:,.2f})"))
+            if not self.notifier._check_and_record_state_dedup(
+                "STARTUP",
+                f"{active_model_info.get('active_model_id')}:{active_model_info.get('active_model_sha256')}:{active_model_info.get('load_status')}",
+            ):
+                self.dispatcher.send_telegram_message(start_msg)
+            if active_model_info.get("load_status") == "BLOCKED" or not active_model_info.get("is_manifest_memory_consistent", True):
+                self.notifier.send_model_state_alert(
+                    event_type="BLOCKED",
+                    model_info=active_model_info,
+                    reason=str(active_model_info.get("consistency_reason") or "모델 로드 실패로 신규 진입 차단"),
+                )
+            elif active_model_info.get("is_fallback") or active_model_info.get("load_status") == "FALLBACK":
+                self.notifier.send_model_state_alert(
+                    event_type="FALLBACK_TO_CHAMPION",
+                    model_info=active_model_info,
+                    reason="기동 시 Primary 모델 대신 Champion 폴백 모델이 로드되었습니다.",
+                )
+            system_logger.log(
+                "INFO",
+                "LiveRunner",
+                self._redact_log(
+                    f"🚀 {self.broker.mode_str} 시스템 기동 완료 (모델: {active_model_info.get('active_model_id')}[{active_model_info.get('model_version')}], 가용예수금: ${conn_res['usd_order_available']:,.2f})"
+                ),
+            )
         except Exception as te:
             logger.warning(self._redact_log(f"? ? ? ?: {te}"))
-        
+
+        if not start_background_threads:
+            return {
+                "ok": True,
+                "active_model_info": active_model_info,
+                "start_msg": start_msg,
+                "mkt_status": mkt_status,
+                "sync_res": sync_res,
+                "conn_res": conn_res,
+            }
+
         # 4. ????WebSocket) ??? ??
         self.ws_streamer.start()
         logger.info(f"??[{self.broker.broker_name} ??WebSocket ? ???] 10ms ??????? ?")
@@ -1252,6 +1428,7 @@ class KiwoomLiveRunner:
 
         # 6. ??? ????? ? (Foreground Daemon)
         self.controller.listen_loop(poll_interval=2)
+        return {"ok": True, "active_model_info": active_model_info}
 
 
 if __name__ == "__main__":

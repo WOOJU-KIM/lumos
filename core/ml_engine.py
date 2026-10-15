@@ -37,6 +37,7 @@ class _ModelSnapshot:
     load_status: str
     fallback_status: str
     load_error: str
+    training_window_meta: Tuple[Tuple[str, Any], ...] = ()
 
 
 def _safe_merge_asof(df_left: pd.DataFrame, df_right: pd.DataFrame, on='datetime_dt', direction='backward') -> pd.DataFrame:
@@ -584,6 +585,9 @@ class MLFeatureEngine:
             feat_names = None
             feat_hash = None
 
+        raw_tw_meta = manifest.get("training_window_meta")
+        tw_meta_dict = dict(raw_tw_meta) if isinstance(raw_tw_meta, dict) else {}
+
         return {
             "act_rel": str(act_rel),
             "act_path": act_path,
@@ -601,6 +605,7 @@ class MLFeatureEngine:
             "fb_schema": str(manifest.get("fallback_expected_schema", "v4_champion")).strip(),
             "fb_id": str(manifest.get("fallback_model_id", "v4_champion_fallback")).strip(),
             "fb_n_feat": int(manifest.get("fallback_expected_num_features", 72)),
+            "training_window_meta": tw_meta_dict,
         }
 
     def _try_load_default_model(self):
@@ -623,6 +628,7 @@ class MLFeatureEngine:
                     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
                     mf = self._extract_manifest_fields(manifest, root_dir, manifest_path)
                     act_path = mf["act_path"]
+                    tw_tuple = tuple(sorted(mf.get("training_window_meta", {}).items()))
 
                     ver = self.verify_model_artifact(
                         act_path,
@@ -650,7 +656,8 @@ class MLFeatureEngine:
                             previous_model_sha256=mf["prev_sha"],
                             load_status=f"ACTIVE_{mf['act_schema'].upper()}",
                             fallback_status="PRIMARY_ACTIVE",
-                            load_error=""
+                            load_error="",
+                            training_window_meta=tw_tuple
                         )
                         self._apply_snapshot(snap)
                         self._loaded_manifest_sha256 = self.active_model_sha256
@@ -688,7 +695,8 @@ class MLFeatureEngine:
                             previous_model_sha256=mf["prev_sha"],
                             load_status="FALLBACK_TO_CHAMPION",
                             fallback_status="FALLBACK_CHAMPION_ACTIVE",
-                            load_error=f"Primary failed ({primary_err}); safely fell back to {fb_path.name}"
+                            load_error=f"Primary failed ({primary_err}); safely fell back to {fb_path.name}",
+                            training_window_meta=()
                         )
                         self._apply_snapshot(snap_fb)
                         logger.info(self.format_active_model_log())
@@ -710,7 +718,8 @@ class MLFeatureEngine:
                         previous_model_sha256=mf["prev_sha"],
                         load_status="BLOCKED",
                         fallback_status="ALL_MODELS_FAILED_ENTRY_BLOCKED",
-                        load_error=ver_fb["error"]
+                        load_error=ver_fb["error"],
+                        training_window_meta=()
                     )
                     self._apply_snapshot(blocked_snap)
                     logging.getLogger('Lumos').error(f"❌ [모델 로드 검증 실패] {fb_path.name}: {ver_fb['error']}")
@@ -746,7 +755,8 @@ class MLFeatureEngine:
                 previous_model_sha256="",
                 load_status="BLOCKED",
                 fallback_status="ALL_MODELS_FAILED_ENTRY_BLOCKED",
-                load_error=self.model_load_error
+                load_error=self.model_load_error,
+                training_window_meta=()
             )
             self._apply_snapshot(blocked_snap)
 
@@ -782,6 +792,7 @@ class MLFeatureEngine:
             target_schema = mf["act_schema"]
             target_n_feat = mf["act_n_feat"]
             target_path = mf["act_path"]
+            tw_tuple = tuple(sorted(mf.get("training_window_meta", {}).items()))
 
             cur_sha = str(cur_snap.active_model_sha256 or "").strip().lower()
             cur_id = str(cur_snap.active_model_id or "").strip()
@@ -836,7 +847,8 @@ class MLFeatureEngine:
                         previous_model_sha256=mf["prev_sha"] or cur_snap.active_model_sha256,
                         load_status=f"ACTIVE_{target_schema.upper()}",
                         fallback_status="HOT_RELOAD_PRIMARY_ACTIVE",
-                        load_error=""
+                        load_error="",
+                        training_window_meta=tw_tuple
                     )
                     self._apply_snapshot(new_snap)
                     self.last_reload_error = ""
@@ -860,7 +872,8 @@ class MLFeatureEngine:
                         previous_model_sha256=cur_snap.previous_model_sha256,
                         load_status=cur_snap.load_status,
                         fallback_status="KEPT_CURRENT_VALID_MODEL_ON_RELOAD_FAILURE",
-                        load_error=f"Hot-reload rejected ({ver['error']}); kept valid active model ({cur_snap.active_model_sha256[:12]})"
+                        load_error=f"Hot-reload rejected ({ver['error']}); kept valid active model ({cur_snap.active_model_sha256[:12]})",
+                        training_window_meta=getattr(cur_snap, "training_window_meta", ())
                     )
                     self._apply_snapshot(kept_snap)
                     logger.error(
@@ -871,6 +884,106 @@ class MLFeatureEngine:
             # 현재 유효한 모델이 없는 상태였다면 기본 로드 시도
             self._try_load_default_model()
             return self.model is not None
+
+    def verify_manifest_memory_snapshot_consistency(self, snapshot: Optional[_ModelSnapshot] = None) -> Dict[str, Any]:
+        """
+        [STEP 2] 매니페스트 모델 = 메모리 로드 모델 = 신호 생성 스냅샷 모델 100% 일치 검증.
+        불일치 또는 BLOCKED 상태가 감지되면 ok=False 및 사유를 반환하여 신규 진입을 차단한다.
+        """
+        import json
+        from pathlib import Path
+
+        snap = snapshot if snapshot is not None else self.get_model_snapshot()
+        if snap is None or snap.model is None or snap.load_status == "BLOCKED":
+            return {
+                "ok": False,
+                "reason": "MODEL_BLOCKED_OR_NONE",
+                "snapshot_id": getattr(snap, "active_model_id", "NONE"),
+                "snapshot_sha256": getattr(snap, "active_model_sha256", ""),
+                "snapshot_schema": getattr(snap, "feature_schema", ""),
+            }
+
+        if len(snap.feature_names) != 72 or snap.feature_schema not in self.LIVE_ALLOWED_SCHEMAS:
+            return {
+                "ok": False,
+                "reason": f"INVALID_SNAPSHOT_SCHEMA_OR_FEATURES({snap.feature_schema},{len(snap.feature_names)})",
+                "snapshot_id": snap.active_model_id,
+                "snapshot_sha256": snap.active_model_sha256,
+                "snapshot_schema": snap.feature_schema,
+            }
+
+        mem_id = str(getattr(self, "active_model_id", ""))
+        mem_sha = str(getattr(self, "active_model_sha256", ""))
+        mem_schema = str(getattr(self, "feature_schema", ""))
+        mem_n_feat = len(getattr(self, "feature_names", []) or [])
+
+        if (
+            mem_id != snap.active_model_id
+            or mem_sha != snap.active_model_sha256
+            or mem_schema != snap.feature_schema
+            or mem_n_feat != len(snap.feature_names)
+        ):
+            return {
+                "ok": False,
+                "reason": "MEMORY_SNAPSHOT_MISMATCH",
+                "memory_id": mem_id,
+                "memory_sha256": mem_sha,
+                "snapshot_id": snap.active_model_id,
+                "snapshot_sha256": snap.active_model_sha256,
+            }
+
+        manifest_consistent = True
+        manifest_sha = snap.active_model_sha256
+        manifest_id = snap.active_model_id
+        manifest_schema = snap.feature_schema
+        if (
+            getattr(self, "_bound_to_default_manifest", False)
+            and snap.fallback_status in ("PRIMARY_ACTIVE", "HOT_RELOAD_PRIMARY_ACTIVE")
+        ):
+            manifest_path = self._get_manifest_path()
+            if manifest_path.exists():
+                try:
+                    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    root_dir = Path(__file__).resolve().parent.parent
+                    mf = self._extract_manifest_fields(manifest, root_dir, manifest_path)
+                    manifest_sha = str(mf["act_sha"] or "").strip()
+                    manifest_id = str(mf["act_id"] or "").strip()
+                    manifest_schema = str(mf["act_schema"] or "").strip()
+                    if (
+                        (manifest_sha and manifest_sha.lower() != snap.active_model_sha256.lower())
+                        or (manifest_id and manifest_id != snap.active_model_id)
+                        or (manifest_schema and manifest_schema != snap.feature_schema)
+                        or int(mf["act_n_feat"]) != len(snap.feature_names)
+                    ):
+                        manifest_consistent = False
+                except Exception:
+                    manifest_consistent = False
+
+        if not manifest_consistent:
+            return {
+                "ok": False,
+                "reason": "MANIFEST_MEMORY_MISMATCH",
+                "manifest_id": manifest_id,
+                "manifest_sha256": manifest_sha,
+                "manifest_schema": manifest_schema,
+                "snapshot_id": snap.active_model_id,
+                "snapshot_sha256": snap.active_model_sha256,
+                "snapshot_schema": snap.feature_schema,
+            }
+
+        return {
+            "ok": True,
+            "reason": "CONSISTENT",
+            "manifest_id": manifest_id,
+            "manifest_sha256": manifest_sha,
+            "manifest_schema": manifest_schema,
+            "memory_id": mem_id,
+            "memory_sha256": mem_sha,
+            "memory_schema": mem_schema,
+            "snapshot_id": snap.active_model_id,
+            "snapshot_sha256": snap.active_model_sha256,
+            "snapshot_schema": snap.feature_schema,
+        }
 
     def get_active_model_info(self, is_daemon_running: bool = False) -> Dict[str, Any]:
         """현재 메모리에 로드된 실전 모델의 식별자, 스키마, SHA256 및 STEP 7 표준 상태 필드 반환"""
@@ -886,12 +999,19 @@ class MLFeatureEngine:
         else:
             op_verdict = "READY_FOR_LIVE_START"
 
+        tw_meta = dict(getattr(snap, "training_window_meta", ()) or ())
+        if not tw_meta and getattr(self, "last_training_window_meta", None):
+            tw_meta = dict(self.last_training_window_meta)
+
+        consistency = self.verify_manifest_memory_snapshot_consistency(snapshot=snap)
+
         return {
             "active_model_id": snap.active_model_id,
             "feature_schema": snap.feature_schema,
             "model_path": snap.active_model_path,
             "model_sha256": snap.active_model_sha256,
             "sha256": snap.active_model_sha256,
+            "model_version": (snap.active_model_sha256 or "")[:12] if snap.active_model_sha256 else "NONE",
             "feature_names_sha256": snap.feature_names_sha256,
             "num_features": len(snap.feature_names),
             "load_status": snap.load_status,
@@ -904,6 +1024,11 @@ class MLFeatureEngine:
             "last_reload_error": getattr(self, "last_reload_error", ""),
             "is_ready": is_ready,
             "operational_verdict": op_verdict,
+            "training_window_meta": tw_meta,
+            "max_training_weeks": int(getattr(config, "ROLLING_TRAINING_WEEKS", 520)),
+            "max_training_lookback_days": int(getattr(config, "TRAINING_LOOKBACK_DAYS", 3640)),
+            "is_manifest_memory_consistent": consistency["ok"],
+            "consistency_reason": consistency["reason"],
             # STEP 7 표준 진단 키
             "ACTIVE_MODEL_ID": snap.active_model_id,
             "ACTIVE_MODEL_SCHEMA": snap.feature_schema,

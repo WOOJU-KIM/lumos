@@ -982,7 +982,506 @@ class TestLGBMTrendMeanReversion(unittest.TestCase):
             self.assertGreater(targets["dynamic_tp_px"], 50.0)
             self.assertLess(targets["dynamic_sl_px"], 50.0)
 
+    def test_19_live_runner_entrypoint_and_manifest_memory_snapshot_consistency(self):
+        """[STEP 2 & STEP 3] 실제 KiwoomLiveRunner 진입점(run_once_and_start_listener + evaluate_15m_cycle_once) 무주문 기동 및 manifest==memory==snapshot 3중 일치 검증"""
+        import hashlib
+        import json
+        from unittest.mock import MagicMock
+        from core.live_runner import KiwoomLiveRunner
+
+        live_db_path = PROJECT_ROOT / "data" / "live_experience.db"
+        db_sha_before = hashlib.sha256(live_db_path.read_bytes()).hexdigest()
+        expected_b_sha = hashlib.sha256((PROJECT_ROOT / "models" / "model_normalized_72.pkl").read_bytes()).hexdigest()
+        manifest_data = json.loads((PROJECT_ROOT / "models" / "active_model_manifest.json").read_text(encoding="utf-8"))
+
+        sent_dispatcher_msgs = []
+        sent_notifier_msgs = []
+
+        with patch("core.live_runner.KiwoomBroker") as MockBroker, \
+             patch("core.live_runner.DispatcherAgent") as MockDisp, \
+             patch("core.live_runner.TelegramController") as MockCtrl, \
+             patch("core.telegram_notifier.TelegramNotifier._send_http_request") as mock_http:
+
+            broker_inst = MockBroker.return_value
+            broker_inst.is_simulation = True
+            broker_inst.broker_name = "키움증권"
+            broker_inst.mode_str = "모의투자"
+            broker_inst.account_no = "00000000"
+            broker_inst.account_type = "01"
+            broker_inst.test_connection.return_value = {
+                "ok": True,
+                "usd_order_available": 10000.0,
+                "holdings_count": 0,
+            }
+            broker_inst.get_overseas_stock_balance.return_value = {"ok": True, "holdings": []}
+            broker_inst.get_open_orders.return_value = {"ok": True, "open_orders": []}
+            broker_inst.get_daily_execution_history.return_value = {"ok": True, "executions": []}
+
+            disp_inst = MockDisp.return_value
+            disp_inst.send_telegram_message.side_effect = lambda msg: (sent_dispatcher_msgs.append(msg) or {"ok": True})
+            mock_http.side_effect = lambda msg: (sent_notifier_msgs.append(msg) or {"ok": True})
+
+            runner = KiwoomLiveRunner(is_simulation=True)
+            runner.ws_streamer.get_latest_price = MagicMock(return_value=45.0)
+            runner.notifier.bot_token = "DUMMY_TOKEN"
+            runner.notifier.chat_id = "DUMMY_CHAT"
+            runner.notifier.async_mode = False
+
+            # 1) 실제 기동 진입점(run_once_and_start_listener) 무주문 실행 (백그라운드 스레드 미기동)
+            startup_res = runner.run_once_and_start_listener(start_background_threads=False)
+            self.assertTrue(startup_res["ok"])
+            self.assertEqual(len(sent_dispatcher_msgs), 1)
+            start_msg = sent_dispatcher_msgs[0]
+            self.assertIn("B_Normalized_72", start_msg)
+            self.assertIn("B_normalized", start_msg)
+            self.assertIn("72개", start_msg)
+            self.assertIn(expected_b_sha[:12], start_msg)
+            self.assertIn("PRIMARY_ACTIVE", start_msg)
+            self.assertIn("최대 520주 (3640일 / 10년 상한)", start_msg)
+
+            # 2) 실제 15분 주기 평가 진입점(evaluate_15m_cycle_once) 무주문 실행
+            cycle_res = runner.evaluate_15m_cycle_once(
+                allow_order_execution=False,
+                sync_intraday=False,
+            )
+            moe_res = cycle_res["moe_res"]
+            gbdt_eng = runner.moe_orchestrator.gbdt_engine
+            mem_info = runner.get_active_model_info()
+            snap = gbdt_eng.get_last_inference_snapshot()
+
+            # 3중 일치 검증: manifest == 메모리 모델 == 신호 생성 스냅샷 모델
+            self.assertEqual(manifest_data["active_model_id"], "B_Normalized_72")
+            self.assertEqual(mem_info["ACTIVE_MODEL_ID"], "B_Normalized_72")
+            self.assertEqual(moe_res["active_model_id"], "B_Normalized_72")
+            self.assertEqual(snap.active_model_id, "B_Normalized_72")
+
+            self.assertEqual(manifest_data["expected_sha256"], expected_b_sha)
+            self.assertEqual(mem_info["ACTIVE_MODEL_SHA256"], expected_b_sha)
+            self.assertEqual(moe_res["active_model_sha256"], expected_b_sha)
+            self.assertEqual(snap.active_model_sha256, expected_b_sha)
+
+            self.assertEqual(manifest_data["expected_schema"], "B_normalized")
+            self.assertEqual(mem_info["ACTIVE_MODEL_SCHEMA"], "B_normalized")
+            self.assertEqual(moe_res["active_model_schema"], "B_normalized")
+            self.assertEqual(snap.feature_schema, "B_normalized")
+
+            self.assertEqual(len(gbdt_eng.feature_names), 72)
+            self.assertEqual(moe_res["active_model_num_features"], 72)
+            self.assertEqual(len(snap.feature_names), 72)
+            self.assertTrue(moe_res["model_consistency_ok"])
+            self.assertEqual(moe_res["model_consistency_reason"], "CONSISTENT")
+
+            # 15m 브리핑 메시지에 스냅샷 모델 정보 포함 확인
+            briefing_msg = cycle_res["briefing_msg"]
+            self.assertIn("B_Normalized_72", briefing_msg)
+            self.assertIn("B_normalized", briefing_msg)
+            self.assertIn("72개", briefing_msg)
+            self.assertIn(expected_b_sha[:12], briefing_msg)
+
+            # 3) manifest/메모리/스냅샷 불일치 강제 주입 시 신규 매수 즉시 차단 검증
+            with patch.object(
+                gbdt_eng,
+                "verify_manifest_memory_snapshot_consistency",
+                return_value={"ok": False, "reason": "SIMULATED_MANIFEST_MEMORY_SHA256_MISMATCH"},
+            ):
+                mismatch_cycle = runner.evaluate_15m_cycle_once(
+                    allow_order_execution=False,
+                    sync_intraday=False,
+                )
+                self.assertFalse(mismatch_cycle["moe_res"]["is_approved"])
+                self.assertEqual(mismatch_cycle["moe_res"]["direction"], "NONE")
+                self.assertFalse(mismatch_cycle["moe_res"]["model_consistency_ok"])
+                self.assertEqual(mismatch_cycle["pre_order_decision"], "BLOCKED_BY_MODEL_GUARD")
+                self.assertTrue(any("BLOCKED" in m and "SIMULATED_MANIFEST_MEMORY_SHA256_MISMATCH" in m for m in sent_notifier_msgs))
+
+            # 주문 호출 0건, 포지션 None, DB 불변 확인
+            self.assertEqual(broker_inst.send_order.call_count, 0)
+            self.assertIsNone(runner._active_position)
+            db_sha_after = hashlib.sha256(live_db_path.read_bytes()).hexdigest()
+            self.assertEqual(db_sha_before, db_sha_after)
+
+    def test_20_telegram_notifications_scenarios_a_to_j(self):
+        """[STEP 6 & STEP 7] 텔레그램 시나리오 A ~ J 전수 검증 (실제 발송 없이 메시지 캡처 및 예외 격리 검증)"""
+        import hashlib
+        import json
+        import shutil
+        import tempfile
+        from unittest.mock import MagicMock
+        from core.live_runner import KiwoomLiveRunner
+        from core.moe_orchestrator import (
+            MoEMetaOrchestrator,
+            rollback_active_model_manifest,
+            train_and_save_moe_orchestrator,
+        )
+        from core.telegram_notifier import TelegramNotifier
+
+        captured_messages: list[str] = []
+
+        def _capture_msg(text: str):
+            captured_messages.append(text)
+            return {"ok": True}
+
+        notifier = TelegramNotifier(async_mode=False)
+        notifier.bot_token = "DUMMY_TOKEN"
+        notifier.chat_id = "DUMMY_CHAT"
+
+        with tempfile.TemporaryDirectory() as tmp_dir_str, \
+             patch.object(notifier, "_send_http_request", side_effect=_capture_msg):
+            tmp_dir = Path(tmp_dir_str)
+            versions_dir = tmp_dir / "versions"
+            versions_dir.mkdir(parents=True, exist_ok=True)
+            b_pkl = tmp_dir / "model_normalized_72.pkl"
+            c_pkl = tmp_dir / "model_champion.pkl"
+            manifest_file = tmp_dir / "active_model_manifest.json"
+
+            shutil.copy2(PROJECT_ROOT / "models" / "model_normalized_72.pkl", b_pkl)
+            shutil.copy2(PROJECT_ROOT / "models" / "model_champion.pkl", c_pkl)
+            orig_b_sha = hashlib.sha256(b_pkl.read_bytes()).hexdigest()
+            orig_c_sha = hashlib.sha256(c_pkl.read_bytes()).hexdigest()
+
+            base_manifest = json.loads((PROJECT_ROOT / "models" / "active_model_manifest.json").read_text(encoding="utf-8"))
+            base_manifest["model_path"] = str(b_pkl)
+            base_manifest["active_model_path"] = str(b_pkl)
+            base_manifest["fallback_model_path"] = str(c_pkl)
+            base_manifest["job_started_at_ns"] = 100
+            base_manifest["training_window_meta"] = {
+                "data_start": "2024-03-22",
+                "data_end": "2026-03-20",
+                "num_candles": 12000,
+                "max_training_weeks": 520,
+                "max_training_lookback_days": 3640,
+            }
+            manifest_file.write_text(json.dumps(base_manifest, indent=2), encoding="utf-8")
+
+            moe = MoEMetaOrchestrator(manifest_path=manifest_file)
+
+            # ------------------------------------------------------------------
+            # 시나리오 A: 정상 B_Normalized_72 기동 알림
+            # ------------------------------------------------------------------
+            captured_messages.clear()
+            info_a = moe.get_active_model_info()
+            sent_a = notifier.send_startup_alert(
+                mode_str="모의투자",
+                broker_name="키움증권",
+                account_masked="00000000-01",
+                mkt_status={
+                    "now_kst_str": "2026-10-15 22:30:00 KST",
+                    "status_desc": "정규장 오픈",
+                    "next_open_kst_str": "2026-10-16 05:00 KST",
+                    "time_until_open_str": "6h 30m",
+                },
+                sync_res={"delta_hours": 13},
+                conn_res={"usd_order_available": 10000.0, "holdings_count": 0},
+                model_info=info_a,
+            )
+            self.assertTrue(sent_a["ok"])
+            self.assertEqual(len(captured_messages), 1)
+            msg_a = captured_messages[0]
+            self.assertIn("B_Normalized_72", msg_a)
+            self.assertIn("B_normalized", msg_a)
+            self.assertIn("72개", msg_a)
+            self.assertIn(orig_b_sha[:12], msg_a)
+            self.assertIn("PRIMARY_ACTIVE", msg_a)
+            self.assertIn("2024-03-22 ~ 2026-03-20 (12,000 rows)", msg_a)
+            self.assertIn("최대 520주 (3640일 / 10년 상한)", msg_a)
+
+            # ------------------------------------------------------------------
+            # 시나리오 B: B 모델 매매 신호 생성 및 매수 진입 알림 (스냅샷 모델 ID + 해시 포함)
+            # ------------------------------------------------------------------
+            captured_messages.clear()
+            moe_res_s1 = moe.evaluate_dual_filter_signal(self.sample_df.tail(60))
+            notifier.send_signal_briefing_alert(
+                moe_res=moe_res_s1,
+                ny_time_str="09:45",
+                kst_time_str="22:45",
+                has_active_pos=False,
+            )
+            notifier.send_entry_alert(
+                ticker="SOXL",
+                entry_price=42.50,
+                qty=100,
+                gbdt_prob=0.735,
+                cross_dir="LONG",
+                tp_price=46.75,
+                sl_price=41.50,
+                time_stop_minutes=90,
+                strategy_tag="Lumos V4 Optimal",
+                is_simulation=True,
+                model_snapshot_info=moe_res_s1,
+            )
+            self.assertEqual(len(captured_messages), 2)
+            for m in captured_messages:
+                self.assertIn("B_Normalized_72", m)
+                self.assertIn("B_normalized", m)
+                self.assertIn("72개", m)
+                self.assertIn(orig_b_sha[:12], m)
+
+            # ------------------------------------------------------------------
+            # 시나리오 C: 자동 재학습 완료 및 원자적 활성화 상태 구분 알림
+            # (RETRAIN_COMPLETED -> MODEL_VALIDATION_PASSED -> MODEL_ACTIVATION_SUCCEEDED)
+            # ------------------------------------------------------------------
+            captured_messages.clear()
+            v1_moe = train_and_save_moe_orchestrator(
+                schema="B_normalized",
+                df_15m=self.sample_df,
+                models_dir_override=tmp_dir,
+                _job_started_at_ns=200,
+                notifier=notifier,
+            )
+            v1_sha = v1_moe.get_active_model_info()["sha256"]
+            self.assertEqual(len(captured_messages), 3)
+            self.assertIn("RETRAIN_COMPLETED", captured_messages[0])
+            self.assertIn("MODEL_VALIDATION_PASSED", captured_messages[1])
+            self.assertIn("MODEL_ACTIVATION_SUCCEEDED", captured_messages[2])
+            for m in captured_messages:
+                self.assertIn("B_Normalized_72", m)
+                self.assertIn("B_normalized", m)
+                self.assertIn("72개", m)
+                self.assertIn(v1_sha[:12], m)
+                self.assertIn("520주", m)
+
+            # 구버전 재학습 경합 시 STALE_RETRAIN_IGNORED 알림 확인
+            captured_messages.clear()
+            with self.assertRaises(RuntimeError):
+                train_and_save_moe_orchestrator(
+                    schema="B_normalized",
+                    df_15m=self.sample_df,
+                    models_dir_override=tmp_dir,
+                    _job_started_at_ns=150,
+                    notifier=notifier,
+                )
+            self.assertTrue(any("STALE_RETRAIN_IGNORED" in m for m in captured_messages))
+
+            # ------------------------------------------------------------------
+            # 시나리오 H: 신호 생성 직후(알림 발송 전) 모델 핫리로드 발생 시
+            # 이전 신호(moe_res_s1)의 알림은 반드시 S1 생성 시점 모델 해시(orig_b_sha[:12])를 유지!
+            # ------------------------------------------------------------------
+            moe_res_s2 = moe.evaluate_dual_filter_signal(self.sample_df.tail(60))
+            self.assertEqual(moe_res_s2["active_model_sha256"], v1_sha)
+            self.assertTrue(moe_res_s2["model_hot_reloaded"])
+            self.assertEqual(moe_res_s2["previous_model_sha256_before_eval"], orig_b_sha)
+
+            captured_messages.clear()
+            # 뒤늦게 발송되는 이전 신호 S1의 브리핑 및 매수 체결 알림:
+            notifier.send_signal_briefing_alert(
+                moe_res=moe_res_s1,
+                ny_time_str="09:45",
+                kst_time_str="22:45",
+                has_active_pos=False,
+            )
+            notifier.send_entry_alert(
+                ticker="SOXL",
+                entry_price=42.50,
+                qty=100,
+                gbdt_prob=0.735,
+                cross_dir="LONG",
+                tp_price=46.75,
+                sl_price=41.50,
+                time_stop_minutes=90,
+                strategy_tag="Lumos V4 Optimal",
+                is_simulation=True,
+                model_snapshot_info=moe_res_s1,
+            )
+            # S1 알림에는 최신 모델(v1_sha)이 아니라 반드시 S1 생성 당시 모델(orig_b_sha)이 찍혀야 함!
+            for m in captured_messages:
+                self.assertIn(orig_b_sha[:12], m)
+                self.assertNotIn(v1_sha[:12], m)
+
+            # ------------------------------------------------------------------
+            # 시나리오 D: 핫리로드 후 다음 신호(S2)부터 새 모델 버전/해시(v1_sha[:12]) 반영
+            # ------------------------------------------------------------------
+            captured_messages.clear()
+            notifier.send_model_state_alert(
+                event_type="MODEL_HOT_RELOADED",
+                model_info=moe_res_s2,
+                previous_model_sha256=moe_res_s2["previous_model_sha256_before_eval"],
+                reason="자동 재학습 완료 후 핫리로드",
+            )
+            notifier.send_signal_briefing_alert(
+                moe_res=moe_res_s2,
+                ny_time_str="10:00",
+                kst_time_str="23:00",
+                has_active_pos=False,
+            )
+            self.assertEqual(len(captured_messages), 2)
+            self.assertIn("MODEL_HOT_RELOADED", captured_messages[0])
+            self.assertIn(orig_b_sha[:12], captured_messages[0])
+            self.assertIn(v1_sha[:12], captured_messages[0])
+            self.assertIn(v1_sha[:12], captured_messages[1])
+
+            # ------------------------------------------------------------------
+            # 시나리오 E: 주 모델 손상 시 Champion 자동 폴백 알림 (B 모델로 허위 표시 금지)
+            # ------------------------------------------------------------------
+            captured_messages.clear()
+            m_corrupt = json.loads(manifest_file.read_text(encoding="utf-8"))
+            m_corrupt["expected_sha256"] = "a" * 64
+            manifest_file.write_text(json.dumps(m_corrupt, indent=2), encoding="utf-8")
+
+            fallback_moe = MoEMetaOrchestrator(manifest_path=manifest_file)
+            fb_res = fallback_moe.evaluate_dual_filter_signal(self.sample_df.tail(60))
+            self.assertTrue(fb_res["active_model_is_fallback"])
+            self.assertEqual(fb_res["active_model_id"], "v4_champion_fallback")
+            self.assertEqual(fb_res["active_model_schema"], "v4_champion")
+
+            notifier.send_model_state_alert(
+                event_type="FALLBACK_TO_CHAMPION",
+                model_info=fb_res,
+                reason="Primary B 모델 해시 불일치로 Champion 폴백 활성화",
+            )
+            notifier.send_signal_briefing_alert(
+                moe_res=fb_res,
+                ny_time_str="10:15",
+                kst_time_str="23:15",
+                has_active_pos=False,
+            )
+            self.assertEqual(len(captured_messages), 2)
+            for m in captured_messages:
+                self.assertIn("v4_champion_fallback", m)
+                self.assertIn("v4_champion", m)
+                self.assertIn(orig_c_sha[:12], m)
+                self.assertNotIn("ACTIVE_B_NORMALIZED", m)
+                self.assertNotIn("B_Normalized_72", m)
+
+            # ------------------------------------------------------------------
+            # 시나리오 F: 롤백 실행 시 롤백 대상 모델 정보 알림
+            # ------------------------------------------------------------------
+            captured_messages.clear()
+            rb_manifest = rollback_active_model_manifest(
+                target="champion",
+                models_dir_override=tmp_dir,
+                notifier=notifier,
+            )
+            self.assertEqual(rb_manifest["active_model_id"], "v4_champion")
+            self.assertEqual(len(captured_messages), 1)
+            self.assertIn("MODEL_ROLLBACK_EXECUTED", captured_messages[0])
+            self.assertIn("v4_champion", captured_messages[0])
+            self.assertIn(orig_c_sha[:12], captured_messages[0])
+            self.assertNotIn("B_Normalized_72", captured_messages[0])
+
+            # ------------------------------------------------------------------
+            # 시나리오 G: 주 모델 + 폴백 모델 모두 실패 시 BLOCKED 알림 및 신규 진입 차단
+            # ------------------------------------------------------------------
+            captured_messages.clear()
+            m_blocked = json.loads(manifest_file.read_text(encoding="utf-8"))
+            m_blocked["expected_sha256"] = "0" * 64
+            m_blocked["fallback_expected_sha256"] = "1" * 64
+            manifest_file.write_text(json.dumps(m_blocked, indent=2), encoding="utf-8")
+
+            blocked_moe = MoEMetaOrchestrator(manifest_path=manifest_file)
+            blk_res = blocked_moe.evaluate_dual_filter_signal(self.sample_df.tail(60))
+            self.assertEqual(blk_res["active_model_load_status"], "BLOCKED")
+            self.assertFalse(blk_res["is_approved"])
+
+            notifier.send_model_state_alert(
+                event_type="BLOCKED",
+                model_info=blk_res,
+                reason=blk_res["model_consistency_reason"],
+            )
+            self.assertEqual(len(captured_messages), 1)
+            self.assertIn("BLOCKED", captured_messages[0])
+            self.assertIn("신규 매수 진입은 전면 차단", captured_messages[0])
+            self.assertIn("기존 보유 포지션의 손절·트레일링·타임스탑·EOD 청산은 정상 유지", captured_messages[0])
+
+            # ------------------------------------------------------------------
+            # 시나리오 J: 동일 모델 상태에 대한 중복 알림 억제(Deduplication) 검증
+            # ------------------------------------------------------------------
+            dup_sent = notifier.send_model_state_alert(
+                event_type="BLOCKED",
+                model_info=blk_res,
+                reason=blk_res["model_consistency_reason"],
+            )
+            self.assertTrue(dup_sent.get("suppressed_duplicate", False))
+            self.assertEqual(len(captured_messages), 1)  # 추가 발송 0건!
+
+            # ------------------------------------------------------------------
+            # 시나리오 I: 텔레그램 전송 실패(예외 발생) 시에도 추론·매매 판단·보유 포지션 청산이 중단되지 않는지 검증
+            # ------------------------------------------------------------------
+            with patch.object(notifier, "_send_http_request", side_effect=RuntimeError("Simulated Telegram API 500 Outage")):
+                # 1) 알림 호출이 예외를 밖으로 던지지 않아야 함
+                notifier.send_signal_briefing_alert(
+                    moe_res=moe_res_s1,
+                    ny_time_str="10:30",
+                    kst_time_str="23:30",
+                    has_active_pos=False,
+                )
+                notifier.send_entry_alert(
+                    ticker="SOXL",
+                    entry_price=42.50,
+                    qty=100,
+                    gbdt_prob=0.735,
+                    cross_dir="LONG",
+                    tp_price=46.75,
+                    sl_price=41.50,
+                    time_stop_minutes=90,
+                    strategy_tag="Lumos V4 Optimal",
+                    is_simulation=True,
+                    model_snapshot_info=moe_res_s1,
+                )
+                notifier.send_exit_alert(
+                    ticker="SOXL",
+                    entry_price=42.50,
+                    exit_price=43.80,
+                    exit_reason="ATR Trailing Stop",
+                    qty=100,
+                    is_simulation=True,
+                    model_snapshot_info=moe_res_s1,
+                )
+
+            # 2) LiveRunner에서 텔레그램 dispatcher와 notifier가 모두 예외를 던져도
+            #    15m 추론 및 보유 포지션 청산(_execute_sell_with_10s_chase)이 100% 완결되는지 검증
+            with patch("core.live_runner.KiwoomBroker") as MockBroker, \
+                 patch("core.live_runner.DispatcherAgent") as MockDisp, \
+                 patch("core.live_runner.TelegramController"):
+
+                broker_inst = MockBroker.return_value
+                broker_inst.is_simulation = True
+                broker_inst.broker_name = "키움증권"
+                broker_inst.mode_str = "모의투자"
+                broker_inst.account_no = "00000000"
+                broker_inst.account_type = "01"
+                broker_inst.get_overseas_stock_balance.side_effect = [
+                    {"ok": True, "holdings": [{"symbol": "SOXL", "quantity": 10, "purchase_price": 40.0}]},
+                ]
+                broker_inst.send_order.return_value = {"ok": True, "order_no": "SELL999"}
+
+                disp_inst = MockDisp.return_value
+                disp_inst.send_telegram_message.side_effect = RuntimeError("Telegram Dispatcher Network Down")
+
+                runner_i = KiwoomLiveRunner(is_simulation=True)
+                runner_i.ws_streamer.get_latest_price = MagicMock(return_value=41.20)
+                runner_i.pos_file_path = tmp_dir / "temp_active_pos.json"
+                runner_i.notifier.send_exit_alert = MagicMock(side_effect=RuntimeError("Telegram Notifier Down"))
+                runner_i._wait_for_fill = MagicMock(return_value=(True, 10, 0))
+                runner_i.experience_logger.record_trade = MagicMock()
+                runner_i.experience_logger.record_order_event = MagicMock()
+                runner_i._save_active_position({
+                    "symbol": "SOXL",
+                    "quantity": 10,
+                    "price": 40.0,
+                    "buy_time": "2026-10-15 22:30:00",
+                    "active_model_id": "B_Normalized_72",
+                    "active_model_sha256": orig_b_sha,
+                    "active_model_version": orig_b_sha[:12],
+                    "active_model_schema": "B_normalized",
+                })
+
+                # 텔레그램 장애 중에도 15m 평가 정상 반환
+                eval_res_i = runner_i.evaluate_15m_cycle_once(allow_order_execution=False, sync_intraday=False)
+                self.assertIn(eval_res_i["moe_res"]["direction"], ["LONG", "SHORT", "NONE"])
+
+                # 텔레그램 장애 중에도 보유 포지션 매도 청산 정상 완결
+                sold_ok = runner_i._execute_sell_with_10s_chase(
+                    symbol="SOXL",
+                    quantity=10,
+                    reason_desc="ATR Trailing Stop",
+                    buy_px=40.0,
+                    cur_px=41.20,
+                )
+                self.assertTrue(sold_ok)
+                self.assertIsNone(runner_i._get_active_position())
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

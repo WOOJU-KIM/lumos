@@ -606,10 +606,28 @@ class DailyAutoPipeline:
 
         from zoneinfo import ZoneInfo
         from datetime import datetime
+        from core.ml_engine import MLFeatureEngine
+        active_info = MLFeatureEngine(auto_load=True).get_active_model_info()
+        m_id = active_info.get("active_model_id", "B_Normalized_72")
+        m_schema = active_info.get("active_model_schema", "B_normalized")
+        m_feats = active_info.get("active_model_num_features", 72)
+        m_ver = active_info.get("model_version", "unknown")
+        max_w = getattr(config, "MAX_TRAINING_WEEKS", 520)
+        max_d = getattr(config, "TRAINING_LOOKBACK_DAYS", 3640)
         if datetime.now().astimezone(ZoneInfo('Asia/Seoul')).weekday() == 5:
-            retrain_text = "🧠 **[2. AI 모델 최신 기간 롤링 재학습 완료]**\n• **재학습 모델:** `GBDT 롤링 최신화 모델 (Rolling Retrained)`\n• **최신 데이터 반영:** `금일 정규장 마감 캔들까지 전량 학습 반영 완료`"
+            retrain_text = (
+                f"🧠 **[2. AI 모델 최신 기간 롤링 재학습 완료]**\n"
+                f"• **활성 모델:** `{m_id}` (`{m_schema}`, `{m_feats}개 피처`, `{m_ver}`)\n"
+                f"• **학습 윈도우 상한:** `최대 {max_w}주 ({max_d}일 / 10년 상한)`\n"
+                f"• **최신 데이터 반영:** `금일 정규장 마감 캔들까지 전량 학습 반영 완료`"
+            )
         else:
-            retrain_text = "🧠 **[2. AI 모델 최신 기간 롤링 재학습 대기]**\n• **상태:** `평일 데이터 적재 완료 (재학습 미수행)`\n• **안내:** `과적합 방지를 위해 재학습은 매주 주말(토) 1회만 일괄 수행됩니다.`"
+            retrain_text = (
+                f"🧠 **[2. AI 모델 최신 기간 롤링 재학습 대기]**\n"
+                f"• **현재 활성 모델:** `{m_id}` (`{m_schema}`, `{m_feats}개 피처`, `{m_ver}`)\n"
+                f"• **상태:** `평일 데이터 적재 완료 (재학습 미수행)`\n"
+                f"• **안내:** `과적합 방지를 위해 재학습은 매주 주말(토) 1회만 일괄 수행됩니다 (상한 {max_w}주/{max_d}일).`"
+            )
 
         # 3️⃣ [3. 장 마감 후 데이터 백업, 최신 재학습, 거래 요약 일일 결산 보고서]
         msg = f"""🌙 **[Lumos 정규장 마감 EOD 일일 종합 결산 보고서]**
