@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LUMOS — B 정규화 72개 모델 실전 전환 완료 보고서</title>
+<style>
+  :root {
+    --bg: #0f172a;
+    --panel: #1e293b;
+    --panel-alt: #263449;
+    --text: #f1f5f9;
+    --muted: #94a3b8;
+    --accent: #38bdf8;
+    --green: #22c55e;
+    --yellow: #eab308;
+    --red: #ef4444;
+    --border: #334155;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 32px 24px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans KR", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+  }
+  .container { max-width: 1280px; margin: 0 auto; }
+  header {
+    background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+    border: 1px solid var(--border);
+    border-left: 6px solid var(--accent);
+    border-radius: 12px;
+    padding: 28px 32px;
+    margin-bottom: 28px;
+  }
+  h1 { margin: 0 0 10px 0; font-size: 26px; color: #fff; }
+  h2 {
+    margin: 0 0 16px 0;
+    font-size: 19px;
+    color: var(--accent);
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 10px;
+  }
+  h3 { margin: 18px 0 10px 0; font-size: 15px; color: #e2e8f0; }
+  .section {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px 28px;
+    margin-bottom: 24px;
+  }
+  .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 18px; }
+  .grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; }
+  .card {
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 18px;
+  }
+  .card-label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+  .card-val { font-size: 22px; font-weight: 700; margin-top: 6px; color: #fff; }
+  .card-sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; margin-top: 10px; }
+  th, td { border: 1px solid var(--border); padding: 9px 12px; text-align: left; vertical-align: top; }
+  th { background: #0f172a; color: #cbd5e1; font-weight: 600; }
+  tr:nth-child(even) { background: rgba(255,255,255,0.02); }
+  tr.highlight-row { background: rgba(56, 189, 248, 0.08); }
+  code {
+    font-family: "JetBrains Mono", Consolas, monospace;
+    background: rgba(15, 23, 42, 0.65);
+    padding: 2px 6px;
+    border-radius: 4px;
+    color: #7dd3fc;
+  }
+  pre {
+    background: #0b1120;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+    overflow-x: auto;
+    font-size: 12.5px;
+    color: #e2e8f0;
+  }
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 11.5px;
+    font-weight: 600;
+  }
+  .badge-green { background: rgba(34, 197, 94, 0.18); color: #4ade80; border: 1px solid rgba(34,197,94,0.4); }
+  .badge-blue { background: rgba(56, 189, 248, 0.18); color: #38bdf8; border: 1px solid rgba(56,189,248,0.4); }
+  .badge-yellow { background: rgba(234, 179, 8, 0.18); color: #facc15; border: 1px solid rgba(234,179,8,0.4); }
+  .badge-red { background: rgba(239, 68, 68, 0.18); color: #f87171; border: 1px solid rgba(239,68,68,0.4); }
+  .badge-gray { background: rgba(148, 163, 184, 0.15); color: #cbd5e1; border: 1px solid rgba(148,163,184,0.3); }
+  .scroll-box { max-height: 400px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
+      <div>
+        <h1>LUMOS — B 정규화 72개 모델 (<code>B_Normalized_72</code>) 실전 전환 완료 보고서</h1>
+        <div style="color:var(--muted); font-size:14px;">
+          브랜치: <code>feat/lgbm-trend-mean-reversion</code> &nbsp;|&nbsp;
+          모델 파일: <code>models/model_normalized_72.pkl</code> &nbsp;|&nbsp;
+          매니페스트: <code>models/active_model_manifest.json</code> &nbsp;|&nbsp;
+          생성 시각: 2026-10-15 12:48:19 KST
+        </div>
+      </div>
+      <div>
+        <span class="badge badge-green" style="font-size:14px; padding:6px 14px;">오케스트레이터 로더: ACTIVE_B_NORMALIZED</span>
+        <span class="badge badge-blue" style="font-size:14px; padding:6px 14px;">실전 프로세스: DEPLOYED_NOT_ACTIVATED (장외 대기)</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- 1. 최종 운영 전환 요약 -->
+  <div class="section">
+    <h2>1. 최종 운영 전환 요약 (Executive Summary)</h2>
+    <div class="grid-4">
+      <div class="card">
+        <div class="card-label">신규 실전 주 모델 (Active Model)</div>
+        <div class="card-val" style="color:var(--accent);">B_Normalized_72</div>
+        <div class="card-sub"><code>models/model_normalized_72.pkl</code> (72 Features)</div>
+      </div>
+      <div class="card">
+        <div class="card-label">7대 필수 무결성 검증</div>
+        <div class="card-val" style="color:var(--green);">7 / 7 PASS</div>
+        <div class="card-sub">E Challenger (77피처) 실전 로드 원천 차단</div>
+      </div>
+      <div class="card">
+        <div class="card-label">자동 폴백 &amp; 롤백 준비</div>
+        <div class="card-val" style="color:var(--green);">v4_champion 보존</div>
+        <div class="card-sub"><code>models/model_champion.pkl</code> SHA256 100% 불변</div>
+      </div>
+      <div class="card">
+        <div class="card-label">회귀 및 무결성 테스트</div>
+        <div class="card-val" style="color:var(--green);">34 / 34 PASS</div>
+        <div class="card-sub">LGBM(12) + GBDT 3Class(4) + System Integrity(18)</div>
+      </div>
+    </div>
+    <p style="margin:0; color:#cbd5e1;">
+      기존 Champion(<code>v4_champion</code>)의 달러 절대값 피처 8종(<code>ATR_14</code>, <code>BB_Upper/Lower</code>, <code>KC_Upper/Lower</code>, <code>MACD/Signal/Hist</code>)을
+      현재가 대비 상대 비율·이격도 피처 8종으로 1:1 치환한 <strong><code>B_Normalized_72</code> (총 72개 피처)</strong> 모델을 학습·검증하고,
+      명시적 배포 매니페스트(<code>models/active_model_manifest.json</code>)와 7대 무결성 검증 로더를 통해 실전 기본 모델로 전환 완료했습니다.
+      실험용 77개 피처 모델(<code>model_challenger_trend_mr.pkl</code>)은 실전 정책(<code>enforce_live_policy=True</code>)에 의해 실전 로딩이 엄격히 차단됩니다.
+    </p>
+  </div>
+
+  <!-- 2. 기존 Champion vs B 정규화 72개 모델 비교 -->
+  <div class="section">
+    <h2>2. 기존 Champion (A) vs B 정규화 72개 모델 (B) 성능 및 구조 비교</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>비교 항목</th>
+          <th>A_Champion_72 (기존 운영 모델)</th>
+          <th>B_Normalized_72 (신규 전환 모델)</th>
+          <th>비고 및 전환 근거</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>모델 파일 경로</strong></td>
+          <td><code>models/model_champion.pkl</code> (보존/폴백 대기)</td>
+          <td><code>models/model_normalized_72.pkl</code> (실전 주 모델)</td>
+          <td>기존 파일 덮어쓰기 금지 준수</td>
+        </tr>
+        <tr>
+          <td><strong>피처 스키마 및 개수</strong></td>
+          <td><code>v4_champion</code> (72개, 달러 절대값 8종 포함)</td>
+          <td><code>B_normalized</code> (72개, 상대 정규화 8종 치환)</td>
+          <td>SOXL 가격 레벨($10~$70) 변화에 따른 트리 분기 왜곡 제거</td>
+        </tr>
+        <tr>
+          <td><strong>4Y WFA (2022.09~2026.10, 214주)</strong></td>
+          <td>누적 <strong>+78.57%</strong> | CAGR +15.32% | MDD 29.02% | 승률 55.66% (106회)</td>
+          <td>누적 <strong>+159.30%</strong> | CAGR +26.47% | MDD 31.87% | 승률 58.10% (105회)</td>
+          <td>동일 72개 차원 유지하며 4Y 누적수익률 +80.73%p 개선</td>
+        </tr>
+        <tr>
+          <td><strong>2Y WFA (2024.10~2026.10, 106주)</strong></td>
+          <td>누적 <strong>+25.56%</strong> | CAGR +11.87% | MDD 20.69% | 승률 55.56% (54회)</td>
+          <td>누적 <strong>+89.37%</strong> | CAGR +36.89% | MDD 26.86% | 승률 60.00% (55회)</td>
+          <td>최근 2년 구간 승률 +4.44%p, Profit Factor 1.29 &rarr; 1.65 개선</td>
+        </tr>
+        <tr>
+          <td><strong>방향 예측 정확도 / 역방향 오판율 (4Y)</strong></td>
+          <td>정확도 48.11% | 역방향(Wrong-Way) 24.53% (26건)</td>
+          <td>정확도 <strong>50.48%</strong> (+2.36%p) | 역방향 <strong>22.86%</strong> (-1.67%p, 24건)</td>
+          <td>역방향 진입 손실 합계 -57.99% &rarr; -51.72% 감소</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- 3. 백업 파일 목록과 SHA256 -->
+  <div class="section">
+    <h2>3. 백업 파일 목록 및 SHA256 무결성 검증 (STEP 2)</h2>
+    <p style="margin-top:0; color:var(--muted);">
+      백업 디렉토리: <code>backups/b_normalized_migration_20261015_123252/</code> (매니페스트: <code>rollback_manifest.json</code>)
+    </p>
+    <table>
+      <thead>
+        <tr>
+          <th>원본 파일 경로</th>
+          <th>백업 파일명</th>
+          <th>파일 크기</th>
+          <th>SHA256 해시</th>
+          <th>원본/백업 대조</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td><code>models/model_champion.pkl</code></td><td><code>backups/b_normalized_migration_20261015_123252/models/model_champion.pkl</code></td><td>662,402 B</td><td><code style='font-size:11px;'>e1982612a986d08a69044551b92c96ba5f8508375187466af9a9966e63b3ed5f</code></td><td><span class='badge badge-green'>100% 일치</span></td></tr><tr><td><code>models/model_moe_orchestrator.pkl</code></td><td><code>backups/b_normalized_migration_20261015_123252/models/model_moe_orchestrator.pkl</code></td><td>662,402 B</td><td><code style='font-size:11px;'>e1982612a986d08a69044551b92c96ba5f8508375187466af9a9966e63b3ed5f</code></td><td><span class='badge badge-green'>100% 일치</span></td></tr><tr><td><code>models/model_challenger_trend_mr.pkl</code></td><td><code>backups/b_normalized_migration_20261015_123252/models/model_challenger_trend_mr.pkl</code></td><td>1,329,415 B</td><td><code style='font-size:11px;'>c6953d22d407bbf00828c9780f4bba5b80271ae6a74aed18f23ba07a6a54f02d</code></td><td><span class='badge badge-green'>100% 일치</span></td></tr><tr><td><code>config.py</code></td><td><code>backups/b_normalized_migration_20261015_123252/config.py</code></td><td>6,522 B</td><td><code style='font-size:11px;'>c19b470a5e4db73fb3c2ffc3789d329925a34badc3ccc44f8c1ca88e2317c3ca</code></td><td><span class='badge badge-green'>100% 일치</span></td></tr><tr><td><code>core/ml_engine.py</code></td><td><code>backups/b_normalized_migration_20261015_123252/core/ml_engine.py</code></td><td>37,903 B</td><td><code style='font-size:11px;'>8d0991616e85a5cafabdfe7b27701626b366b5a81e46427062381da5e2fb15a7</code></td><td><span class='badge badge-green'>100% 일치</span></td></tr><tr><td><code>core/moe_orchestrator.py</code></td><td><code>backups/b_normalized_migration_20261015_123252/core/moe_orchestrator.py</code></td><td>21,370 B</td><td><code style='font-size:11px;'>de64b7ee34423dc8827669e6815a47af8a3423c0f1f7fbcdaa1189b4ac533fea</code></td><td><span class='badge badge-green'>100% 일치</span></td></tr><tr><td><code>data/live_experience.db</code></td><td><code>backups/b_normalized_migration_20261015_123252/data/live_experience.db</code></td><td>2,228,224 B</td><td><code style='font-size:11px;'>b9cf6d8290a19ab15abaeb0d29b3544c55e2f37f0b78ad962f4aa77497f8f9c3</code></td><td><span class='badge badge-green'>100% 일치</span></td></tr><tr><td><code>data/portfolio_state.json</code></td><td><code>backups/b_normalized_migration_20261015_123252/data/portfolio_state.json</code></td><td>703 B</td><td><code style='font-size:11px;'>c16aa557e1939e3fdda95cbb1d94ed52e6173c347b53914034616b04da4fe720</code></td><td><span class='badge badge-green'>100% 일치</span></td></tr><tr><td><code>data/circuit_breaker_state.json</code></td><td><code>backups/b_normalized_migration_20261015_123252/data/circuit_breaker_state.json</code></td><td>698 B</td><td><code style='font-size:11px;'>4fcef4a710a46374b1d6473a5031dc968a973b0e640727323cd3228f5946f861</code></td><td><span class='badge badge-green'>100% 일치</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- 4. B 정규화 72개 피처 목록 -->
+  <div class="section">
+    <h2>4. B 정규화 72개 피처 스키마 상세 (제외 8종 vs 정규화 치환 8종 및 전체 72개 순서)</h2>
+    <h3>4-1. 달러 절대값 피처 8종 제거 &rarr; 현재가 상대 비율·이격도 8종 1:1 치환 명세</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>제외된 달러 절대값 피처 (8종)</th>
+          <th>포함된 상대 정규화 피처 (8종)</th>
+          <th>수식 정의 (미래 참조 0건)</th>
+          <th>학습 모델 내 중요도 순위</th>
+          <th>트리 분기 횟수 (비중)</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td><code>ATR_14</code> <span class='badge badge-red'>제외</span></td><td><code>ATR_14_Pct</code> <span class='badge badge-green'>포함</span></td><td><code>(ATR_14 / Close) * 100</code></td><td>#3 / 72</td><td>190회 (3.67%)</td></tr><tr><td><code>BB_Upper</code> <span class='badge badge-red'>제외</span></td><td><code>BB_Upper_Diff</code> <span class='badge badge-green'>포함</span></td><td><code>((BB_Upper - Close) / Close) * 100</code></td><td>#53 / 72</td><td>41회 (0.79%)</td></tr><tr><td><code>BB_Lower</code> <span class='badge badge-red'>제외</span></td><td><code>BB_Lower_Diff</code> <span class='badge badge-green'>포함</span></td><td><code>((Close - BB_Lower) / Close) * 100</code></td><td>#51 / 72</td><td>43회 (0.83%)</td></tr><tr><td><code>KC_Upper</code> <span class='badge badge-red'>제외</span></td><td><code>KC_Upper_Diff</code> <span class='badge badge-green'>포함</span></td><td><code>((KC_Upper - Close) / Close) * 100</code></td><td>#42 / 72</td><td>57회 (1.10%)</td></tr><tr><td><code>KC_Lower</code> <span class='badge badge-red'>제외</span></td><td><code>KC_Lower_Diff</code> <span class='badge badge-green'>포함</span></td><td><code>((Close - KC_Lower) / Close) * 100</code></td><td>#61 / 72</td><td>31회 (0.60%)</td></tr><tr><td><code>MACD</code> <span class='badge badge-red'>제외</span></td><td><code>MACD_Pct</code> <span class='badge badge-green'>포함</span></td><td><code>((EMA12 - EMA26) / EMA26) * 100</code></td><td>#57 / 72</td><td>35회 (0.68%)</td></tr><tr><td><code>MACD_Signal</code> <span class='badge badge-red'>제외</span></td><td><code>MACD_Signal_Pct</code> <span class='badge badge-green'>포함</span></td><td><code>EMA9(MACD_Pct)</code></td><td>#20 / 72</td><td>91회 (1.76%)</td></tr><tr><td><code>MACD_Hist</code> <span class='badge badge-red'>제외</span></td><td><code>MACD_Hist_Pct</code> <span class='badge badge-green'>포함</span></td><td><code>MACD_Pct - MACD_Signal_Pct</code></td><td>#21 / 72</td><td>90회 (1.74%)</td></tr>
+      </tbody>
+    </table>
+
+    <div class="grid-2" style="margin-top:18px;">
+      <div>
+        <h3>4-2. B_Normalized_72 상위 20대 핵심 피처 중요도 (총 5,174 Splits)</h3>
+        <div class="scroll-box">
+          <table>
+            <thead>
+              <tr><th>순위</th><th>피처명</th><th>Splits</th><th>비중</th><th>구분</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>1</td><td><code>Volume_Z</code></td><td>316</td><td>6.11%</td><td><span class="badge badge-gray">기존 코어</span></td></tr><tr><td>2</td><td><code>macro_trend_spread</code></td><td>219</td><td>4.23%</td><td><span class="badge badge-gray">기존 코어</span></td></tr><tr><td>3</td><td><code>ATR_14_Pct</code></td><td>190</td><td>3.67%</td><td><span class="badge badge-blue">B_normalized 신규</span></td></tr><tr><td>4</td><td><code>EMA_200_Diff</code></td><td>183</td><td>3.54%</td><td><span class="badge badge-gray">기존 코어</span></td></tr><tr><td>5</td><td><code>ief_ret_20</code></td><td>160</td><td>3.09%</td><td><span class="badge badge-gray">기존 코어</span></td></tr><tr><td>6</td><td><code>KC_Width</code></td><td>147</td><td>2.84%</td><td><span class="badge badge-gray">기존 코어</span></td></tr><tr><td>7</td><td><code>VWAP_Diff</code></td><td>124</td><td>2.40%</td><td><span class="badge badge-gray">기존 코어</span></td></tr><tr><td>8</td><td><code>qqq_momentum</code></td><td>117</td><td>2.26%</td><td><span class="badge badge-gray">기존 코어</span></td></tr><tr><td>9</td><td><code>nvda_ret_20</code></td><td>113</td><td>2.18%</td><td><span class="badge badge-gray">기존 코어</span></td></tr><tr><td>10</td><td><code>OBV</code></td><td>112</td><td>2.16%</td><td><span class="badge badge-gray">기존 코어</span></td></tr><tr><td>11</td><td><code>vixy_ret_20</code></td><td>108</td><td>2.09%</td><td><span class="badge badge-gray">기존 코어</span></td></tr><tr><td>12</td><td><code>Body_Ratio</code></td><td>106</td><td>2.05%</td><td><span class="badge badge-gray">기존 코어</span></td></tr><tr><td>13</td><td><code>vixy_ret_1</code></td><td>105</td><td>2.03%</td><td><span class="badge badge-gray">기존 코어</span></td></tr><tr><td>14</td><td><code>qqq_ret_3</code></td><td>100</td><td>1.93%</td><td><span class="badge badge-gray">기존 코어</span></td></tr><tr><td>15</td><td><code>qqq_ret_5</code></td><td>97</td><td>1.87%</td><td><span class="badge badge-gray">기존 코어</span></td></tr><tr><td>16</td><td><code>base_short_ret_1</code></td><td>96</td><td>1.86%</td><td><span class="badge badge-gray">기존 코어</span></td></tr><tr><td>17</td><td><code>base_short_ret_3</code></td><td>96</td><td>1.86%</td><td><span class="badge badge-gray">기존 코어</span></td></tr><tr><td>18</td><td><code>CMF_20</code></td><td>94</td><td>1.82%</td><td><span class="badge badge-gray">기존 코어</span></td></tr><tr><td>19</td><td><code>BB_Bandwidth</code></td><td>93</td><td>1.80%</td><td><span class="badge badge-gray">기존 코어</span></td></tr><tr><td>20</td><td><code>MACD_Signal_Pct</code></td><td>91</td><td>1.76%</td><td><span class="badge badge-blue">B_normalized 신규</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div>
+        <h3>4-3. B_Normalized_72 전체 72개 피처 표준 순서 (Canonical 1~72)</h3>
+        <div class="scroll-box">
+          <table>
+            <thead>
+              <tr><th>순번</th><th>피처명</th><th>분류</th></tr>
+            </thead>
+            <tbody>
+              <tr ><td>1</td><td><code>RSI_7</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>2</td><td><code>RSI_14</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>3</td><td><code>RSI_21</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>4</td><td><code>Stoch_K</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>5</td><td><code>Stoch_D</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>6</td><td><code>ROC_5</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>7</td><td><code>ROC_10</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>8</td><td><code>ROC_20</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>9</td><td><code>CCI_14</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>10</td><td><code>CCI_20</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>11</td><td><code>BB_PctB</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>12</td><td><code>BB_Bandwidth</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>13</td><td><code>KC_Width</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>14</td><td><code>OBV</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>15</td><td><code>CMF_20</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>16</td><td><code>Volume_Z</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>17</td><td><code>VWAP_Diff</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>18</td><td><code>EMA_9_Diff</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>19</td><td><code>EMA_21_Diff</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>20</td><td><code>EMA_50_Diff</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>21</td><td><code>EMA_200_Diff</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>22</td><td><code>ADX_14</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>23</td><td><code>DMI_Diff</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>24</td><td><code>Body_Ratio</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>25</td><td><code>Upper_Wick_Ratio</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>26</td><td><code>Lower_Wick_Ratio</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>27</td><td><code>macro_trend_spread</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>28</td><td><code>macro_ema20_slope</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>29</td><td><code>macro_price_vs_ema20</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>30</td><td><code>base_short_ret_1</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>31</td><td><code>base_short_ret_3</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>32</td><td><code>base_short_ret_5</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>33</td><td><code>base_short_ret_20</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>34</td><td><code>base_short_dir_1</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>35</td><td><code>base_short_momentum</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>36</td><td><code>nvda_ret_1</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>37</td><td><code>nvda_ret_3</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>38</td><td><code>nvda_ret_5</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>39</td><td><code>nvda_ret_20</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>40</td><td><code>nvda_dir_1</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>41</td><td><code>nvda_momentum</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>42</td><td><code>qqq_ret_1</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>43</td><td><code>qqq_ret_3</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>44</td><td><code>qqq_ret_5</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>45</td><td><code>qqq_ret_20</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>46</td><td><code>qqq_dir_1</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>47</td><td><code>qqq_momentum</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>48</td><td><code>vixy_ret_1</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>49</td><td><code>vixy_ret_3</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>50</td><td><code>vixy_ret_5</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>51</td><td><code>vixy_ret_20</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>52</td><td><code>vixy_dir_1</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>53</td><td><code>vixy_momentum</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>54</td><td><code>ief_ret_1</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>55</td><td><code>ief_ret_3</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>56</td><td><code>ief_ret_5</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>57</td><td><code>ief_ret_20</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>58</td><td><code>ief_dir_1</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>59</td><td><code>ief_momentum</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>60</td><td><code>base_long_ret_20</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>61</td><td><code>base_long_ret_5</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>62</td><td><code>base_long_vs_qqq_20</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>63</td><td><code>base_long_vs_qqq_5</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr ><td>64</td><td><code>panic_signal</code></td><td><span class="badge badge-gray">기존 스케일불변 (64종)</span></td></tr><tr class="highlight-row"><td>65</td><td><code>ATR_14_Pct</code></td><td><span class="badge badge-blue">신규 가격정규화 (8종)</span></td></tr><tr class="highlight-row"><td>66</td><td><code>BB_Upper_Diff</code></td><td><span class="badge badge-blue">신규 가격정규화 (8종)</span></td></tr><tr class="highlight-row"><td>67</td><td><code>BB_Lower_Diff</code></td><td><span class="badge badge-blue">신규 가격정규화 (8종)</span></td></tr><tr class="highlight-row"><td>68</td><td><code>KC_Upper_Diff</code></td><td><span class="badge badge-blue">신규 가격정규화 (8종)</span></td></tr><tr class="highlight-row"><td>69</td><td><code>KC_Lower_Diff</code></td><td><span class="badge badge-blue">신규 가격정규화 (8종)</span></td></tr><tr class="highlight-row"><td>70</td><td><code>MACD_Pct</code></td><td><span class="badge badge-blue">신규 가격정규화 (8종)</span></td></tr><tr class="highlight-row"><td>71</td><td><code>MACD_Signal_Pct</code></td><td><span class="badge badge-blue">신규 가격정규화 (8종)</span></td></tr><tr class="highlight-row"><td>72</td><td><code>MACD_Hist_Pct</code></td><td><span class="badge badge-blue">신규 가격정규화 (8종)</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 5. 학습 데이터 및 라벨 분포 -->
+  <div class="section">
+    <h2>5. B 정규화 72개 실전 모델 학습 데이터 및 라벨 분포 (STEP 3)</h2>
+    <div class="grid-4">
+      <div class="card">
+        <div class="card-label">확정 학습 데이터 기간</div>
+        <div class="card-val" style="font-size:15px;">2020-07-29 09:30:00<br>~ 2026-10-14 14:15:00</div>
+        <div class="card-sub">총 <strong>44,204</strong>개 15분봉 (결측 제거 완료)</div>
+      </div>
+      <div class="card">
+        <div class="card-label">미확정 꼬리 라벨 제외 (Purge)</div>
+        <div class="card-val" style="color:var(--yellow);">마지막 6봉 제외</div>
+        <div class="card-sub"><code>2026-10-14 14:30:00 ~ 2026-10-14 15:45:00</code></div>
+      </div>
+      <div class="card">
+        <div class="card-label">실전 경험 DB 병합 통제</div>
+        <div class="card-val" style="color:var(--green);">0건 (구 스키마 스킵)</div>
+        <div class="card-sub">구 72피처 JSON 7건 중앙값/0 임의 보간 혼합 원천 차단</div>
+      </div>
+      <div class="card">
+        <div class="card-label">3-Class Triple Barrier 분포</div>
+        <div class="card-val" style="font-size:15px;">
+          Short(0): 7,655 (17.32%)<br>
+          Neutral(1): 29,201 (66.06%)<br>
+          Long(2): 7,348 (16.62%)
+        </div>
+        <div class="card-sub">TP=10.0%, SL=2.0%, Horizon=6봉(90분)</div>
+      </div>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>항목</th>
+          <th>적용 값</th>
+          <th>항목</th>
+          <th>적용 값</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>모델 파일 경로</strong></td>
+          <td><code>models/model_normalized_72.pkl</code></td>
+          <td><strong>파일 크기 / 생성 시각</strong></td>
+          <td>665,076 bytes / 2026-10-15 12:48:19</td>
+        </tr>
+        <tr>
+          <td><strong>모델 SHA256</strong></td>
+          <td colspan="3"><code>ef954c3be286d4fd4e429c5ed21b7e3da4842927c53e594ada86460029a0dcae</code></td>
+        </tr>
+        <tr>
+          <td><strong>하이퍼파라미터 (config.py 준수)</strong></td>
+          <td colspan="3">
+            <code>objective=multiclass</code>, <code>num_class=3</code>, <code>class_weight=balanced</code>,
+            <code>n_estimators=120</code>,
+            <code>max_depth=4</code>,
+            <code>learning_rate=0.02</code>,
+            <code>subsample=0.5</code>,
+            <code>colsample_bytree=0.5</code>,
+            <code>random_state=42</code>, <code>deterministic=True</code>, <code>force_col_wise=True</code>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- 6. 모델 검증 결과 -->
+  <div class="section">
+    <h2>6. 모델 무결성 7대 검증 및 추론 감사 결과 (STEP 4 &amp; STEP 5)</h2>
+    <div class="grid-2">
+      <div>
+        <h3>6-1. <code>MLFeatureEngine.verify_model_artifact()</code> 7대 검증 결과</h3>
+        <table>
+          <thead>
+            <tr><th>검증 단계</th><th>검증 기준</th><th>결과</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>1. 파일 존재 여부</td><td><code>models/model_normalized_72.pkl</code> 디스크 존재</td><td><span class="badge badge-green">PASS</span></td></tr>
+            <tr><td>2. SHA256 정합성</td><td>매니페스트 <code>expected_sha256</code>와 100% 일치</td><td><span class="badge badge-green">PASS</span></td></tr>
+            <tr><td>3. 클래스 및 스키마 정책</td><td><code>LGBMClassifier</code> &amp; <code>B_normalized</code> (77피처 Challenger 차단)</td><td><span class="badge badge-green">PASS</span></td></tr>
+            <tr><td>4. 피처 개수 검증</td><td><code>len(feature_names) == 72</code> &amp; <code>n_features_in_ == 72</code></td><td><span class="badge badge-green">PASS</span></td></tr>
+            <tr><td>5. 피처 순서 검증</td><td><code>CANONICAL_B_NORMALIZED_72_FEATURES</code> 및 Booster 내부 순서 일치</td><td><span class="badge badge-green">PASS</span></td></tr>
+            <tr><td>6. 확률 클래스 매핑</td><td><code>classes_ == [0, 1, 2]</code> (0:Short/SOXS, 1:Neutral, 2:Long/SOXL)</td><td><span class="badge badge-green">PASS</span></td></tr>
+            <tr><td>7. 추론 Self-Test</td><td>단일 샘플 <code>predict_proba</code> 유한성 및 확률 합계 1.000000</td><td><span class="badge badge-green">PASS</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div>
+        <h3>6-2. 최근 200개 15분봉 실시간 추론 감사</h3>
+        <table>
+          <thead>
+            <tr><th>감사 항목</th><th>실측 결과</th><th>판정</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>NaN / ±Inf 발생 건수</td><td><strong>0건</strong> / 200봉</td><td><span class="badge badge-green">PASS</span></td></tr>
+            <tr><td>원시 Softmax 3클래스 확률 합계</td><td>Min <code>1.00000000</code> / Max <code>1.00000000</code></td><td><span class="badge badge-green">PASS</span></td></tr>
+            <tr><td>최근 200봉 방향 분포</td><td>LONG(SOXL): 48봉 | SHORT(SOXS): 68봉 | NONE(관망): 84봉</td><td><span class="badge badge-green">PASS</span></td></tr>
+            <tr><td>70.4% 확신도 돌파 신호</td><td>LONG &ge; 70.4%: 1회 | SHORT &ge; 70.4%: 1회</td><td><span class="badge badge-green">PASS</span></td></tr>
+            <tr><td>보정 확신도(Confidence) 분포</td><td>Min 0.5027 / Mean 0.5796 / Max 0.7163</td><td><span class="badge badge-green">PASS</span></td></tr>
+            <tr><td>최신 캔들 추론 스모크 테스트</td><td><code>sig=1</code>, <code>conf=0.6457</code> (GBDT 3-Class SOXL 롱 파형 포착 (P_Long=64.6%, Conf=64.6%))</td><td><span class="badge badge-green">PASS</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- 7. 실전 모델 로딩 경로 변경 내용 -->
+  <div class="section">
+    <h2>7. 실전 모델 로딩 경로 및 방어 아키텍처 변경 내용 (STEP 1 &amp; STEP 5)</h2>
+    <p style="margin-top:0;">
+      실전 트레이딩 진입점(<code>KiwoomLiveRunner.__init__</code> &rarr; <code>MoEMetaOrchestrator.__init__</code> &rarr; <code>MLFeatureEngine._try_load_default_model</code>)이
+      <code>models/active_model_manifest.json</code>을 참조하여 7단계 검증을 통과한 <code>models/model_normalized_72.pkl</code>을 기본 로드하도록 전환되었습니다.
+    </p>
+    <pre>{
+  "active_model_id": "B_Normalized_72",
+  "active_model_path": "models/model_normalized_72.pkl",
+  "expected_schema": "B_normalized",
+  "expected_num_features": 72,
+  "expected_sha256": "ef954c3be286d4fd4e429c5ed21b7e3da4842927c53e594ada86460029a0dcae",
+  "fallback_model_id": "v4_champion_fallback",
+  "fallback_model_path": "models/model_champion.pkl",
+  "fallback_expected_schema": "v4_champion",
+  "fallback_expected_num_features": 72,
+  "fallback_expected_sha256": "e1982612a986d08a69044551b92c96ba5f8508375187466af9a9966e63b3ed5f",
+  "forbidden_schemas": [
+    "C_norm_trend",
+    "D_norm_mr",
+    "E_challenger",
+    "E_raw_all",
+    "v5_challenger"
+  ],
+  "updated_at": "2026-10-15 12:48:12"
+}</pre>
+    <ul>
+      <li><strong>1순위 로드 (Active):</strong> <code>models/model_normalized_72.pkl</code> (<code>B_normalized</code>, 72피처, SHA256 대조) &rarr; 성공 시 <code>load_status = "ACTIVE_B_NORMALIZED"</code></li>
+      <li><strong>2순위 자동 복귀 (Fallback):</strong> 주 모델 검증 실패 시 즉시 <code>models/model_champion.pkl</code> (<code>v4_champion</code>, 72피처, SHA256 대조) 로드 &rarr; <code>load_status = "FALLBACK_TO_CHAMPION"</code></li>
+      <li><strong>이중 실패 시 안전 차단 (Fail-Safe):</strong> 주 모델과 폴백 모델 모두 검증 실패 시 <code>self.model = None</code>, <code>load_status = "BLOCKED"</code>로 전환하여 <strong>신규 매수 진입만 차단하고 기존 보유 포지션 청산(손절/익절/타임스탑/EOD) 루프는 100% 정상 유지</strong>합니다.</li>
+    </ul>
+  </div>
+
+  <!-- 8. 실전 기동 점검 결과 -->
+  <div class="section">
+    <h2>8. 실전 프로세스 상태 및 재기동 전 안전 점검 결과 (STEP 6)</h2>
+    <table>
+      <thead>
+        <tr><th>점검 항목</th><th>현재 상태</th><th>안전 판정</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>실행 중인 Python / Live Runner 프로세스</td><td>현재 실행 중인 실전 매매 프로세스 없음 (미국 정규장 외 시간대)</td><td><span class="badge badge-blue">DEPLOYED_NOT_ACTIVATED</span></td></tr>
+        <tr><td><code>data/circuit_breaker_state.json</code></td><td><code>status: "NORMAL"</code>, <code>migration_state: "READY"</code>, <code>open_orders_count: 0</code>, <code>unresolved_sell_count: 0</code></td><td><span class="badge badge-green">안전 (미체결/미해결 0건)</span></td></tr>
+        <tr><td>신규 인스턴스 기동 시 로드 모델 확인</td><td><code>MoEMetaOrchestrator().get_active_model_info()</code> &rarr; <code>active_model_id="B_Normalized_72"</code>, <code>load_status="ACTIVE_B_NORMALIZED"</code>, <code>is_ready=True</code></td><td><span class="badge badge-green">즉시 활성화 준비 완료</span></td></tr>
+        <tr><td>자동 재시작 금지 원칙 준수</td><td>사용자 승인 없이 실전 프로세스를 임의 기동하지 않음 (다음 미국장 기동 시 자동 반영)</td><td><span class="badge badge-green">헌법 준수</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- 9. 롤백 절차 및 롤백 테스트 결과 -->
+  <div class="section">
+    <h2>9. 즉시 롤백(Rollback) 절차 및 롤백 검증 결과 (STEP 7)</h2>
+    <p style="margin-top:0;">
+      실전 운영 중 이상 징후 발생 시 모델 재학습 없이 <strong>10초 이내에 기존 Champion(<code>v4_champion</code>)으로 즉시 복귀</strong>할 수 있습니다.
+    </p>
+    <pre># [방법 A] 매니페스트 즉시 롤백 (권장 — 파일 복사 불필요, models/model_champion.pkl 즉시 활성화)
+python -c "import json; p='models/active_model_manifest.json'; m=json.load(open(p,encoding='utf-8')); m['active_model_id']='v4_champion'; m['active_model_path']='models/model_champion.pkl'; m['expected_schema']='v4_champion'; m['expected_sha256']=m['fallback_expected_sha256']; json.dump(m,open(p,'w',encoding='utf-8'),indent=2)"
+
+# [방법 B] 백업본 전체 원복 (코드 및 모델 완전 복원 필요 시)
+Copy-Item "backups/b_normalized_migration_20261015_123252/model_champion.pkl" "models/model_champion.pkl" -Force
+Copy-Item "backups/b_normalized_migration_20261015_123252/ml_engine.py.bak" "core/ml_engine.py" -Force
+Copy-Item "backups/b_normalized_migration_20261015_123252/moe_orchestrator.py.bak" "core/moe_orchestrator.py" -Force</pre>
+    <ul>
+      <li><strong>자동 폴백 테스트 (<code>test_11</code>):</strong> 주 모델 SHA256 불일치 주입 시 <code>FALLBACK_TO_CHAMPION</code> 상태로 <code>models/model_champion.pkl</code>(72피처) 자동 복귀 검증 <span class="badge badge-green">PASS</span></li>
+      <li><strong>이중 실패 차단 테스트 (<code>test_11</code>):</strong> 주 모델 + 폴백 모델 모두 실패 시 <code>BLOCKED</code> 상태로 전환되어 신규 진입 신호 <code>(0, 0.50)</code> 안전 차단 검증 <span class="badge badge-green">PASS</span></li>
+      <li><strong>매니페스트 롤백 테스트 (<code>test_12</code>):</strong> 매니페스트를 <code>v4_champion</code>으로 전환 시 <code>ACTIVE_V4_CHAMPION</code> 정상 로드 및 추론 출력 검증 <span class="badge badge-green">PASS</span></li>
+    </ul>
+  </div>
+
+  <!-- 10. 회귀 테스트 결과 & 11. Git 내역 & 12. 모니터링 체크리스트 -->
+  <div class="grid-2">
+    <div class="section">
+      <h2>10. 전체 회귀 및 무결성 테스트 결과</h2>
+      <table>
+        <thead>
+          <tr><th>테스트 스위트</th><th>수행 결과</th><th>상태</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>python -m unittest tests/test_lgbm_trend_mr.py -v</code></td><td>12개 테스트 전수 통과 (인과성, 스키마, 7대 검증, 폴백, 롤백)</td><td><span class="badge badge-green">12 / 12 PASS</span></td></tr>
+          <tr><td><code>python tests/test_gbdt_3class.py</code></td><td>4개 3-Class GBDT 핵심 로직 테스트 통과</td><td><span class="badge badge-green">4 / 4 PASS</span></td></tr>
+          <tr><td><code>python tests/test_system_integrity.py</code></td><td>18개 시스템 무결성 헌법 회귀 테스트 통과</td><td><span class="badge badge-green">18 / 18 PASS</span></td></tr>
+        </tbody>
+      </table>
+
+      <h2 style="margin-top:24px;">11. 보호 대상 파일 불변성 &amp; Git 반영</h2>
+      <table>
+        <thead>
+          <tr><th>보호 파일</th><th>현재 SHA256</th><th>불변 여부</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>models/model_champion.pkl</code></td><td><code style="font-size:11px;">e1982612a986d08a69044551b92c96ba5f8508375187466af9a9966e63b3ed5f</code></td><td><span class="badge badge-green">UNCHANGED</span></td></tr>
+          <tr><td><code>models/model_moe_orchestrator.pkl</code></td><td><code style="font-size:11px;">e1982612a986d08a69044551b92c96ba5f8508375187466af9a9966e63b3ed5f</code></td><td><span class="badge badge-green">UNCHANGED</span></td></tr>
+          <tr><td><code>models/model_challenger_trend_mr.pkl</code></td><td><code style="font-size:11px;">c6953d22d407bbf00828c9780f4bba5b80271ae6a74aed18f23ba07a6a54f02d</code></td><td><span class="badge badge-green">UNCHANGED</span></td></tr>
+          <tr><td><code>config.py</code></td><td><code style="font-size:11px;">c19b470a5e4db73fb3c2ffc3789d329925a34badc3ccc44f8c1ca88e2317c3ca</code></td><td><span class="badge badge-green">UNCHANGED</span></td></tr>
+          <tr><td><code>data/live_experience.db</code></td><td><code style="font-size:11px;">b9cf6d8290a19ab15abaeb0d29b3544c55e2f37f0b78ad962f4aa77497f8f9c3</code></td><td><span class="badge badge-green">UNCHANGED</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="section">
+      <h2>12. 실전 모니터링 체크리스트 (Live Operations Checklist)</h2>
+      <ol style="padding-left:20px; margin:0;">
+        <li style="margin-bottom:10px;">
+          <strong>미국장 기동 직후 로더 상태 확인:</strong><br>
+          기동 로그 또는 <code>runner.orchestrator.get_active_model_info()</code>에서
+          <code>active_model_id == "B_Normalized_72"</code>, <code>load_status == "ACTIVE_B_NORMALIZED"</code>, <code>num_features == 72</code>인지 확인합니다.
+        </li>
+        <li style="margin-bottom:10px;">
+          <strong>15분봉 추론 확률 정상 범위 감시:</strong><br>
+          장중 15분봉 마감 추론 시 <code>LONG</code>, <code>SHORT</code>, <code>NONE</code> 보정 확신도가 <code>0.50 ~ 0.95</code> 범위 내에 있고 <code>NaN/Inf</code> 경고가 0건인지 확인합니다.
+        </li>
+        <li style="margin-bottom:10px;">
+          <strong>신규 실전 경험 DB 누적 확인:</strong><br>
+          <code>B_Normalized_72</code> 전환 이후 발생하는 신규 실전 매매는 8개 상대 정규화 피처가 포함된 <code>features_json</code>으로 <code>data/live_experience.db</code>에 자동 기록되며, 향후 주말 재학습부터 정상 반영됩니다.
+        </li>
+        <li style="margin-bottom:10px;">
+          <strong>비상 롤백 기준:</strong><br>
+          만약 비정상 폴백(<code>FALLBACK_TO_CHAMPION</code>) 또는 차단(<code>BLOCKED</code>) 로그가 발생하거나 MDD/신호 이상이 감지되면, 9번 섹션의 매니페스트 롤백 명령으로 즉시 <code>v4_champion</code>으로 복귀합니다.
+        </li>
+      </ol>
+    </div>
+  </div>
+</div>
+</body>
+</html>

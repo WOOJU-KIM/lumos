@@ -1,0 +1,20 @@
+{
+  "active_model_id": "B_Normalized_72",
+  "active_model_path": "models/model_normalized_72.pkl",
+  "expected_schema": "B_normalized",
+  "expected_num_features": 72,
+  "expected_sha256": "ef954c3be286d4fd4e429c5ed21b7e3da4842927c53e594ada86460029a0dcae",
+  "fallback_model_id": "v4_champion_fallback",
+  "fallback_model_path": "models/model_champion.pkl",
+  "fallback_expected_schema": "v4_champion",
+  "fallback_expected_num_features": 72,
+  "fallback_expected_sha256": "e1982612a986d08a69044551b92c96ba5f8508375187466af9a9966e63b3ed5f",
+  "forbidden_schemas": [
+    "C_norm_trend",
+    "D_norm_mr",
+    "E_challenger",
+    "E_raw_all",
+    "v5_challenger"
+  ],
+  "updated_at": "2026-10-15 12:48:12"
+}

@@ -57,7 +57,7 @@ class MoEMetaOrchestrator:
         self.mode = mode
         self.data_lake = MarketDataLake()
         self.cross_asset_model = CrossAssetDislocationModel(dislocation_z_threshold=1.6)
-        self.gbdt_engine = MLFeatureEngine(confidence_threshold=0.40)
+        self.gbdt_engine = MLFeatureEngine(confidence_threshold=0.40, feature_schema="B_normalized")
         self._try_load_default_models()
         self.experts = {
             "cross_asset": self.cross_asset_model,
@@ -65,26 +65,14 @@ class MoEMetaOrchestrator:
         }
 
     def _try_load_default_models(self):
-        """디스크에 직렬화된 최신 챔피언 모델 자동 로드"""
+        """디스크에 직렬화된 실전 운영 모델을 매니페스트 및 7대 무결성 검증을 거쳐 로드"""
         if getattr(self.gbdt_engine, "model", None) is not None:
             return
+        self.gbdt_engine._try_load_default_model()
 
-        import __main__
-        if not hasattr(__main__, "MoEMetaOrchestrator"):
-            __main__.MoEMetaOrchestrator = MoEMetaOrchestrator
-
-        for p in [MOE_MODEL_PATH, Path(__file__).resolve().parent.parent / "models" / "model_champion.pkl"]:
-            if p.exists():
-                try:
-                    obj = joblib.load(p)
-                    if hasattr(obj, "gbdt_engine") and getattr(obj.gbdt_engine, "model", None) is not None:
-                        self.gbdt_engine.model = obj.gbdt_engine.model
-                        self.gbdt_engine.feature_names = getattr(obj.gbdt_engine, "feature_names", [])
-                        self.gbdt_engine.top_10_features = getattr(obj.gbdt_engine, "top_10_features", [])
-                        self.gbdt_engine.top_3_features = getattr(obj.gbdt_engine, "top_3_features", [])
-                        break
-                except Exception:
-                    pass
+    def get_active_model_info(self) -> Dict[str, Any]:
+        """현재 MoE 오케스트레이터가 사용 중인 GBDT 실전 모델 상태 반환"""
+        return self.gbdt_engine.get_active_model_info()
 
     def compute_regime_vector(self, current_time_str: Optional[str] = None) -> Dict[str, float]:
         """현재 시장의 5대 상태 벡터 산출"""
@@ -403,27 +391,56 @@ class MoEMetaOrchestrator:
 
         return decision_meta
 
-def train_and_save_moe_orchestrator(confidence_threshold: float = GBDT_CONFIDENCE_THRESHOLD, mode: str = "hybrid_v3") -> MoEMetaOrchestrator:
-    logger.info(f"🚀 [훈련 개시] Lumos 듀얼 챔피언 MoE 스나이퍼 학습 중... (임계값 {confidence_threshold*100:.0f}%)")
+def train_and_save_moe_orchestrator(
+    confidence_threshold: float = GBDT_CONFIDENCE_THRESHOLD,
+    mode: str = "hybrid_v3",
+    schema: str = "B_normalized"
+) -> MoEMetaOrchestrator:
+    import hashlib
+    logger.info(f"🚀 [훈련 개시] Lumos 듀얼 챔피언 MoE 스나이퍼 학습 중... (스키마: {schema}, 임계값 {confidence_threshold*100:.0f}%)")
     orchestrator = MoEMetaOrchestrator(confidence_threshold=confidence_threshold, gbdt_threshold=confidence_threshold, mode=mode)
+    orchestrator.gbdt_engine.feature_schema = schema
     data_lake = MarketDataLake()
     long_15m = data_lake.load_candles(config.TRADE_SYMBOLS[0], "15m")
     if not long_15m.empty and len(long_15m) >= 100:
-        orchestrator.gbdt_engine.train_and_select_top_features(long_15m)
+        orchestrator.gbdt_engine.train_and_select_top_features(
+            long_15m,
+            schema=schema,
+            exclude_unconfirmed_tail=True
+        )
 
-    # 1. 신규 메인 실전 하이브리드 V3 모델 저장
-    joblib.dump(orchestrator, MOE_MODEL_PATH)
-    joblib.dump(orchestrator, Path(__file__).resolve().parent.parent / "models" / "model_champion.pkl")
-    logger.info(f"✅ [Lumos V3 하이브리드 MoE (GBDT {config.GBDT_CONFIDENCE_THRESHOLD*100:.1f}% + Cross-Asset Veto) 실전 모델 저장 완료] ➔ {MOE_MODEL_PATH}")
-
-    # 2. 레거시 안전 모델(100% 동시합의)도 독립 파일로 영구 동시 보존
-    safe_orchestrator = MoEMetaOrchestrator(confidence_threshold=GBDT_CONFIDENCE_THRESHOLD, gbdt_threshold=GBDT_CONFIDENCE_THRESHOLD, mode="legacy_dual_consensus")
-    safe_orchestrator.gbdt_engine = orchestrator.gbdt_engine
-    safe_path = Path(__file__).resolve().parent.parent / "models" / "model_moe_legacy_safe.pkl"
-    safe_champ_path = Path(__file__).resolve().parent.parent / "models" / "model_champion_legacy_safe.pkl"
-    joblib.dump(safe_orchestrator, safe_path)
-    joblib.dump(safe_orchestrator, safe_champ_path)
-    logger.info(f"✅ [Lumos 레거시 안전 모델(100% 동시합의) 동시 보존 완료] ➔ {safe_path.name}")
+    models_dir = Path(__file__).resolve().parent.parent / "models"
+    if schema == "B_normalized":
+        target_path = models_dir / "model_normalized_72.pkl"
+        orchestrator.gbdt_engine.active_model_id = "B_Normalized_72"
+        orchestrator.gbdt_engine.active_model_path = str(target_path)
+        joblib.dump(orchestrator, target_path)
+        ver = MLFeatureEngine.verify_model_artifact(target_path, expected_schema="B_normalized", enforce_live_policy=True)
+        if not ver["ok"]:
+            raise RuntimeError(f"Trained B_normalized model failed 7-point verification: {ver['error']}")
+        orchestrator.gbdt_engine.active_model_sha256 = ver["actual_sha256"]
+        manifest_path = models_dir / "active_model_manifest.json"
+        champ_path = models_dir / "model_champion.pkl"
+        champ_sha = hashlib.sha256(champ_path.read_bytes()).hexdigest() if champ_path.exists() else ""
+        manifest_data = {
+            "active_model_id": "B_Normalized_72",
+            "active_model_path": "models/model_normalized_72.pkl",
+            "expected_schema": "B_normalized",
+            "expected_num_features": 72,
+            "expected_sha256": ver["actual_sha256"],
+            "fallback_model_id": "v4_champion_fallback",
+            "fallback_model_path": "models/model_champion.pkl",
+            "fallback_expected_schema": "v4_champion",
+            "fallback_expected_num_features": 72,
+            "fallback_expected_sha256": champ_sha,
+            "forbidden_schemas": sorted(list(MLFeatureEngine.LIVE_FORBIDDEN_SCHEMAS)),
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
+        manifest_path.write_text(json.dumps(manifest_data, indent=2, ensure_ascii=False), encoding="utf-8")
+        logger.info(f"✅ [B_Normalized_72 실전 모델 저장 및 7단계 무결성 검증 완료] ➔ {target_path} (SHA256={ver['actual_sha256'][:16]}...)")
+    else:
+        joblib.dump(orchestrator, MOE_MODEL_PATH)
+        logger.info(f"✅ [MoE 모델 저장 완료] ➔ {MOE_MODEL_PATH}")
 
     return orchestrator
 

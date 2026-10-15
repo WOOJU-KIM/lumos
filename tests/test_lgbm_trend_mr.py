@@ -290,6 +290,115 @@ class TestLGBMTrendMeanReversion(unittest.TestCase):
         self.assertAlmostEqual(c_e1, c_e2, places=12)
         self.assertEqual(p_e1, p_e2)
 
+    def test_9_b_normalized_72_live_artifact_and_7_point_verification(self):
+        """[STEP 3, 4, 5] B_Normalized_72 실전 모델 파일 및 7대 필수 무결성 검증 통과 확인"""
+        import json
+        norm_path = PROJECT_ROOT / "models" / "model_normalized_72.pkl"
+        manifest_path = PROJECT_ROOT / "models" / "active_model_manifest.json"
+        self.assertTrue(norm_path.exists(), "models/model_normalized_72.pkl 파일이 존재해야 합니다.")
+        self.assertTrue(manifest_path.exists(), "models/active_model_manifest.json 파일이 존재해야 합니다.")
+
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(manifest["active_model_id"], "B_Normalized_72")
+        self.assertEqual(manifest["expected_schema"], "B_normalized")
+        self.assertEqual(manifest["expected_num_features"], 72)
+
+        ver = MLFeatureEngine.verify_model_artifact(
+            norm_path,
+            expected_sha256=manifest["expected_sha256"],
+            expected_schema="B_normalized",
+            enforce_live_policy=True,
+        )
+        self.assertTrue(ver["ok"], f"7대 검증 실패: {ver['error']}")
+        for chk_name, chk_val in ver["checks"].items():
+            self.assertTrue(chk_val, f"검증 항목 {chk_name}이 통과해야 합니다.")
+
+        ext_feats = ver["extracted"]["feature_names"]
+        self.assertEqual(len(ext_feats), 72)
+        self.assertEqual(ext_feats, MLFeatureEngine.CANONICAL_B_NORMALIZED_72_FEATURES)
+        for d_col in MLFeatureEngine.DOLLAR_SCALE_FEATURES:
+            self.assertNotIn(d_col, ext_feats)
+        for n_col in MLFeatureEngine.NORMALIZED_PRICE_FEATURES:
+            self.assertIn(n_col, ext_feats)
+
+    def test_10_live_default_loading_and_challenger_77_blocking(self):
+        """[STEP 5] 기본 실전 로더가 B_Normalized_72를 로드하고 E Challenger(77피처)는 실전 정책에서 차단하는지 검증"""
+        moe = MoEMetaOrchestrator()
+        info = moe.get_active_model_info()
+        self.assertEqual(info["active_model_id"], "B_Normalized_72")
+        self.assertEqual(info["feature_schema"], "B_normalized")
+        self.assertEqual(info["num_features"], 72)
+        self.assertEqual(info["load_status"], "ACTIVE_B_NORMALIZED")
+        self.assertTrue(info["is_ready"])
+
+        # E Challenger 77개 모델은 enforce_live_policy=True 시 반드시 차단되어야 함
+        chall_path = PROJECT_ROOT / "models" / "model_challenger_trend_mr.pkl"
+        ver_chall = MLFeatureEngine.verify_model_artifact(chall_path, enforce_live_policy=True)
+        self.assertFalse(ver_chall["ok"])
+        self.assertIn("Forbidden experimental/challenger model blocked", ver_chall["error"])
+
+    def test_11_automatic_fallback_to_champion_and_safe_entry_block_on_dual_failure(self):
+        """[STEP 5 & 7] 주 모델 검증 실패 시 기존 Champion(v4_champion) 자동 폴백 및 이중 실패 시 신규 진입 안전 차단 검증"""
+        import json
+        manifest_path = PROJECT_ROOT / "models" / "active_model_manifest.json"
+        orig_manifest_text = manifest_path.read_text(encoding="utf-8")
+        orig_manifest = json.loads(orig_manifest_text)
+
+        # Case A: 주 모델 SHA256 불일치 시 폴백 모델(models/model_champion.pkl)로 자동 복귀
+        bad_primary_manifest = dict(orig_manifest)
+        bad_primary_manifest["expected_sha256"] = "0" * 64
+        with patch.object(Path, "read_text", return_value=json.dumps(bad_primary_manifest)):
+            eng_fb = MLFeatureEngine()
+            info_fb = eng_fb.get_active_model_info()
+            self.assertEqual(info_fb["load_status"], "FALLBACK_TO_CHAMPION")
+            self.assertEqual(info_fb["feature_schema"], "v4_champion")
+            self.assertEqual(info_fb["num_features"], 72)
+            self.assertTrue(info_fb["is_ready"])
+
+        # Case B: 주 모델과 폴백 모델 모두 검증 실패 시 self.model=None 및 신규 진입 안전 차단(0, 0.50)
+        both_bad_manifest = dict(orig_manifest)
+        both_bad_manifest["expected_sha256"] = "0" * 64
+        both_bad_manifest["fallback_expected_sha256"] = "f" * 64
+        with patch.object(Path, "read_text", return_value=json.dumps(both_bad_manifest)):
+            eng_blk = MLFeatureEngine()
+            info_blk = eng_blk.get_active_model_info()
+            self.assertEqual(info_blk["load_status"], "BLOCKED")
+            self.assertIsNone(eng_blk.model)
+            self.assertFalse(info_blk["is_ready"])
+            sig, conf, _, _ = eng_blk.predict_signal_full(self.sample_df)
+            self.assertEqual(sig, 0)
+            self.assertEqual(conf, 0.50)
+
+    def test_12_manifest_rollback_to_v4_champion_verification(self):
+        """[STEP 7] 매니페스트 롤백 전환 시 기존 Champion(v4_champion, 72피처) 즉시 정상 로드 및 추론 검증"""
+        import json
+        manifest_path = PROJECT_ROOT / "models" / "active_model_manifest.json"
+        orig_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        rollback_manifest = {
+            "active_model_id": "v4_champion",
+            "active_model_path": "models/model_champion.pkl",
+            "expected_schema": "v4_champion",
+            "expected_num_features": 72,
+            "expected_sha256": orig_manifest["fallback_expected_sha256"],
+            "fallback_model_id": "v4_champion_fallback",
+            "fallback_model_path": "models/model_moe_orchestrator.pkl",
+            "fallback_expected_schema": "v4_champion",
+            "fallback_expected_num_features": 72,
+            "fallback_expected_sha256": orig_manifest["fallback_expected_sha256"],
+        }
+        with patch.object(Path, "read_text", return_value=json.dumps(rollback_manifest)):
+            eng_rb = MLFeatureEngine()
+            info_rb = eng_rb.get_active_model_info()
+            self.assertEqual(info_rb["active_model_id"], "v4_champion")
+            self.assertEqual(info_rb["feature_schema"], "v4_champion")
+            self.assertEqual(info_rb["load_status"], "ACTIVE_V4_CHAMPION")
+            self.assertEqual(info_rb["num_features"], 72)
+            self.assertTrue(info_rb["is_ready"])
+            sig, conf, _, probs = eng_rb.predict_signal_full(self.sample_df)
+            self.assertIn(sig, [-1, 0, 1])
+            self.assertTrue(0.50 <= conf <= 0.95)
+            self.assertEqual(set(probs.keys()), {"LONG", "SHORT", "NONE"})
+
 
 if __name__ == "__main__":
     unittest.main()
