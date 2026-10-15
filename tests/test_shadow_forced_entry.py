@@ -21,11 +21,12 @@ class TestShadowForcedEntry(unittest.TestCase):
         self.tracker = ShadowTracker(db_path=self.test_db_path)
 
     def tearDown(self):
-        if self.test_db_path.exists():
-            try:
-                self.test_db_path.unlink()
-            except Exception:
-                pass
+        for p in (self.test_db_path, self.test_db_path.with_suffix(".jsonl")):
+            if p.exists():
+                try:
+                    p.unlink()
+                except Exception:
+                    pass
 
     def test_slot_structure_and_strict_keys(self):
         """10개 슬롯 생성 및 12개 필수 키만 존재하는지 검증"""
@@ -248,18 +249,32 @@ class TestShadowForcedEntry(unittest.TestCase):
         self.assertFalse(self.tracker.slots[0]["active"], "90분 도달 시 TIME_STOP으로 청산되어야 함")
 
     def test_eod_clear_exit(self):
-        """장 마감 시 전량 EOD_CLEAR 청산 검증"""
+        """장 마감 시 전량 EOD_CLEAR 청산 및 최고가(highest_price) 착시 청산 방지 검증"""
         ny_tz = ZoneInfo("America/New_York")
         t_entry = datetime.datetime(2026, 10, 14, 14, 0, 0, tzinfo=ny_tz)
-        self.tracker.try_enter_shadow_trade("SOXL", 30.0, current_time=t_entry)
+        self.tracker.try_enter_shadow_trade("SOXL", 100.0, current_time=t_entry)
         self.assertTrue(self.tracker.slots[0]["active"])
-        
-        # 15:55 장 마감 청산 호출
+
+        # 장중 101.20까지 올랐다가(트레일링 미발동) 100.40으로 내려온 상황 시뮬레이션
+        self.tracker.check_ticks("SOXL", 101.20, current_time=datetime.datetime(2026, 10, 14, 14, 10, 0, tzinfo=ny_tz))
+        self.tracker.check_ticks("SOXL", 100.40, current_time=datetime.datetime(2026, 10, 14, 14, 20, 0, tzinfo=ny_tz))
+        self.assertEqual(self.tracker.slots[0]["highest_price"], 101.20)
+
+        # exit_prices가 누락된 채로 EOD 호출되더라도 절대 highest_price(101.20)가 아닌 최근 틱 현재가(100.40)로 청산되어야 함
         t_eod = datetime.datetime(2026, 10, 14, 15, 55, 0, tzinfo=ny_tz)
-        self.tracker.flush_eod(current_time=t_eod, exit_prices={"SOXL": 31.0})
-        
+        self.tracker.flush_eod(current_time=t_eod, exit_prices=None)
+
         self.assertFalse(self.tracker.slots[0]["active"], "EOD 호출 시 모든 슬롯이 청산되어야 함")
         self.assertEqual(sum(1 for s in self.tracker.slots if s["active"]), 0)
+        self.tracker._db_queue.join()
+
+        import sqlite3
+        conn = sqlite3.connect(self.test_db_path)
+        row = conn.execute("SELECT highest_price, exit_price, exit_reason FROM shadow_slots_history ORDER BY id DESC LIMIT 1").fetchone()
+        conn.close()
+        self.assertEqual(row[0], 101.20)
+        self.assertEqual(row[1], 100.40, "exit_prices 누락 시 highest_price(101.20)가 아닌 최근 실제 현재가(100.40)로 청산되어야 함")
+        self.assertEqual(row[2], "EOD_CLEAR")
 
     def test_no_actual_order_api_called(self):
         """SHADOW 실행 경로에서 실제 브로커 주문 API가 절대 호출되지 않음을 100% 검증"""

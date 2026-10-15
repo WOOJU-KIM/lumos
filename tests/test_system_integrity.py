@@ -64,6 +64,7 @@ class TestSystemIntegrity(unittest.TestCase):
         runner = KiwoomLiveRunner(is_simulation=True)
         runner.dispatcher.send_telegram_message = MagicMock()
         runner.notifier._send_http_request = MagicMock()
+        runner.experience_logger = MagicMock()
         
         runner.daily_stoploss_count = 3
         runner.daily_circuit_breaker_triggered = True

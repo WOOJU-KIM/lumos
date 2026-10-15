@@ -28,6 +28,7 @@ class ShadowTracker:
         self._lock = threading.RLock()
         self.slots = [self._create_empty_slot(i) for i in range(MAX_SHADOW_SLOTS)]
         self.last_entered_candle_id = None
+        self._latest_prices = {}
         
         self.db_path = db_path or (config.DATA_DIR / "shadow_trades_live.db")
         self._db_queue = queue.Queue()
@@ -158,7 +159,11 @@ class ShadowTracker:
                 # 3. JSONL 파일에도 지시된 12개 키 dict 그대로 한 줄씩 append 저장
                 try:
                     import json
-                    jsonl_path = self.db_path.parent / "shadow_trades_history.jsonl"
+                    jsonl_path = (
+                        self.db_path.parent / "shadow_trades_history.jsonl"
+                        if self.db_path.name == "shadow_trades_live.db"
+                        else self.db_path.with_suffix(".jsonl")
+                    )
                     with open(jsonl_path, "a", encoding="utf-8") as f:
                         f.write(json.dumps(slot_data, ensure_ascii=False) + "\n")
                 except Exception as je:
@@ -310,6 +315,7 @@ class ShadowTracker:
                 empty_slot["net_return_pct"] = 0.0
 
                 self.last_entered_candle_id = candle_id
+                self._latest_prices[empty_slot["symbol"]] = float(price)
 
                 system_logger.log(
                     "INFO",
@@ -349,6 +355,7 @@ class ShadowTracker:
             time_stop_min = getattr(config, "TIME_STOP_MINUTES", 90)
 
             with self._lock:
+                self._latest_prices[sym] = float(current_price)
                 for slot_id, slot in enumerate(self.slots):
                     if not slot["active"] or slot["symbol"] != sym:
                         continue
@@ -396,12 +403,12 @@ class ShadowTracker:
         except Exception as e:
             system_logger.log("ERROR", "ShadowTracker", f"[SHADOW_EXCEPTION] check_ticks 실행 에러: {e}")
 
-    def increment_candle(self, current_time = None):
+    def increment_candle(self, current_time = None, exit_prices: dict = None):
         """15분 주기 브리핑 시 호출되어 90분 타임스탑을 일괄 검사"""
-        self.check_time_stops(current_time)
+        self.check_time_stops(current_time, exit_prices=exit_prices)
 
-    def check_time_stops(self, current_time = None):
-        """90분 경과한 활성 슬롯 강제 청산"""
+    def check_time_stops(self, current_time = None, exit_prices: dict = None):
+        """90분 경과한 활성 슬롯 강제 청산 (최고가 청산 절대 금지: 현재가 -> 최근 틱 가격 -> 진입가 순 적용)"""
         try:
             curr_dt = self._parse_dt(current_time)
             time_str = curr_dt.strftime("%Y-%m-%d %H:%M:%S")
@@ -413,13 +420,19 @@ class ShadowTracker:
                         continue
 
                     if self._is_time_stop_elapsed(slot["entry_time"], curr_dt, time_stop_min):
-                        exit_px = slot["highest_price"] if slot["highest_price"] > 0 else slot["entry_price"]
+                        sym = slot["symbol"]
+                        if exit_prices and sym in exit_prices and exit_prices[sym] > 0:
+                            exit_px = float(exit_prices[sym])
+                        elif self._latest_prices.get(sym, 0.0) > 0:
+                            exit_px = float(self._latest_prices[sym])
+                        else:
+                            exit_px = float(slot["entry_price"])
                         self._close_slot(slot_id, exit_px, time_str, "TIME_STOP", "SHADOW_EXIT_TIME_STOP")
         except Exception as e:
             system_logger.log("ERROR", "ShadowTracker", f"[SHADOW_EXCEPTION] check_time_stops 실행 에러: {e}")
 
     def flush_eod(self, current_time = None, exit_prices: dict = None):
-        """장 마감 시(15:55 NYT) 전량 시장가 청산 및 슬롯 초기화"""
+        """장 마감 시(15:55 NYT) 전량 시장가 청산 및 슬롯 초기화 (최고가 청산 절대 금지: 현재가 -> 최근 틱 가격 -> 진입가 순 적용)"""
         try:
             curr_dt = self._parse_dt(current_time)
             time_str = curr_dt.strftime("%Y-%m-%d %H:%M:%S")
@@ -430,13 +443,12 @@ class ShadowTracker:
                         continue
 
                     sym = slot["symbol"]
-                    px = 0.0
                     if exit_prices and sym in exit_prices and exit_prices[sym] > 0:
-                        px = exit_prices[sym]
-                    elif slot["highest_price"] > 0:
-                        px = slot["highest_price"]
+                        px = float(exit_prices[sym])
+                    elif self._latest_prices.get(sym, 0.0) > 0:
+                        px = float(self._latest_prices[sym])
                     else:
-                        px = slot["entry_price"]
+                        px = float(slot["entry_price"])
 
                     self._close_slot(slot_id, px, time_str, "EOD_CLEAR", "SHADOW_EXIT_EOD_CLEAR")
         except Exception as e:
