@@ -171,6 +171,204 @@ class KiwoomBroker:
             ("_access_token", "app_key", "app_secret", "account_no")
         ))
 
+    def resolve_order_ledger_status(
+        self,
+        order_no: str,
+        symbol: str,
+        side: str = "SELL",
+        expected_qty: Optional[int] = None,
+        trade_date: Optional[str] = None,
+        open_orders: Optional[list] = None,
+        executions: Optional[list] = None,
+        order_history: Optional[list] = None,
+        cancel_ord_no: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        키움 REST 원장 3종(ust21050 미체결, ust21150 체결내역, ust21180 주문내역)을 종합하여
+        단일 주문의 종결 상태(OPEN, PARTIALLY_FILLED, FILLED, CANCELED_ZERO_FILL, CANCELED_PARTIAL_FILL, UNKNOWN)를 판정한다.
+        """
+        ord_no_clean = str(order_no or "").strip()
+        sym_clean = str(symbol or "").strip().upper()
+        cancel_no_clean = str(cancel_ord_no or "").strip()
+        target_side = str(side or "").strip().upper()
+        compact_dt = str(trade_date or datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")).replace("-", "").strip()
+
+        def _norm_row_side(row: Dict[str, Any]) -> str:
+            raw_s = row.get("side")
+            if raw_s in ("BUY", "SELL"):
+                return raw_s
+            raw_tp = str(row.get("slby_tp") or row.get("slby_tp_nm") or "").strip()
+            if raw_tp in ("1", "매도") or "매도" in raw_tp:
+                return "SELL"
+            if raw_tp in ("2", "매수") or "매수" in raw_tp:
+                return "BUY"
+            return str(raw_s or "").strip().upper()
+
+        if not ord_no_clean or not sym_clean:
+            return {
+                "status": "UNKNOWN",
+                "ord_qty": 0,
+                "filled_qty": 0,
+                "cancelled_qty": 0,
+                "remaining_qty": 0,
+                "found_in_ledger": False,
+                "has_open_order": False,
+            }
+
+        if open_orders is None:
+            op_res = self.get_open_orders(compact_dt)
+            open_orders = op_res.get("orders", []) if isinstance(op_res, dict) and op_res.get("ok") is True else None
+        if executions is None:
+            ex_res = self.get_daily_execution_history(compact_dt)
+            executions = ex_res.get("executions", []) if isinstance(ex_res, dict) and ex_res.get("ok") is True else None
+        if order_history is None and callable(getattr(self, "get_order_history", None)):
+            oh_res = self.get_order_history(compact_dt, compact_dt)
+            order_history = oh_res.get("orders", []) if isinstance(oh_res, dict) and oh_res.get("ok") is True else None
+
+        if open_orders is None:
+            return {
+                "status": "UNKNOWN",
+                "ord_qty": 0,
+                "filled_qty": 0,
+                "cancelled_qty": 0,
+                "remaining_qty": 0,
+                "found_in_ledger": False,
+                "has_open_order": False,
+            }
+
+        for o_row in open_orders:
+            if not isinstance(o_row, dict):
+                return {"status": "UNKNOWN", "ord_qty": 0, "filled_qty": 0, "cancelled_qty": 0, "remaining_qty": 0, "found_in_ledger": False, "has_open_order": True}
+            o_no = str(o_row.get("ord_no") or o_row.get("order_no") or "").strip()
+            o_orig = str(o_row.get("orig_ord_no") or o_row.get("original_order_no") or "").strip()
+            if o_no in (ord_no_clean, cancel_no_clean) or (o_orig and o_orig == ord_no_clean):
+                try:
+                    rq = _explicit_order_quantity(o_row.get("ord_qty", expected_qty or 0))
+                    fq = _explicit_order_quantity(o_row["tot_che_qty"] if "tot_che_qty" in o_row else o_row.get("cntr_qty", 0))
+                    cq = _explicit_order_quantity(o_row["cancelled_qty"] if "cancelled_qty" in o_row else o_row.get("cncl_qty", 0))
+                    rem = _explicit_order_quantity(o_row["nccs_qty"] if "nccs_qty" in o_row else o_row.get("ord_remnq", 0))
+                except ValueError:
+                    return {"status": "UNKNOWN", "ord_qty": 0, "filled_qty": 0, "cancelled_qty": 0, "remaining_qty": 0, "found_in_ledger": True, "has_open_order": True}
+                if rem > 0:
+                    return {
+                        "status": "PARTIALLY_FILLED" if fq > 0 else "OPEN",
+                        "ord_qty": rq,
+                        "filled_qty": fq,
+                        "cancelled_qty": cq,
+                        "remaining_qty": rem,
+                        "found_in_ledger": True,
+                        "has_open_order": True,
+                    }
+
+        for rows_src in (executions or [], order_history or []):
+            if not isinstance(rows_src, list) or not rows_src:
+                continue
+            orig_rows = []
+            cancel_rows = []
+            for r in rows_src:
+                if not isinstance(r, dict):
+                    continue
+                r_sym = str(r.get("stk_cd") or r.get("symbol") or "").strip().upper()
+                if r_sym and r_sym != sym_clean:
+                    continue
+                r_no = str(r.get("ord_no") or r.get("order_no") or "").strip()
+                r_orig = str(r.get("orig_ord_no") or r.get("original_order_no") or "").strip()
+                r_orig_clean = "" if r_orig in ("", "000000000") else r_orig
+                r_cntr_tp = str(r.get("ord_cntr_tp") or "").strip()
+                is_cancel = (
+                    (r_orig_clean == ord_no_clean and r_no != ord_no_clean)
+                    or (bool(cancel_no_clean) and cancel_no_clean != ord_no_clean and r_no == cancel_no_clean)
+                    or (r_no == ord_no_clean and r_cntr_tp == "12")
+                )
+                is_orig = (r_no == ord_no_clean and not is_cancel)
+                if is_orig:
+                    orig_rows.append(r)
+                elif is_cancel:
+                    cancel_rows.append(r)
+            if not orig_rows:
+                continue
+            req_q = None
+            sum_fil = 0
+            cum_fil = 0
+            use_cum = False
+            max_can = 0
+            rem_max = 0
+            ambig = False
+            for r in orig_rows:
+                r_side = _norm_row_side(r)
+                if target_side and r_side and r_side != target_side:
+                    ambig = True
+                    break
+                try:
+                    rq = _explicit_order_quantity(r.get("ord_qty"))
+                    fq = _explicit_order_quantity(r["tot_che_qty"] if "tot_che_qty" in r else r.get("cntr_qty", 0))
+                    cq = _explicit_order_quantity(
+                        r["cancelled_qty"] if "cancelled_qty" in r else (r["cncl_cfrm_qty"] if "cncl_cfrm_qty" in r else r.get("cncl_qty", 0))
+                    )
+                    rmq = _explicit_order_quantity(r["nccs_qty"] if "nccs_qty" in r else r.get("ord_remnq", 0))
+                except ValueError:
+                    ambig = True
+                    break
+                if (req_q is not None and rq != req_q) or (expected_qty is not None and rq != expected_qty):
+                    ambig = True
+                    break
+                req_q = rq
+                max_can = max(max_can, cq)
+                rem_max = max(rem_max, rmq)
+                if "tot_che_qty" in r and "cntr_qty" not in r:
+                    use_cum = True
+                    cum_fil = max(cum_fil, fq)
+                else:
+                    sum_fil += fq
+            if ambig or req_q is None:
+                return {"status": "UNKNOWN", "ord_qty": 0, "filled_qty": 0, "cancelled_qty": 0, "remaining_qty": 0, "found_in_ledger": True, "has_open_order": False}
+            child_can = 0
+            for cr in cancel_rows:
+                try:
+                    cfq = _explicit_order_quantity(cr["tot_che_qty"] if "tot_che_qty" in cr else cr.get("cntr_qty", 0))
+                    ccq = _explicit_order_quantity(
+                        cr["cancelled_qty"] if "cancelled_qty" in cr else (cr["cncl_cfrm_qty"] if "cncl_cfrm_qty" in cr else cr.get("cncl_qty", 0))
+                    )
+                    crmq = _explicit_order_quantity(cr["nccs_qty"] if "nccs_qty" in cr else cr.get("ord_remnq", 0))
+                except ValueError:
+                    return {"status": "UNKNOWN", "ord_qty": 0, "filled_qty": 0, "cancelled_qty": 0, "remaining_qty": 0, "found_in_ledger": True, "has_open_order": False}
+                if cfq > 0 or crmq > 0:
+                    return {"status": "UNKNOWN", "ord_qty": 0, "filled_qty": 0, "cancelled_qty": 0, "remaining_qty": 0, "found_in_ledger": True, "has_open_order": False}
+                child_can += ccq
+            if max_can > 0 and child_can > 0 and max_can != child_can:
+                return {"status": "UNKNOWN", "ord_qty": 0, "filled_qty": 0, "cancelled_qty": 0, "remaining_qty": 0, "found_in_ledger": True, "has_open_order": False}
+            final_fil = cum_fil if use_cum else sum_fil
+            final_can = max(max_can, child_can)
+            if rem_max > 0 or final_fil + final_can != req_q:
+                return {"status": "UNKNOWN", "ord_qty": req_q, "filled_qty": final_fil, "cancelled_qty": final_can, "remaining_qty": rem_max, "found_in_ledger": True, "has_open_order": rem_max > 0}
+            if final_fil == req_q and final_can == 0:
+                st_str = "FILLED"
+            elif final_fil == 0 and final_can == req_q:
+                st_str = "CANCELED_ZERO_FILL"
+            elif final_fil > 0 and final_can > 0:
+                st_str = "CANCELED_PARTIAL_FILL"
+            else:
+                st_str = "UNKNOWN"
+            return {
+                "status": st_str,
+                "ord_qty": req_q,
+                "filled_qty": final_fil,
+                "cancelled_qty": final_can,
+                "remaining_qty": 0,
+                "found_in_ledger": True,
+                "has_open_order": False,
+            }
+
+        return {
+            "status": "UNKNOWN",
+            "ord_qty": 0,
+            "filled_qty": 0,
+            "cancelled_qty": 0,
+            "remaining_qty": 0,
+            "found_in_ledger": False,
+            "has_open_order": False,
+        }
+
     def _prepare_sell_reservation(self, body):
         import core.circuit_breaker as _cb_mod
         from core.circuit_breaker import read_order_state, checked_sell_journal, ORDER_STATE_LOCK, write_order_state
@@ -258,6 +456,117 @@ class KiwoomBroker:
                     return "BUY"
                 return raw_side
 
+            def _can_call_order_history():
+                if not callable(getattr(self, "get_order_history", None)):
+                    return False
+                inst_dict = getattr(self, "__dict__", {}) or {}
+                if "get_order_history" in inst_dict:
+                    return True
+                if "get_daily_execution_history" in inst_dict and "_send_tr_request" not in inst_dict:
+                    return False
+                return True
+
+            order_hist_cache = {}
+
+            def _get_order_history_rows(compact_dt):
+                if compact_dt in order_hist_cache:
+                    return order_hist_cache[compact_dt]
+                if not _can_call_order_history():
+                    order_hist_cache[compact_dt] = None
+                    return None
+                try:
+                    res = self.get_order_history(compact_dt, compact_dt)
+                except Exception:
+                    order_hist_cache[compact_dt] = None
+                    return None
+                if isinstance(res, dict) and res.get("ok") is True and isinstance(res.get("orders"), list):
+                    order_hist_cache[compact_dt] = res["orders"]
+                    return res["orders"]
+                order_hist_cache[compact_dt] = None
+                return None
+
+            def _extract_order_summary(rows, target_ord_no, target_sym, target_compact_dt, target_acc):
+                if not isinstance(rows, list):
+                    return None
+                orig_rows = []
+                cancel_rows = []
+                for item in rows:
+                    if not isinstance(item, dict):
+                        continue
+                    if str(item.get("stk_cd") or item.get("symbol") or "").strip().upper() != target_sym:
+                        continue
+                    item_dt = str(item.get("trade_date") if "trade_date" in item else (item.get("ord_dt") or target_compact_dt)).strip().replace("-", "")
+                    if item_dt != target_compact_dt:
+                        continue
+                    if "account" in item and item.get("account") != target_acc:
+                        continue
+                    i_no = str(item.get("ord_no") or item.get("order_no") or "").strip()
+                    i_orig = str(item.get("orig_ord_no") or item.get("original_order_no") or "").strip()
+                    i_orig_clean = "" if i_orig in ("", "000000000") else i_orig
+                    i_cntr_tp = str(item.get("ord_cntr_tp") or "").strip()
+                    is_cancel_r = (i_orig_clean == target_ord_no and i_no != target_ord_no) or (i_no == target_ord_no and i_cntr_tp == "12")
+                    is_orig_r = (i_no == target_ord_no and not is_cancel_r)
+                    if is_orig_r:
+                        orig_rows.append(item)
+                    elif is_cancel_r:
+                        cancel_rows.append(item)
+                if not orig_rows:
+                    return None
+                req_val = None
+                sum_fil = 0
+                cum_fil = 0
+                use_cum = False
+                max_orig_can = 0
+                seen_orig_keys = set()
+                for item in orig_rows:
+                    if _norm_side(item) != "SELL":
+                        return None
+                    try:
+                        rq = _explicit_order_quantity(item.get("ord_qty"))
+                        fq = _explicit_order_quantity(item["tot_che_qty"] if "tot_che_qty" in item else item.get("cntr_qty"))
+                        cq = _explicit_order_quantity(
+                            item["cancelled_qty"] if "cancelled_qty" in item else (item["cncl_cfrm_qty"] if "cncl_cfrm_qty" in item else item.get("cncl_qty"))
+                        )
+                        rmq = _explicit_order_quantity(item["nccs_qty"] if "nccs_qty" in item else item.get("ord_remnq"))
+                    except ValueError:
+                        return None
+                    if rmq > 0 or (req_val is not None and rq != req_val):
+                        return None
+                    req_val = rq
+                    max_orig_can = max(max_orig_can, cq)
+                    if "tot_che_qty" in item and "cntr_qty" not in item:
+                        use_cum = True
+                        cum_fil = max(cum_fil, fq)
+                    else:
+                        dedup_key = (
+                            str(item.get("cntr_no") or item.get("che_no") or item.get("exec_no") or ""),
+                            rq, fq, cq, rmq,
+                            str(item.get("cntr_uv") or item.get("ord_uv") or ""),
+                            str(item.get("ord_tmd") or item.get("cntr_tm") or ""),
+                        )
+                        if fq + cq == rq and len(orig_rows) > 1 and dedup_key in seen_orig_keys:
+                            continue
+                        seen_orig_keys.add(dedup_key)
+                        sum_fil += fq
+                child_can = 0
+                for c_item in cancel_rows:
+                    try:
+                        cfq = _explicit_order_quantity(c_item["tot_che_qty"] if "tot_che_qty" in c_item else c_item.get("cntr_qty", 0))
+                        ccq = _explicit_order_quantity(
+                            c_item["cancelled_qty"] if "cancelled_qty" in c_item else (c_item["cncl_cfrm_qty"] if "cncl_cfrm_qty" in c_item else c_item.get("cncl_qty", 0))
+                        )
+                        crmq = _explicit_order_quantity(c_item["nccs_qty"] if "nccs_qty" in c_item else c_item.get("ord_remnq", 0))
+                    except ValueError:
+                        return None
+                    if cfq > 0 or crmq > 0:
+                        return None
+                    child_can += ccq
+                if max_orig_can > 0 and child_can > 0 and max_orig_can != child_can:
+                    return None
+                final_fil = cum_fil if use_cum else sum_fil
+                final_can = max(max_orig_can, child_can)
+                return (req_val, final_fil, final_can, 0)
+
             journal, revision = _extract_journal(state)
             symbol = str(body.get("stk_cd", "")).strip().upper()
             quantity = _explicit_order_quantity(body.get("ord_qty"))
@@ -288,52 +597,60 @@ class KiwoomBroker:
             resolved = set()
             # Empty query results cannot resolve a sent request or an unknown order id.
             for record in relevant:
-                order_no = record.get("order_no")
-                if not order_no or record["trade_date"] != trade_date:
+                order_no = str(record.get("order_no") or "").strip()
+                rec_date = str(record.get("trade_date") or "").strip()
+                rec_compact_dt = rec_date.replace("-", "")
+                if not order_no or not rec_compact_dt or record.get("phase") == "UNKNOWN":
                     continue
-                exact = [
-                    item for item in history["executions"]
+                if rec_date != trade_date and record.get("phase") != "ACCEPTED":
+                    continue
+                matching_open = [
+                    item for item in opened["orders"]
                     if str(item.get("ord_no") or item.get("order_no") or "").strip() == order_no
-                    and str(item.get("stk_cd") or item.get("symbol") or "").strip().upper() == symbol
-                    and (item.get("trade_date") == record["trade_date"] if "trade_date" in item else str(item.get("ord_dt") or compact_trade_date).strip() == record["trade_date"].replace("-", ""))
-                    and _norm_side(item) == "SELL"
-                    and (item.get("account") == account if "account" in item else True)
+                    or str(item.get("orig_ord_no") or item.get("original_order_no") or "").strip() == order_no
                 ]
-                if len(exact) != 1:
+                if matching_open:
                     continue
-                evidence = exact[0]
-                try:
-                    requested = _explicit_order_quantity(evidence.get("ord_qty"))
-                    filled = _explicit_order_quantity(evidence["tot_che_qty"] if "tot_che_qty" in evidence else evidence.get("cntr_qty"))
-                    cancelled = _explicit_order_quantity(evidence["cancelled_qty"] if "cancelled_qty" in evidence else evidence.get("cncl_qty"))
-                    remaining = _explicit_order_quantity(evidence["nccs_qty"] if "nccs_qty" in evidence else evidence.get("ord_remnq"))
-                except ValueError:
+                summary = None
+                if rec_date == trade_date:
+                    summary = _extract_order_summary(history["executions"], order_no, symbol, rec_compact_dt, account)
+                    if summary is None:
+                        oh_rows = _get_order_history_rows(rec_compact_dt)
+                        if oh_rows is not None:
+                            summary = _extract_order_summary(oh_rows, order_no, symbol, rec_compact_dt, account)
+                else:
+                    oh_rows = _get_order_history_rows(rec_compact_dt)
+                    if oh_rows is not None:
+                        summary = _extract_order_summary(oh_rows, order_no, symbol, rec_compact_dt, account)
+                if summary is None:
                     continue
-                matching_open = [item for item in opened["orders"] if
-                                 str(item.get("ord_no") or item.get("order_no") or "").strip() == order_no]
-                subsequent_net_delta = 0
-                for item in history["executions"]:
-                    if str(item.get("stk_cd") or item.get("symbol") or "").strip().upper() != symbol:
-                        continue
-                    item_dt = item.get("trade_date") if "trade_date" in item else str(item.get("ord_dt") or compact_trade_date).strip()
-                    if item_dt.replace("-", "") != record["trade_date"].replace("-", ""):
-                        continue
-                    item_ord_no = str(item.get("ord_no") or item.get("order_no") or "").strip()
-                    if not item_ord_no or item_ord_no <= str(order_no).strip():
-                        continue
-                    item_side = _norm_side(item)
-                    try:
-                        item_fil = _explicit_order_quantity(item["tot_che_qty"] if "tot_che_qty" in item else item.get("cntr_qty", 0))
-                    except ValueError:
-                        continue
-                    if item_side == "BUY":
-                        subsequent_net_delta += item_fil
-                    elif item_side == "SELL":
-                        subsequent_net_delta -= item_fil
-                expected_held = record["held_before"] - filled + subsequent_net_delta
-                if (requested == record["quantity"] and filled + cancelled == requested and remaining == 0
-                        and not matching_open
-                        and held == expected_held):
+                requested, filled, cancelled, remaining = summary
+                if not (requested == record["quantity"] and filled + cancelled == requested and remaining == 0):
+                    continue
+                if rec_date == trade_date:
+                    subsequent_net_delta = 0
+                    for item in history["executions"]:
+                        if str(item.get("stk_cd") or item.get("symbol") or "").strip().upper() != symbol:
+                            continue
+                        item_dt = item.get("trade_date") if "trade_date" in item else str(item.get("ord_dt") or compact_trade_date).strip()
+                        if item_dt.replace("-", "") != rec_compact_dt:
+                            continue
+                        item_ord_no = str(item.get("ord_no") or item.get("order_no") or "").strip()
+                        if not item_ord_no or item_ord_no <= order_no:
+                            continue
+                        item_side = _norm_side(item)
+                        try:
+                            item_fil = _explicit_order_quantity(item["tot_che_qty"] if "tot_che_qty" in item else item.get("cntr_qty", 0))
+                        except ValueError:
+                            continue
+                        if item_side == "BUY":
+                            subsequent_net_delta += item_fil
+                        elif item_side == "SELL":
+                            subsequent_net_delta -= item_fil
+                    expected_held = record["held_before"] - filled + subsequent_net_delta
+                    if held == expected_held:
+                        resolved.add(record["id"])
+                else:
                     resolved.add(record["id"])
             pending = [item for item in relevant if item["id"] not in resolved]
             if pending:

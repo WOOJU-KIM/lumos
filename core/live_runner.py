@@ -165,11 +165,26 @@ class KiwoomLiveRunner:
 
     def _can_query_broker_method(self, method_name: str) -> bool:
         broker = getattr(self, "broker", None)
-        if broker is None or not callable(getattr(broker, method_name, None)):
+        if broker is None:
             return False
-        if method_name in getattr(broker, "__dict__", {}) or type(broker).__name__ != "KiwoomBroker":
+        inst_dict = getattr(broker, "__dict__", {}) or {}
+        if method_name in inst_dict:
+            return callable(inst_dict[method_name])
+        if type(broker).__name__ in ("MagicMock", "NonCallableMagicMock", "AsyncMock"):
+            return False
+        if not callable(getattr(broker, method_name, None)):
+            return False
+        if type(broker).__name__ != "KiwoomBroker":
             return True
-        return not hasattr(getattr(broker, "send_order", None), "_mock_name")
+        if hasattr(getattr(broker, "send_order", None), "_mock_name"):
+            return False
+        if (
+            method_name == "get_order_history"
+            and ("get_open_orders" in inst_dict or "get_daily_execution_history" in inst_dict)
+            and "_send_tr_request" not in inst_dict
+        ):
+            return False
+        return True
 
     @staticmethod
     def _parse_int_strict(val: Any) -> Optional[int]:
@@ -374,8 +389,8 @@ class KiwoomLiveRunner:
 
         # 1. 실계좌 보유 0주인 경우: 매수 직후 잔고 반영 지연 또는 단일 조회 결과만으로 active_position을 절대 삭제하지 않음
         if not valid_holdings:
-            self._unreconciled_holding_mismatch = None
             if not active_pos:
+                self._unreconciled_holding_mismatch = None
                 self._empty_balance_streak = 0
                 return
             self._empty_balance_streak = getattr(self, "_empty_balance_streak", 0) + 1
@@ -427,6 +442,7 @@ class KiwoomLiveRunner:
                 recheck_bal = self.broker.get_overseas_stock_balance(force_refresh=True)
                 if isinstance(recheck_bal, dict) and recheck_bal.get("ok") is True and not recheck_bal.get("holdings"):
                     self._clear_active_position()
+                    self._unreconciled_holding_mismatch = None
                     self._empty_balance_streak = 0
             return
 
@@ -640,23 +656,156 @@ class KiwoomLiveRunner:
                 logger.error("❌ [매수 중단] 이전 미확정 매수 주문 대조를 위한 체결원장 조회 실패로 신규 매수를 차단합니다.")
                 return False
             unconf_sym = str(self._unconfirmed_buy_order.get("symbol") or "").strip().upper()
+            unconf_ord_no = str(self._unconfirmed_buy_order.get("order_no") or "").strip()
+            unconf_target_qty = self._parse_int_strict(self._unconfirmed_buy_order.get("target_qty"))
+
+            buy_filled_by_sym: Dict[str, int] = {}
+            sell_filled_by_sym: Dict[str, int] = {}
+            seen_exec_sigs = set()
+            found_unconf_in_exec = False
+            unconf_exec_req = None
+            unconf_exec_fil = 0
+            unconf_exec_can = 0
+
             for ex in hist_res.get("executions", []):
                 if not isinstance(ex, dict):
                     return False
-                ex_sym = str(ex.get("stk_cd") or ex.get("symbol") or "").strip().upper()
-                if ex_sym and ex_sym != unconf_sym:
-                    continue
+                ex_sym = str(ex.get("stk_cd") or ex.get("symbol") or "").strip().upper() or unconf_sym
+                ex_ord_no = str(ex.get("ord_no") or ex.get("order_no") or "").strip()
+                ex_orig = str(ex.get("orig_ord_no") or ex.get("original_order_no") or "").strip()
+                ex_orig_clean = "" if ex_orig in ("", "000000000") else ex_orig
+                ex_cntr_tp = str(ex.get("ord_cntr_tp") or "").strip()
+
+                req_q = self._parse_int_strict(ex.get("ord_qty"))
+                fil_q = self._parse_exec_filled_qty(ex)
+                can_q = self._parse_int_strict(
+                    ex.get("cancelled_qty")
+                    if "cancelled_qty" in ex
+                    else (ex.get("cncl_cfrm_qty") if "cncl_cfrm_qty" in ex else ex.get("cncl_qty", 0))
+                )
+                rem_q = self._parse_int_strict(ex.get("nccs_qty") if "nccs_qty" in ex else ex.get("ord_remnq", 0))
                 side = self._norm_exec_side(ex)
                 if side not in ("BUY", "SELL"):
+                    if fil_q == 0 and can_q is not None and can_q > 0 and rem_q == 0:
+                        if unconf_ord_no and (ex_ord_no == unconf_ord_no or ex_orig_clean == unconf_ord_no):
+                            found_unconf_in_exec = True
+                            unconf_exec_can = max(unconf_exec_can, can_q)
+                            if req_q is not None:
+                                unconf_exec_req = req_q
+                        continue
                     return False
-                if side == "BUY":
-                    req_q = self._parse_int_strict(ex.get("ord_qty"))
-                    fil_q = self._parse_exec_filled_qty(ex)
-                    can_q = self._parse_int_strict(ex.get("cancelled_qty") if "cancelled_qty" in ex else ex.get("cncl_qty", 0))
-                    rem_q = self._parse_int_strict(ex.get("nccs_qty") if "nccs_qty" in ex else ex.get("ord_remnq", 0))
-                    if None in (req_q, fil_q, can_q, rem_q) or rem_q > 0 or fil_q + can_q != req_q or fil_q > 0:
-                        logger.error(f"❌ [매수 중단] 이전 타임아웃/미확정 매수 주문({unconf_sym})이 원장에서 종결 확인되지 않아 중복 매수를 차단합니다.")
+                if None in (req_q, fil_q, can_q, rem_q) or rem_q > 0 or fil_q + can_q != req_q:
+                    logger.error(f"❌ [매수 중단] 체결원장 주문({ex_sym} #{ex_ord_no})이 종결 확인되지 않아 신규 매수를 차단합니다.")
+                    return False
+
+                sig = (
+                    ex_sym,
+                    ex_ord_no,
+                    str(ex.get("cntr_no") or ex.get("che_no") or ex.get("exec_no") or ""),
+                    side,
+                    req_q,
+                    fil_q,
+                    can_q,
+                    rem_q,
+                    str(ex.get("cntr_uv") or ex.get("ord_uv") or ""),
+                    str(ex.get("ord_tmd") or ex.get("cntr_tm") or ex.get("cntr_time") or ""),
+                )
+                if sig not in seen_exec_sigs:
+                    seen_exec_sigs.add(sig)
+                    if side == "BUY":
+                        buy_filled_by_sym[ex_sym] = buy_filled_by_sym.get(ex_sym, 0) + fil_q
+                    elif side == "SELL":
+                        sell_filled_by_sym[ex_sym] = sell_filled_by_sym.get(ex_sym, 0) + fil_q
+
+                if unconf_ord_no and ((ex_ord_no == unconf_ord_no and ex_cntr_tp != "12") or ex_orig_clean == unconf_ord_no):
+                    found_unconf_in_exec = True
+                    if ex_ord_no == unconf_ord_no and ex_cntr_tp != "12":
+                        unconf_exec_req = req_q
+                        unconf_exec_fil += fil_q
+                        unconf_exec_can = max(unconf_exec_can, can_q)
+                    else:
+                        unconf_exec_can = max(unconf_exec_can, can_q)
+
+            check_syms = {s for s in (unconf_sym, symbol.strip().upper(), config.BASE_ASSET_LONG, config.BASE_ASSET_SHORT) if s}
+            for s_chk in check_syms:
+                if buy_filled_by_sym.get(s_chk, 0) != sell_filled_by_sym.get(s_chk, 0):
+                    logger.error(
+                        f"❌ [매수 중단] 당일 체결원장에서 {s_chk} 순체결 수량(매수 {buy_filled_by_sym.get(s_chk, 0)}주 != 매도 {sell_filled_by_sym.get(s_chk, 0)}주)이 "
+                        f"잔고(0주)와 불일치하거나 미청산 체결이 존재하여 중복 매수를 차단합니다."
+                    )
+                    return False
+
+            if not unconf_ord_no:
+                logger.error(f"❌ [매수 중단] 이전 미확정 매수 주문({unconf_sym})의 주문번호가 유실되어 원장 종결 여부를 확인할 수 없으므로 신규 매수를 차단합니다.")
+                return False
+
+            if found_unconf_in_exec:
+                if (
+                    unconf_exec_req is None
+                    or (unconf_target_qty is not None and unconf_exec_req != unconf_target_qty)
+                    or (unconf_exec_fil + unconf_exec_can != unconf_exec_req)
+                ):
+                    logger.error(f"❌ [매수 중단] 이전 미확정 매수 주문(#{unconf_ord_no})의 체결/취소 수량이 원장에서 확정되지 않아 중복 매수를 차단합니다.")
+                    return False
+            elif self._can_query_broker_method("get_order_history"):
+                ny_compact = self._get_current_ny_date().replace("-", "")
+                oh_res = self.broker.get_order_history(ny_compact, ny_compact)
+                if not isinstance(oh_res, dict) or oh_res.get("ok") is not True or not isinstance(oh_res.get("orders"), list):
+                    logger.error(f"❌ [매수 중단] 이전 미확정 매수 주문(#{unconf_ord_no}) 대조를 위한 주문내역(ust21180) 조회 실패로 신규 매수를 차단합니다.")
+                    return False
+                oh_found = False
+                oh_req = None
+                oh_fil = 0
+                oh_orig_can = 0
+                oh_child_can = 0
+                for o_row in oh_res.get("orders", []):
+                    if not isinstance(o_row, dict):
                         return False
+                    r_no = str(o_row.get("ord_no") or o_row.get("order_no") or "").strip()
+                    r_orig = str(o_row.get("orig_ord_no") or o_row.get("original_order_no") or "").strip()
+                    r_orig_clean = "" if r_orig in ("", "000000000") else r_orig
+                    r_cntr_tp = str(o_row.get("ord_cntr_tp") or "").strip()
+                    is_cancel_r = (r_orig_clean == unconf_ord_no and r_no != unconf_ord_no) or (r_no == unconf_ord_no and r_cntr_tp == "12")
+                    is_orig_r = (r_no == unconf_ord_no and not is_cancel_r)
+                    if not is_orig_r and not is_cancel_r:
+                        continue
+                    oh_found = True
+                    r_sym = str(o_row.get("stk_cd") or o_row.get("symbol") or "").strip().upper()
+                    if r_sym and unconf_sym and r_sym != unconf_sym:
+                        return False
+                    rq = self._parse_int_strict(o_row.get("ord_qty"))
+                    fq = self._parse_exec_filled_qty(o_row)
+                    cq = self._parse_int_strict(
+                        o_row.get("cancelled_qty")
+                        if "cancelled_qty" in o_row
+                        else (o_row.get("cncl_cfrm_qty") if "cncl_cfrm_qty" in o_row else o_row.get("cncl_qty", 0))
+                    )
+                    rmq = self._parse_int_strict(o_row.get("nccs_qty") if "nccs_qty" in o_row else o_row.get("ord_remnq", 0))
+                    if None in (rq, fq, cq, rmq) or rmq > 0:
+                        logger.error(f"❌ [매수 중단] 주문내역(ust21180)에서 미확정 매수 주문(#{unconf_ord_no}) 잔량({rmq}) 또는 미확정 수량 감지.")
+                        return False
+                    if is_orig_r:
+                        if self._norm_exec_side(o_row) == "SELL":
+                            return False
+                        oh_req = rq
+                        oh_fil += fq
+                        oh_orig_can = max(oh_orig_can, cq)
+                    else:
+                        if fq > 0 or (cq > 0 and cq != rq):
+                            return False
+                        oh_child_can += cq
+                oh_final_can = max(oh_orig_can, oh_child_can)
+                if (
+                    not oh_found
+                    or oh_req is None
+                    or (unconf_target_qty is not None and oh_req != unconf_target_qty)
+                    or (oh_orig_can > 0 and oh_child_can > 0 and oh_orig_can != oh_child_can)
+                    or (oh_fil + oh_final_can != oh_req)
+                    or (oh_fil > 0 and buy_filled_by_sym.get(unconf_sym, 0) != sell_filled_by_sym.get(unconf_sym, 0))
+                ):
+                    logger.error(f"❌ [매수 중단] 주문내역(ust21180)에서 미확정 매수 주문(#{unconf_ord_no})의 종결 상태가 확인되지 않아 중복 매수를 차단합니다.")
+                    return False
+
             self._unconfirmed_buy_order = None
 
         return True
@@ -753,11 +902,11 @@ class KiwoomLiveRunner:
             self._order_fills[ord_no] = self._order_fills.get(ord_no, 0) + che_qty
             logger.info(f"? [ ? ??]  #{ord_no} ???: +{che_qty}?(?{self._order_fills[ord_no]}?")
 
-        # ?0 ? ??100%  ?
+        # 미체결 잔량 0 이벤트 수신 시, 실제 체결 수량이 있는 경우에만 반영 (0주 취소/접수 이벤트에서 가짜 1주 체결 생성 금지)
         if nccs_raw is not None and _to_int(nccs_raw) == 0:
-            current_val = self._order_fills.get(ord_no, che_qty or 1)
-            self._order_fills[ord_no] = max(current_val, 1)
-            logger.info(f"? [? 100%  ?]  #{ord_no} ???? 0?? (?: {self._order_fills[ord_no]}?")
+            current_val = self._order_fills.get(ord_no, 0)
+            if current_val > 0:
+                logger.info(f"? [? 100%  ?]  #{ord_no} ???? 0?? (?: {current_val}?")
 
     def _wait_for_fill(self, order_no: str, symbol: str, is_buy: bool, target_qty: int, timeout_sec: float = None, expected_total_qty: int = None) -> tuple[bool, int, int]:
         """
@@ -1066,7 +1215,8 @@ class KiwoomLiveRunner:
                 v_qty, v_px, bal_ok = fb_qty, fb_px, True
                 used_fallback_bal = True
 
-        if not bal_ok and order_no and self._can_query_broker_method("get_daily_execution_history"):
+        h_seen_fill_qty = 0
+        if (not bal_ok or not v_qty) and order_no and self._can_query_broker_method("get_daily_execution_history"):
             try:
                 hist_fb = self.broker.get_daily_execution_history()
                 if isinstance(hist_fb, dict) and hist_fb.get("ok") is True and isinstance(hist_fb.get("executions"), list):
@@ -1075,6 +1225,7 @@ class KiwoomLiveRunner:
                     h_use_cum = False
                     h_cost = 0.0
                     h_ambig = False
+                    seen_exec_rows = set()
                     for ex in hist_fb.get("executions", []):
                         if not isinstance(ex, dict):
                             h_ambig = True
@@ -1090,11 +1241,28 @@ class KiwoomLiveRunner:
                             continue
                         fq = self._parse_exec_filled_qty(ex)
                         rq = self._parse_int_strict(ex.get("nccs_qty") if "nccs_qty" in ex else ex.get("ord_remnq", 0))
+                        cq = self._parse_int_strict(
+                            ex.get("cancelled_qty")
+                            if "cancelled_qty" in ex
+                            else (ex.get("cncl_cfrm_qty") if "cncl_cfrm_qty" in ex else ex.get("cncl_qty", 0))
+                        )
+                        oq = self._parse_int_strict(ex.get("ord_qty"))
+                        if fq is not None and fq > 0:
+                            h_seen_fill_qty = max(h_seen_fill_qty, fq)
                         if fq is None or rq is None or rq > 0:
                             h_ambig = True
                             break
                         if fq <= 0:
                             continue
+                        cntr_id = str(ex.get("cntr_no") or ex.get("che_no") or ex.get("exec_no") or "").strip()
+                        row_sig = tuple(sorted((str(k), str(v)) for k, v in ex.items()))
+                        if (cntr_id and cntr_id in seen_exec_rows) or (
+                            row_sig in seen_exec_rows and (cntr_id or (oq is not None and cq is not None and fq + cq == oq))
+                        ):
+                            continue
+                        if cntr_id:
+                            seen_exec_rows.add(cntr_id)
+                        seen_exec_rows.add(row_sig)
                         try:
                             epx = float(
                                 str(
@@ -1186,7 +1354,7 @@ class KiwoomLiveRunner:
             logger.info(f"🛡️ [부분체결 포지션 보호] {symbol} {v_qty}주 @ ${v_px:.2f} (주문 #{order_no}) active_position 저장 완료")
             return True
 
-        unverified_qty = (v_qty if (v_qty is not None and v_qty > 0) else 0) or max(0, int(known_filled_hint or 0))
+        unverified_qty = (v_qty if (v_qty is not None and v_qty > 0) else 0) or max(0, int(known_filled_hint or 0), h_seen_fill_qty)
         if not bal_ok or unverified_qty > 0:
             self._unreconciled_holding_mismatch = {
                 "symbol": sym_up,
@@ -1376,6 +1544,8 @@ class KiwoomLiveRunner:
                 cancel_res_1 = self.broker.cancel_order(order_no=ord_no_1, symbol=symbol, quantity=unfilled_1)
             time.sleep(config.CANCEL_ORDER_WAIT_TIME)
 
+            already_filled_qty = 0
+
             def _abort_second_buy_and_preserve(bal_snap: Optional[Dict[str, Any]] = None) -> bool:
                 self._unconfirmed_buy_order = {"symbol": symbol, "order_no": ord_no_1, "target_qty": target_qty}
                 self._preserve_verified_partial_buy(
@@ -1444,7 +1614,6 @@ class KiwoomLiveRunner:
                 logger.error("❌ [2차 매수 중단] 1차 매수 취소 후 잔고 조회 실패로 체결 수량을 확인할 수 없어 2차 추격 매수를 중단합니다.")
                 return _abort_second_buy_and_preserve(stk_bal_1)
 
-            already_filled_qty = 0
             for h in stk_bal_1.get("holdings", []):
                 if not isinstance(h, dict):
                     return _abort_second_buy_and_preserve(stk_bal_1)
@@ -1461,80 +1630,108 @@ class KiwoomLiveRunner:
                     logger.error("❌ [2차 매수 중단] 1차 매수 취소 후 체결원장 조회 실패로 2차 추격 매수를 중단합니다.")
                     return _abort_second_buy_and_preserve(stk_bal_1)
 
-                found_ord_1_evidence = False
-                orig_sum_filled = 0
-                orig_cum_filled = 0
-                used_cum_field = False
-                orig_max_cancel = 0
-                child_cancel_qty = 0
+                def _scan_buy_ledger_rows(rows_to_scan: list):
+                    found_ev = False
+                    sum_fil = 0
+                    cum_fil = 0
+                    used_cum = False
+                    max_can = 0
+                    child_can = 0
+                    for ex in rows_to_scan:
+                        if not isinstance(ex, dict):
+                            return None
+                        ex_no = str(ex.get("ord_no") or ex.get("order_no") or "").strip()
+                        ex_orig = str(ex.get("orig_ord_no") or ex.get("original_order_no") or "").strip()
+                        ex_orig_clean = "" if ex_orig in ("", "000000000") else ex_orig
+                        ex_sym = str(ex.get("stk_cd") or ex.get("symbol") or "").strip().upper()
+                        ex_cntr_tp = str(ex.get("ord_cntr_tp") or "").strip()
 
-                for ex in hist_1.get("executions", []):
-                    if not isinstance(ex, dict):
-                        return _abort_second_buy_and_preserve(stk_bal_1)
-                    ex_no = str(ex.get("ord_no") or ex.get("order_no") or "").strip()
-                    ex_orig = str(ex.get("orig_ord_no") or ex.get("original_order_no") or "").strip()
-                    ex_orig_clean = "" if ex_orig in ("", "000000000") else ex_orig
-                    ex_sym = str(ex.get("stk_cd") or ex.get("symbol") or "").strip().upper()
-                    ex_cntr_tp = str(ex.get("ord_cntr_tp") or "").strip()
+                        if cancel_ord_no_1 and cancel_ord_no_1 != ord_no_1 and ex_no == cancel_ord_no_1 and ex_orig_clean and ex_orig_clean != ord_no_1:
+                            logger.error(f"❌ [2차 매수 중단] 원장 취소주문(#{cancel_ord_no_1})의 원주문번호({ex_orig_clean})가 1차 매수(#{ord_no_1})와 불일치합니다.")
+                            return None
+                        if ex_orig_clean == ord_no_1 and cancel_ord_no_1 and cancel_ord_no_1 != ord_no_1 and ex_no and ex_no not in (cancel_ord_no_1, ord_no_1):
+                            logger.error(f"❌ [2차 매수 중단] 원주문(#{ord_no_1})에 연결된 취소주문번호({ex_no})가 응답 취소번호(#{cancel_ord_no_1})와 불일치합니다.")
+                            return None
 
-                    if cancel_ord_no_1 and cancel_ord_no_1 != ord_no_1 and ex_no == cancel_ord_no_1 and ex_orig_clean and ex_orig_clean != ord_no_1:
-                        logger.error(f"❌ [2차 매수 중단] 체결원장 취소주문(#{cancel_ord_no_1})의 원주문번호({ex_orig_clean})가 1차 매수(#{ord_no_1})와 불일치합니다.")
-                        return _abort_second_buy_and_preserve(stk_bal_1)
-                    if ex_orig_clean == ord_no_1 and cancel_ord_no_1 and cancel_ord_no_1 != ord_no_1 and ex_no and ex_no not in (cancel_ord_no_1, ord_no_1):
-                        logger.error(f"❌ [2차 매수 중단] 원주문(#{ord_no_1})에 연결된 취소주문번호({ex_no})가 응답 취소번호(#{cancel_ord_no_1})와 불일치합니다.")
-                        return _abort_second_buy_and_preserve(stk_bal_1)
+                        is_cancel_row = (
+                            (ex_orig_clean == ord_no_1 and ex_no != ord_no_1)
+                            or (bool(cancel_ord_no_1) and cancel_ord_no_1 != ord_no_1 and ex_no == cancel_ord_no_1)
+                            or (ex_no == ord_no_1 and ex_cntr_tp == "12")
+                        )
+                        is_orig_row = (ex_no == ord_no_1 and not is_cancel_row)
+                        if not is_cancel_row and not is_orig_row:
+                            continue
 
-                    is_cancel_row = (
-                        (ex_orig_clean == ord_no_1 and ex_no != ord_no_1)
-                        or (bool(cancel_ord_no_1) and cancel_ord_no_1 != ord_no_1 and ex_no == cancel_ord_no_1)
-                        or (ex_no == ord_no_1 and ex_cntr_tp == "12")
-                    )
-                    is_orig_row = (ex_no == ord_no_1 and not is_cancel_row)
-                    if not is_cancel_row and not is_orig_row:
-                        continue
+                        found_ev = True
+                        if ex_sym and ex_sym != sym_up:
+                            logger.error(f"❌ [2차 매수 중단] 원장 주문(#{ex_no})의 종목({ex_sym})이 요청 종목({sym_up})과 불일치합니다.")
+                            return None
+                        if self._norm_exec_side(ex) == "SELL":
+                            logger.error(f"❌ [2차 매수 중단] 원장 주문(#{ex_no})의 매수/매도 구분이 불일치합니다.")
+                            return None
 
-                    found_ord_1_evidence = True
-                    if ex_sym and ex_sym != sym_up:
-                        logger.error(f"❌ [2차 매수 중단] 체결원장 주문(#{ex_no})의 종목({ex_sym})이 요청 종목({sym_up})과 불일치합니다.")
-                        return _abort_second_buy_and_preserve(stk_bal_1)
-                    if self._norm_exec_side(ex) == "SELL":
-                        logger.error(f"❌ [2차 매수 중단] 체결원장 주문(#{ex_no})의 매수/매도 구분이 불일치합니다.")
-                        return _abort_second_buy_and_preserve(stk_bal_1)
+                        req_q = self._parse_int_strict(ex.get("ord_qty"))
+                        fil_q = self._parse_exec_filled_qty(ex)
+                        can_q = self._parse_int_strict(
+                            ex.get("cancelled_qty")
+                            if "cancelled_qty" in ex
+                            else (ex.get("cncl_cfrm_qty") if "cncl_cfrm_qty" in ex else ex.get("cncl_qty", 0))
+                        )
+                        rem_q = self._parse_int_strict(ex.get("nccs_qty") if "nccs_qty" in ex else ex.get("ord_remnq", 0))
+                        if None in (req_q, fil_q, can_q, rem_q) or rem_q > 0:
+                            logger.error(f"❌ [2차 매수 중단] 원장에서 1차 매수(#{ord_no_1}) 관련 행의 수량 미확정 또는 잔량({rem_q}) 존재로 2차 추격 매수를 중단합니다.")
+                            return None
 
-                    req_q = self._parse_int_strict(ex.get("ord_qty"))
-                    fil_q = self._parse_exec_filled_qty(ex)
-                    can_q = self._parse_int_strict(
-                        ex.get("cancelled_qty")
-                        if "cancelled_qty" in ex
-                        else (ex.get("cncl_cfrm_qty") if "cncl_cfrm_qty" in ex else ex.get("cncl_qty", 0))
-                    )
-                    rem_q = self._parse_int_strict(ex.get("nccs_qty") if "nccs_qty" in ex else ex.get("ord_remnq", 0))
-                    if None in (req_q, fil_q, can_q, rem_q) or rem_q > 0:
-                        logger.error(f"❌ [2차 매수 중단] 체결원장에서 1차 매수(#{ord_no_1}) 관련 행의 수량 미확정 또는 잔량({rem_q}) 존재로 2차 추격 매수를 중단합니다.")
-                        return _abort_second_buy_and_preserve(stk_bal_1)
-
-                    if is_cancel_row:
-                        if fil_q > 0 or can_q <= 0 or can_q != req_q:
-                            logger.error(f"❌ [2차 매수 중단] 취소주문 행(#{ex_no})의 취소수량({can_q}/{req_q})이 모순되어 2차 추격 매수를 중단합니다.")
-                            return _abort_second_buy_and_preserve(stk_bal_1)
-                        child_cancel_qty += can_q
-                    else:
-                        if (ex_orig_clean and ex_orig_clean != ord_no_1) or req_q != target_qty:
-                            logger.error(f"❌ [2차 매수 중단] 원주문(#{ord_no_1})의 주문수량({req_q} != {target_qty}) 또는 원주문번호가 모순되어 2차 추격 매수를 중단합니다.")
-                            return _abort_second_buy_and_preserve(stk_bal_1)
-                        if "tot_che_qty" in ex and "cntr_qty" not in ex:
-                            used_cum_field = True
-                            orig_cum_filled = max(orig_cum_filled, fil_q)
+                        if is_cancel_row:
+                            if fil_q > 0 or (can_q > 0 and can_q != req_q):
+                                logger.error(f"❌ [2차 매수 중단] 취소주문 행(#{ex_no})의 취소수량({can_q}/{req_q})이 모순되어 2차 추격 매수를 중단합니다.")
+                                return None
+                            child_can += can_q
                         else:
-                            orig_sum_filled += fil_q
-                        orig_max_cancel = max(orig_max_cancel, can_q)
+                            if (ex_orig_clean and ex_orig_clean != ord_no_1) or req_q != target_qty:
+                                logger.error(f"❌ [2차 매수 중단] 원주문(#{ord_no_1})의 주문수량({req_q} != {target_qty}) 또는 원주문번호가 모순되어 2차 추격 매수를 중단합니다.")
+                                return None
+                            if "tot_che_qty" in ex and "cntr_qty" not in ex:
+                                used_cum = True
+                                cum_fil = max(cum_fil, fil_q)
+                            else:
+                                sum_fil += fil_q
+                            max_can = max(max_can, can_q)
+                    return (found_ev, cum_fil if used_cum else sum_fil, max_can, child_can)
 
-                hist_filled_qty = orig_cum_filled if used_cum_field else orig_sum_filled
+                exec_scan = _scan_buy_ledger_rows(hist_1.get("executions", []))
+                if exec_scan is None:
+                    return _abort_second_buy_and_preserve(stk_bal_1)
+                found_ord_1_evidence, hist_filled_qty, orig_max_cancel, child_cancel_qty = exec_scan
                 if orig_max_cancel > 0 and child_cancel_qty > 0 and orig_max_cancel != child_cancel_qty:
                     logger.error(f"❌ [2차 매수 중단] 원주문 취소수량({orig_max_cancel})과 별도 취소행 수량({child_cancel_qty})이 모순됩니다.")
                     return _abort_second_buy_and_preserve(stk_bal_1)
 
                 confirmed_cancel_qty = max(orig_max_cancel, child_cancel_qty, open_confirmed_cancel_qty)
+                if (
+                    (not found_ord_1_evidence or confirmed_cancel_qty <= 0 or hist_filled_qty + confirmed_cancel_qty != target_qty)
+                    and self._can_query_broker_method("get_order_history")
+                ):
+                    ny_compact = self._get_current_ny_date().replace("-", "")
+                    oh_1 = self.broker.get_order_history(ny_compact, ny_compact)
+                    if not isinstance(oh_1, dict) or oh_1.get("ok") is not True or not isinstance(oh_1.get("orders"), list):
+                        logger.error("❌ [2차 매수 중단] 1차 매수 취소 후 주문내역(ust21180) 조회 실패로 2차 추격 매수를 중단합니다.")
+                        return _abort_second_buy_and_preserve(stk_bal_1)
+                    oh_scan = _scan_buy_ledger_rows(oh_1.get("orders", []))
+                    if oh_scan is None:
+                        return _abort_second_buy_and_preserve(stk_bal_1)
+                    oh_found, oh_filled_qty, oh_orig_can, oh_child_can = oh_scan
+                    if oh_orig_can > 0 and oh_child_can > 0 and oh_orig_can != oh_child_can:
+                        logger.error(f"❌ [2차 매수 중단] 주문내역(ust21180) 원주문 취소수량({oh_orig_can})과 별도 취소행 수량({oh_child_can})이 모순됩니다.")
+                        return _abort_second_buy_and_preserve(stk_bal_1)
+                    if oh_found:
+                        if found_ord_1_evidence and hist_filled_qty != oh_filled_qty:
+                            logger.error(f"❌ [2차 매수 중단] 체결원장(ust21150: {hist_filled_qty}주)과 주문내역(ust21180: {oh_filled_qty}주) 체결수량 불일치.")
+                            return _abort_second_buy_and_preserve(stk_bal_1)
+                        found_ord_1_evidence = True
+                        hist_filled_qty = max(hist_filled_qty, oh_filled_qty)
+                        confirmed_cancel_qty = max(confirmed_cancel_qty, oh_orig_can, oh_child_can)
+
                 if (
                     (not found_ord_1_evidence and open_confirmed_cancel_qty <= 0)
                     or (hist_filled_qty + confirmed_cancel_qty != target_qty)
@@ -1542,7 +1739,7 @@ class KiwoomLiveRunner:
                     or (target_qty > already_filled_qty and confirmed_cancel_qty <= 0)
                 ):
                     logger.error(
-                        f"❌ [2차 매수 중단] 체결원장에서 1차 매수(#{ord_no_1})의 체결({hist_filled_qty}주)/잔고({already_filled_qty}주)/취소({confirmed_cancel_qty}주) 수량이 확정되지 않아 2차 추격 매수를 중단합니다."
+                        f"❌ [2차 매수 중단] 체결/주문원장에서 1차 매수(#{ord_no_1})의 체결({hist_filled_qty}주)/잔고({already_filled_qty}주)/취소({confirmed_cancel_qty}주) 수량이 확정되지 않아 2차 추격 매수를 중단합니다."
                     )
                     return _abort_second_buy_and_preserve(stk_bal_1)
                 already_filled_qty = max(already_filled_qty, hist_filled_qty)
@@ -1997,24 +2194,184 @@ class KiwoomLiveRunner:
                         logger.error(self._redact_log(f"텔레그램 매도 알림 2 발송 에러: {te2}"))
                     return True
 
+                cancel_res_s = None
                 if s_ord_no:
-                    self.broker.cancel_order(order_no=s_ord_no, symbol=symbol, quantity=rem_qty)
+                    cancel_res_s = self.broker.cancel_order(order_no=s_ord_no, symbol=symbol, quantity=rem_qty)
                     time.sleep(config.CANCEL_ORDER_WAIT_TIME)
-                
+                if not s_ord_no or (isinstance(cancel_res_s, dict) and cancel_res_s.get("ok") is False):
+                    logger.error(f"❌ [2차 매도 중단] 1차 매도 주문(#{s_ord_no}) 취소 요청이 실패하여 2차 추격 매도를 중단합니다.")
+                    return False
+
+                sym_up = symbol.strip().upper()
+                cancel_ord_no_s = str(cancel_res_s.get("cancel_ord_no") or "").strip() if isinstance(cancel_res_s, dict) else ""
+                open_confirmed_cancel_s = 0
+
+                if self._can_query_broker_method("get_open_orders"):
+                    open_res_s = self.broker.get_open_orders()
+                    open_orders_s = self._extract_open_orders_list(open_res_s)
+                    if open_orders_s is None:
+                        logger.error(f"❌ [2차 매도 중단] 1차 매도 취소 후 미체결 원장 조회 실패로 2차 추격 매도를 중단합니다.")
+                        return False
+                    for o_item in open_orders_s:
+                        if not isinstance(o_item, dict):
+                            return False
+                        o_no = str(o_item.get("ord_no") or o_item.get("order_no") or "").strip()
+                        o_orig = str(o_item.get("orig_ord_no") or o_item.get("original_order_no") or "").strip()
+                        o_orig_clean = "" if o_orig in ("", "000000000") else o_orig
+                        o_sym = str(o_item.get("stk_cd") or o_item.get("symbol") or o_item.get("symb") or "").strip().upper()
+                        o_rem = self._parse_int_strict(
+                            o_item.get("nccs_qty") if "nccs_qty" in o_item else o_item.get("ord_remnq", o_item.get("remaining_quantity", 0))
+                        )
+                        if o_rem is None or (o_rem > 0 and (o_no in (s_ord_no, cancel_ord_no_s) or o_orig_clean == s_ord_no or o_sym == sym_up)):
+                            logger.warning(f"⚠️ [2차 매도 중단] 1차 매도 주문(#{s_ord_no}) 미체결 잔량({o_rem}주)이 잔류하여 2차 추격 매도를 중단합니다.")
+                            return False
+                        if o_no == s_ord_no or o_orig_clean == s_ord_no or (cancel_ord_no_s and o_no == cancel_ord_no_s):
+                            o_can = self._parse_int_strict(
+                                o_item.get("cancelled_qty")
+                                if "cancelled_qty" in o_item
+                                else (o_item.get("cncl_cfrm_qty") if "cncl_cfrm_qty" in o_item else o_item.get("cncl_qty", 0))
+                            )
+                            if o_can is not None and o_can > 0 and o_rem == 0:
+                                open_confirmed_cancel_s = max(open_confirmed_cancel_s, o_can)
+
                 stk_bal_recheck = self.broker.get_overseas_stock_balance(force_refresh=True)
-                if stk_bal_recheck.get("ok"):
-                    new_actual_qty = 0
-                    for h in stk_bal_recheck.get("holdings", []):
-                        if str(h.get("symbol") or h.get("stk_cd") or "").strip().upper() == symbol:
-                            new_actual_qty = int(float(str(h.get("quantity") or h.get("poss_qty") or 0).replace(",", "")))
-                            break
-                    if new_actual_qty <= 0:
-                        logger.info(f"🟢 [매도 완결] {symbol} 잔고 0주 확인. 추격 종료.")
-                        self._clear_active_position()
-                        return True
-                    quantity = new_actual_qty
-                else:
-                    logger.warning(f"잔고 재조회 실패. 기존 수량({quantity})으로 매도 추격 계속.")
+                if not isinstance(stk_bal_recheck, dict) or stk_bal_recheck.get("ok") is not True or not isinstance(stk_bal_recheck.get("holdings"), list):
+                    logger.error(f"❌ [2차 매도 중단] 1차 매도 취소 후 잔고 재조회 실패로 2차 추격 매도를 중단합니다.")
+                    return False
+
+                new_actual_qty = 0
+                new_sell_avail = 0
+                for h in stk_bal_recheck.get("holdings", []):
+                    if not isinstance(h, dict):
+                        return False
+                    if str(h.get("symbol") or h.get("stk_cd") or "").strip().upper() == sym_up:
+                        pq = self._parse_int_strict(h.get("quantity") if "quantity" in h else h.get("poss_qty", 0))
+                        sa = self._parse_int_strict(h.get("sell_available") if "sell_available" in h else h.get("sell_alowq", pq if pq is not None else 0))
+                        if pq is None:
+                            return False
+                        new_actual_qty = pq
+                        new_sell_avail = sa if sa is not None else pq
+                        break
+
+                s_found_evidence = False
+                s_hist_filled = 0
+                s_confirmed_cancel = open_confirmed_cancel_s
+
+                def _scan_sell_ledger_rows(rows_to_scan: list):
+                    f_ev = False
+                    sum_f = 0
+                    cum_f = 0
+                    use_c = False
+                    max_c = 0
+                    child_c = 0
+                    for ex in rows_to_scan:
+                        if not isinstance(ex, dict):
+                            return None
+                        ex_no = str(ex.get("ord_no") or ex.get("order_no") or "").strip()
+                        ex_orig = str(ex.get("orig_ord_no") or ex.get("original_order_no") or "").strip()
+                        ex_orig_clean = "" if ex_orig in ("", "000000000") else ex_orig
+                        ex_sym = str(ex.get("stk_cd") or ex.get("symbol") or "").strip().upper()
+                        ex_cntr_tp = str(ex.get("ord_cntr_tp") or "").strip()
+                        is_cancel_r = (
+                            (ex_orig_clean == s_ord_no and ex_no != s_ord_no)
+                            or (bool(cancel_ord_no_s) and cancel_ord_no_s != s_ord_no and ex_no == cancel_ord_no_s)
+                            or (ex_no == s_ord_no and ex_cntr_tp == "12")
+                        )
+                        is_orig_r = (ex_no == s_ord_no and not is_cancel_r)
+                        if not is_cancel_r and not is_orig_r:
+                            continue
+                        f_ev = True
+                        if ex_sym and ex_sym != sym_up:
+                            return None
+                        if is_orig_r and self._norm_exec_side(ex) == "BUY":
+                            return None
+                        rq = self._parse_int_strict(ex.get("ord_qty"))
+                        fq = self._parse_exec_filled_qty(ex)
+                        cq = self._parse_int_strict(
+                            ex.get("cancelled_qty")
+                            if "cancelled_qty" in ex
+                            else (ex.get("cncl_cfrm_qty") if "cncl_cfrm_qty" in ex else ex.get("cncl_qty", 0))
+                        )
+                        rmq = self._parse_int_strict(ex.get("nccs_qty") if "nccs_qty" in ex else ex.get("ord_remnq", 0))
+                        if None in (rq, fq, cq, rmq) or rmq > 0:
+                            return None
+                        if is_cancel_r:
+                            if fq > 0 or (cq > 0 and cq != rq):
+                                return None
+                            child_c += cq
+                        else:
+                            if rq != quantity:
+                                return None
+                            if "tot_che_qty" in ex and "cntr_qty" not in ex:
+                                use_c = True
+                                cum_f = max(cum_f, fq)
+                            else:
+                                sum_f += fq
+                            max_c = max(max_c, cq)
+                    return (f_ev, cum_f if use_c else sum_f, max_c, child_c)
+
+                if self._can_query_broker_method("get_daily_execution_history"):
+                    hist_s = self.broker.get_daily_execution_history()
+                    if not isinstance(hist_s, dict) or hist_s.get("ok") is not True or not isinstance(hist_s.get("executions"), list):
+                        logger.error("❌ [2차 매도 중단] 1차 매도 취소 후 체결원장 조회 실패로 2차 추격 매도를 중단합니다.")
+                        return False
+                    s_scan = _scan_sell_ledger_rows(hist_s.get("executions", []))
+                    if s_scan is None:
+                        logger.error(f"❌ [2차 매도 중단] 체결원장에서 1차 매도(#{s_ord_no}) 수량 모순 또는 미체결 잔량이 감지되었습니다.")
+                        return False
+                    s_found_evidence, s_hist_filled, s_orig_can, s_child_can = s_scan
+                    if s_orig_can > 0 and s_child_can > 0 and s_orig_can != s_child_can:
+                        return False
+                    s_confirmed_cancel = max(s_confirmed_cancel, s_orig_can, s_child_can)
+
+                if (
+                    (not s_found_evidence or s_hist_filled + s_confirmed_cancel != quantity)
+                    and self._can_query_broker_method("get_order_history")
+                ):
+                    ny_compact = self._get_current_ny_date().replace("-", "")
+                    oh_s = self.broker.get_order_history(ny_compact, ny_compact)
+                    if not isinstance(oh_s, dict) or oh_s.get("ok") is not True or not isinstance(oh_s.get("orders"), list):
+                        logger.error("❌ [2차 매도 중단] 1차 매도 취소 후 주문내역(ust21180) 조회 실패로 2차 추격 매도를 중단합니다.")
+                        return False
+                    oh_s_scan = _scan_sell_ledger_rows(oh_s.get("orders", []))
+                    if oh_s_scan is None:
+                        logger.error(f"❌ [2차 매도 중단] 주문내역(ust21180)에서 1차 매도(#{s_ord_no}) 수량 모순 또는 잔량이 감지되었습니다.")
+                        return False
+                    oh_s_found, oh_s_fil, oh_s_orig_can, oh_s_child_can = oh_s_scan
+                    if oh_s_orig_can > 0 and oh_s_child_can > 0 and oh_s_orig_can != oh_s_child_can:
+                        return False
+                    if oh_s_found:
+                        if s_found_evidence and s_hist_filled != oh_s_fil:
+                            return False
+                        s_found_evidence = True
+                        s_hist_filled = max(s_hist_filled, oh_s_fil)
+                        s_confirmed_cancel = max(s_confirmed_cancel, oh_s_orig_can, oh_s_child_can)
+
+                if new_actual_qty <= 0:
+                    if (s_found_evidence or self._can_query_broker_method("get_order_history")) and (
+                        not s_found_evidence or s_hist_filled != quantity or s_confirmed_cancel > 0
+                    ):
+                        logger.error(f"❌ [2차 매도 중단] 잔고는 0주이나 원장에서 1차 매도(#{s_ord_no}) 전량 체결이 확인되지 않았습니다.")
+                        return False
+                    logger.info(f"🟢 [매도 완결] {symbol} 잔고 0주 확인. 추격 종료.")
+                    self._clear_active_position()
+                    return True
+
+                if s_found_evidence or self._can_query_broker_method("get_order_history"):
+                    if (
+                        not s_found_evidence
+                        or (s_hist_filled + s_confirmed_cancel != quantity)
+                        or (new_actual_qty != quantity - s_hist_filled)
+                        or (s_confirmed_cancel <= 0)
+                    ):
+                        logger.error(
+                            f"❌ [2차 매도 중단] 1차 매도(#{s_ord_no}) 취소 후 체결({s_hist_filled}주)/취소({s_confirmed_cancel}주)/잔고({new_actual_qty}주) 수량이 모순되어 2차 매도를 중단합니다."
+                        )
+                        return False
+
+                quantity = min(new_actual_qty, new_sell_avail if new_sell_avail > 0 else new_actual_qty, quantity - s_hist_filled)
+                if quantity <= 0:
+                    return False
 
         except Exception as e:
             logger.error(self._redact_log(f"매도 추격 주문 에러: {e}"))
