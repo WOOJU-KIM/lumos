@@ -438,9 +438,12 @@ class DailyAutoPipeline:
             return {"ok": False, "msg": "데이터 부족으로 재학습 취소"}
 
         # 1. Track 1: LightGBM 최신화 롤링 재학습
-        ml_engine = MLFeatureEngine(confidence_threshold=0.40)
-        long_feat = ml_engine.extract_features(long_15m)
-        trained_model, top_10, _ = ml_engine.train_and_select_top_features(long_feat)
+        ml_engine = MLFeatureEngine(confidence_threshold=0.40, feature_schema="B_normalized")
+        trained_model, top_10, _ = ml_engine.train_and_select_top_features(
+            long_15m,
+            schema="B_normalized",
+            exclude_unconfirmed_tail=True
+        )
 
         refresh_path = BASE_DIR / "models" / "model_main_data_refresh.pkl"
         joblib.dump(trained_model, refresh_path)
@@ -457,7 +460,7 @@ class DailyAutoPipeline:
             total_return=20.15,
             mdd=4.15,
             top_features=top_10,
-            notes="최근 {config.ROLLING_TRAINING_WEEKS * 5} 거래일(2년) 고정 롤링 윈도우 데이터 최신화 모델 (Track 1)"
+            notes="최근 {config.ROLLING_TRAINING_WEEKS * 5} 거래일(최대 10년) 롤링 윈도우 데이터 최신화 모델 (Track 1, B_normalized)"
         )
 
         return {
@@ -477,9 +480,12 @@ class DailyAutoPipeline:
         if len(long_15m) < 100:
             return {"ok": False, "msg": "데이터 부족으로 재학습 취소"}
 
-        ml_engine = MLFeatureEngine(confidence_threshold=0.40)
-        long_feat = ml_engine.extract_features(long_15m)
-        trained_model, top_10, _ = ml_engine.train_and_select_top_features(long_feat)
+        ml_engine = MLFeatureEngine(confidence_threshold=0.40, feature_schema="B_normalized")
+        trained_model, top_10, _ = ml_engine.train_and_select_top_features(
+            long_15m,
+            schema="B_normalized",
+            exclude_unconfirmed_tail=True
+        )
 
         refresh_path = BASE_DIR / "models" / "model_main_data_refresh.pkl"
         joblib.dump(trained_model, refresh_path)

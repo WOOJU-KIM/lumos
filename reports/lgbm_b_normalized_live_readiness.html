@@ -1,0 +1,625 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LUMOS — B_Normalized_72 실전 기동 및 자동 재학습 최종 검증 보고서</title>
+  <style>
+    :root {
+      --bg: #0b1020;
+      --panel: #131b33;
+      --panel-alt: #182242;
+      --border: #2a3968;
+      --text: #e6ecff;
+      --muted: #9fb0df;
+      --accent: #4ea1ff;
+      --pass: #22c55e;
+      --warn: #f59e0b;
+      --danger: #ef4444;
+      --code-bg: #0d1428;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 32px 24px 64px;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans KR", sans-serif;
+      line-height: 1.6;
+    }
+    .container {
+      max-width: 1240px;
+      margin: 0 auto;
+    }
+    header {
+      background: linear-gradient(135deg, #132046 0%, #0f172a 100%);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 28px 32px;
+      margin-bottom: 28px;
+    }
+    h1 {
+      margin: 0 0 10px 0;
+      font-size: 26px;
+      letter-spacing: -0.3px;
+    }
+    h2 {
+      margin: 28px 0 14px 0;
+      font-size: 20px;
+      color: #ffffff;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 8px;
+    }
+    h3 {
+      margin: 18px 0 10px 0;
+      font-size: 16px;
+      color: #cfe0ff;
+    }
+    .subtitle {
+      color: var(--muted);
+      font-size: 14px;
+      margin-bottom: 16px;
+    }
+    .badge {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.3px;
+    }
+    .badge-ready {
+      background: rgba(34, 197, 94, 0.18);
+      color: #4ade80;
+      border: 1px solid rgba(34, 197, 94, 0.45);
+      font-size: 14px;
+      padding: 6px 14px;
+    }
+    .badge-pass {
+      background: rgba(34, 197, 94, 0.16);
+      color: #4ade80;
+      border: 1px solid rgba(34, 197, 94, 0.4);
+    }
+    .badge-info {
+      background: rgba(78, 161, 255, 0.16);
+      color: #7cc0ff;
+      border: 1px solid rgba(78, 161, 255, 0.4);
+    }
+    .badge-warn {
+      background: rgba(245, 158, 11, 0.16);
+      color: #fbbf24;
+      border: 1px solid rgba(245, 158, 11, 0.4);
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+    .kpi-label {
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .kpi-value {
+      font-size: 20px;
+      font-weight: 700;
+      margin-top: 6px;
+      color: #ffffff;
+    }
+    .kpi-sub {
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 4px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 12px 0 18px;
+      font-size: 13.5px;
+    }
+    th, td {
+      border: 1px solid var(--border);
+      padding: 10px 12px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      background: var(--panel-alt);
+      color: #cfe0ff;
+      font-weight: 600;
+    }
+    tr:nth-child(even) td {
+      background: rgba(255, 255, 255, 0.015);
+    }
+    code, pre {
+      font-family: "JetBrains Mono", Consolas, Monaco, monospace;
+      font-size: 12.5px;
+    }
+    code {
+      background: var(--code-bg);
+      padding: 2px 6px;
+      border-radius: 5px;
+      color: #93c5fd;
+    }
+    pre {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      padding: 14px 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+      color: #dbeafe;
+    }
+    .verdict-box {
+      background: linear-gradient(135deg, rgba(34, 197, 94, 0.14), rgba(19, 27, 51, 0.95));
+      border: 2px solid rgba(34, 197, 94, 0.55);
+      border-radius: 12px;
+      padding: 22px 26px;
+      margin-bottom: 24px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="subtitle">LUMOS QUANT TRADING SYSTEM · B_NORMALIZED_72 LIVE READINESS &amp; AUTO-RETRAINING FINAL QA</div>
+      <h1>LUMOS — B_Normalized_72 실전 기동 및 자동 재학습 최종 검증 보고서</h1>
+      <p style="margin: 8px 0 16px; color: var(--muted);">
+        브랜치: <code>feat/lgbm-trend-mean-reversion</code> · 실전 주력 모델: <code>B_Normalized_72 (models/model_normalized_72.pkl)</code> · 폴백 모델: <code>v4_champion (models/model_champion.pkl)</code>
+      </p>
+      <span class="badge badge-ready">최종 판정: READY_FOR_LIVE_START</span>
+    </header>
+
+    <div class="verdict-box">
+      <h3 style="margin-top:0; color:#4ade80;">최종 판정 요약: <code>READY_FOR_LIVE_START</code></h3>
+      <p style="margin: 6px 0 0;">
+        현재 실시간 자동매매 데몬은 기동하지 않은 상태(무주문 사전 점검 완료 상태)이므로 판정 규칙에 따라 <code>ACTIVE_B_NORMALIZED</code>가 아닌 <strong><code>READY_FOR_LIVE_START</code></strong>로 판정합니다.
+        <code>config.py</code>의 기존 최대 10년 학습 상한(<code>ROLLING_TRAINING_WEEKS = 520</code>, <code>TRAINING_LOOKBACK_DAYS = 3640</code>)을 신규 상수 추가나 <code>config.py</code> 수정 없이 그대로 사용하여,
+        <strong>최초 학습 · 장마감/주말 자동 재학습 · 원자적(Atomic) 모델 교체 · 실시간 추론 핫리로드 · 폴백 및 즉시 롤백</strong> 전 구간의 일관성과 무결성을 검증 완료했습니다.
+      </p>
+    </div>
+
+    <div class="grid">
+      <div class="card" style="margin-bottom:0;">
+        <div class="kpi-label">10년 학습 상한 (config.py)</div>
+        <div class="kpi-value">520주 (3,640일)</div>
+        <div class="kpi-sub"><code>ROLLING_TRAINING_WEEKS = 520</code> · <code>config.py</code> 무수정</div>
+      </div>
+      <div class="card" style="margin-bottom:0;">
+        <div class="kpi-label">실제 DB 보유 / 확정 학습 구간</div>
+        <div class="kpi-value">44,248행 → 44,204행</div>
+        <div class="kpi-sub">2020-07-29 09:30 ~ 2026-10-14 14:15 (약 6.21년 &lt; 10년)</div>
+      </div>
+      <div class="card" style="margin-bottom:0;">
+        <div class="kpi-label">실전 모델 SHA256 (72 피처)</div>
+        <div class="kpi-value"><code>ef954c3be286...</code></div>
+        <div class="kpi-sub"><code>models/model_normalized_72.pkl</code> (665,076 bytes)</div>
+      </div>
+      <div class="card" style="margin-bottom:0;">
+        <div class="kpi-label">무주문 기동 &amp; 회귀 테스트</div>
+        <div class="kpi-value">전수 PASS (주문 0건)</div>
+        <div class="kpi-sub">단위 17개 + 3-Class + 시스템 무결성 100% 통과</div>
+      </div>
+    </div>
+
+    <h2>1. <code>config.py</code> 최대 10년 학습 데이터 상한 확인 및 적용 구조 (STEP 1)</h2>
+    <div class="card">
+      <p>
+        <code>config.py</code>를 일절 수정하지 않고 기존 정의된 학습 기간 상한 설정을 전수 확인하였으며, 최초 학습과 자동 재학습 모두에서 동일한 설정값을 참조하도록 일원화했습니다.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>설정 변수 / 메서드</th>
+            <th>파일 및 위치</th>
+            <th>설정값</th>
+            <th>적용 방식 및 의미</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>config.ROLLING_TRAINING_WEEKS</code></td>
+            <td><code>config.py:72</code></td>
+            <td><code>520</code> (520주 = 10년)</td>
+            <td>최대 10년 누적 확장(Expanding Window) 상한 주수</td>
+          </tr>
+          <tr>
+            <td><code>config.TRAINING_LOOKBACK_DAYS</code></td>
+            <td><code>config.py:126</code></td>
+            <td><code>ROLLING_TRAINING_WEEKS * 7 = 3640</code> (일)</td>
+            <td>최신 캔들 시각(<code>raw_end_dt</code>) 기준 최대 3,640일(10년) 달력 일수 상한</td>
+          </tr>
+          <tr>
+            <td><code>MarketDataLake.load_rolling_candles</code></td>
+            <td><code>core/data_lake.py:179</code></td>
+            <td><code>max_trading_days = 520 * 5 = 2600</code> (거래일)</td>
+            <td>DB 거래일 기준 최대 2,600 거래일(10년) 슬라이싱</td>
+          </tr>
+          <tr>
+            <td><code>MLFeatureEngine.train_and_select_top_features</code></td>
+            <td><code>core/ml_engine.py:678-739</code></td>
+            <td><code>cutoff_10y_dt = raw_end_dt - 3640 days</code></td>
+            <td>
+              전체 시계열에서 롤링 지표 워밍업을 먼저 계산한 뒤,
+              마지막 6봉(90분) 미확정 라벨을 제외하고 <code>index &gt;= cutoff_10y_dt</code> 조건으로 최대 10년 상한을 엄격히 적용
+            </td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>실제 DB 데이터(<code>data/market_data.db</code>, SOXL 15m) 적용 내역</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>항목</th>
+            <th>실측 값</th>
+            <th>세부 설명</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>원본 DB 전체 범위 (<code>raw_start_dt ~ raw_end_dt</code>)</td>
+            <td><code>2020-07-27 09:15:00 ~ 2026-10-14 15:45:00</code></td>
+            <td>총 <code>44,248</code>행 (약 6.22년 = 2,270일 &lt; 3,640일 상한 이내)</td>
+          </tr>
+          <tr>
+            <td>10년 상한 컷오프 시각 (<code>cutoff_10y_dt</code>)</td>
+            <td><code>2016-10-26 15:45:00</code></td>
+            <td>현재 보유 데이터가 약 6.22년이므로 10년 초과 제외 샘플 <code>0</code>건 (전량 사용)</td>
+          </tr>
+          <tr>
+            <td>미확정 Triple Barrier 꼬리 제외 (<code>excluded_unconfirmed_tail_rows</code>)</td>
+            <td><code>6</code>행 제외</td>
+            <td><code>2026-10-14 14:30:00 ~ 2026-10-14 15:45:00</code> (<code>TIME_STOP_MINUTES=90</code>분 / 15분 = 6봉)</td>
+          </tr>
+          <tr>
+            <td>초기 롤링 지표 워밍업 NaN 제외 (<code>excluded_warmup_nan_rows</code>)</td>
+            <td><code>38</code>행 제외</td>
+            <td><code>2020-07-27 09:15:00 ~ 2020-07-28 15:45:00</code> (초기 EMA/ATR/MACD 워밍업 구간)</td>
+          </tr>
+          <tr>
+            <td>최종 확정 학습 구간 (<code>train_start_dt ~ train_end_dt</code>)</td>
+            <td><code>2020-07-29 09:30:00 ~ 2026-10-14 14:15:00</code></td>
+            <td>총 <strong><code>44,204</code>행</strong> (<code>span_days = 2268.2</code>일 ≤ <code>3640</code>일) · <span class="badge badge-pass">PASS</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2>2. 최초 학습 vs 자동 재학습 일관성 검증 (STEP 2)</h2>
+    <div class="card">
+      <p>
+        장 마감 후(16:05 EST, <code>KiwoomLiveRunner._market_execution_loop</code> → <code>DailyAutoPipeline.run_full_eod_pipeline</code> → <code>scripts/ingest_alpaca_2yr_and_retrain.py</code> → <code>train_and_save_moe_orchestrator</code>) 및
+        <code>DailyAutoPipeline.run_step2_retrain_all_models</code> / <code>run_step2_retrain_refresh_model</code> 경로를 전수 점검하여 최초 학습과 100% 동일한 계약을 강제했습니다.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>검증 항목</th>
+            <th>최초 학습 (Initial Train)</th>
+            <th>자동 재학습 (Auto Retrain)</th>
+            <th>일치 여부</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>피처 스키마 (Feature Schema)</td>
+            <td><code>B_normalized</code></td>
+            <td><code>B_normalized</code> (비정규화/77피처 스키마 원천 차단)</td>
+            <td><span class="badge badge-pass">PASS (100% 일치)</span></td>
+          </tr>
+          <tr>
+            <td>피처 개수 및 순서</td>
+            <td>72개 (<code>get_feature_columns("B_normalized")</code>)</td>
+            <td>72개 (동일 함수 호출 및 저장 전 순서 검증)</td>
+            <td><span class="badge badge-pass">PASS (100% 일치)</span></td>
+          </tr>
+          <tr>
+            <td>정규화 가격 피처 공식 (9개)</td>
+            <td><code>EMA_20_dist</code>, <code>EMA_50_dist</code>, <code>EMA_200_dist</code>, <code>BB_Upper_dist</code>, <code>BB_Lower_dist</code>, <code>MACD_pct</code>, <code>MACD_Signal_pct</code>, <code>MACD_Hist_pct</code>, <code>ATR_14_pct</code></td>
+            <td>동일 <code>extract_features(schema="B_normalized")</code> 수식 사용</td>
+            <td><span class="badge badge-pass">PASS (100% 일치)</span></td>
+          </tr>
+          <tr>
+            <td>절대 달러 가격 피처 제거</td>
+            <td>9개 절대 가격 피처 완전 배제</td>
+            <td>9개 절대 가격 피처 완전 배제</td>
+            <td><span class="badge badge-pass">PASS (100% 일치)</span></td>
+          </tr>
+          <tr>
+            <td>LightGBM 하이퍼파라미터</td>
+            <td><code>config.py</code> 단일 소스 (<code>n_estimators=200</code>, <code>lr=0.03</code>, <code>max_depth=5</code>, <code>num_leaves=31</code>, <code>deterministic=True</code>, <code>force_col_wise=True</code>, <code>n_jobs=1</code>, <code>random_state=42</code>)</td>
+            <td>동일 <code>config.py</code> 파라미터 참조</td>
+            <td><span class="badge badge-pass">PASS (100% 일치)</span></td>
+          </tr>
+          <tr>
+            <td>클래스 매핑 및 라벨 정의</td>
+            <td><code>[0: Neutral, 1: Long(SOXL), 2: Short(SOXS)]</code> · Triple Barrier (<code>MAX_TP_PCT=10%</code>, <code>SL_MIN_PCT=2%</code>, <code>6봉=90분</code>)</td>
+            <td>동일 <code>_create_triple_barrier_labels</code> 및 <code>classes_ == [0, 1, 2]</code> 검증</td>
+            <td><span class="badge badge-pass">PASS (100% 일치)</span></td>
+          </tr>
+          <tr>
+            <td>최대 10년 학습 범위 제한 &amp; 미확정 꼬리 제외</td>
+            <td><code>TRAINING_LOOKBACK_DAYS=3640</code> 상한 + 마지막 6봉 제외</td>
+            <td>동일 상한 + 마지막 6봉 제외 + 활성화 전 <code>span_days &lt;= 3640</code> 검증</td>
+            <td><span class="badge badge-pass">PASS (100% 일치)</span></td>
+          </tr>
+          <tr>
+            <td><code>live_experience.db</code> 오답노트 병합 보호</td>
+            <td>구형 스키마(절대 달러 피처만 존재) 행 자동 필터링으로 NaN 오염 차단</td>
+            <td>동일 필터링 적용 (72개 <code>B_normalized</code> 피처 완비 행만 병합)</td>
+            <td><span class="badge badge-pass">PASS (100% 일치)</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2>3. 자동 재학습 시 안전한 원자적(Atomic) 모델 교체 및 활성화 검증 (STEP 3)</h2>
+    <div class="card">
+      <p>
+        <code>train_and_save_moe_orchestrator</code> (<code>core/moe_orchestrator.py:399-546</code>)에 9단계 원자적 저장·검증·교체 프로토콜을 구현하여,
+        재학습 도중이나 검증 실패 시 기존 실전 모델(<code>models/model_normalized_72.pkl</code>)이 단 1바이트도 훼손되지 않도록 보호했습니다.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>단계</th>
+            <th>수행 동작</th>
+            <th>검증 결과</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Step 1</td>
+            <td>임시 파일(<code>.model_normalized_72.pkl.tmp.&lt;pid&gt;</code>)로 신규 모델 저장 및 <code>RETRAIN_COMPLETED</code> 이벤트 로그 기록</td>
+            <td><span class="badge badge-pass">PASS</span></td>
+          </tr>
+          <tr>
+            <td>Step 2</td>
+            <td>임시 모델 파일 SHA256 해시 계산 및 0바이트/역직렬화 무결성 확인</td>
+            <td><span class="badge badge-pass">PASS</span></td>
+          </tr>
+          <tr>
+            <td>Step 3</td>
+            <td><code>feature_schema == "B_normalized"</code> 및 72개 피처 수·표준 순서 일치 확인 (77개 Challenger 등 금지 스키마 차단)</td>
+            <td><span class="badge badge-pass">PASS</span></td>
+          </tr>
+          <tr>
+            <td>Step 4</td>
+            <td>LightGBM 3-Class 클래스 매핑 <code>[0, 1, 2]</code> 일치 확인</td>
+            <td><span class="badge badge-pass">PASS</span></td>
+          </tr>
+          <tr>
+            <td>Step 5</td>
+            <td>72개 더미 입력 벡터 기반 <code>predict_proba</code> 추론 Self-Test (유한 확률 및 합계 <code>1.0</code> 확인)</td>
+            <td><span class="badge badge-pass">PASS</span></td>
+          </tr>
+          <tr>
+            <td>Step 6</td>
+            <td><code>last_training_window_meta</code> 기준 10년 학습 윈도우 규정 준수(<code>is_valid_window=True</code>, <code>span_days &lt;= 3640</code>) 확인</td>
+            <td><span class="badge badge-pass">PASS</span></td>
+          </tr>
+          <tr>
+            <td>Step 7</td>
+            <td>임시 매니페스트(<code>.active_model_manifest.json.tmp.&lt;pid&gt;</code>) 생성 및 JSON 스키마·해시 정합성 검증</td>
+            <td><span class="badge badge-pass">PASS</span></td>
+          </tr>
+          <tr>
+            <td>Step 8</td>
+            <td>검증 통과 시에만 <code>os.replace</code>로 <code>model_normalized_72.pkl</code> 및 <code>active_model_manifest.json</code> 원자적 교체 후 <code>MODEL_ACTIVATION_SUCCEEDED</code> 로그 기록</td>
+            <td><span class="badge badge-pass">PASS</span></td>
+          </tr>
+          <tr>
+            <td>Step 9</td>
+            <td>실패 시 기존 <code>model_normalized_72.pkl</code>과 <code>active_model_manifest.json</code> 100% 보존 및 임시 파일 즉시 삭제 (<code>test_15</code> 검증 완료)</td>
+            <td><span class="badge badge-pass">PASS</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2>4. 실전 러너 연결 및 무주문 기동 점검 결과 (STEP 4 &amp; STEP 5)</h2>
+    <div class="card">
+      <p>
+        실전 자동매매 엔트리(<code>KiwoomLiveRunner</code> → <code>MoEMetaOrchestrator</code> → <code>MLFeatureEngine</code>)를 브로커 주문 차단(Mock/Orderless) 상태에서 기동하여,
+        15분봉 로드 → 72개 <code>B_normalized</code> 피처 생성 → 3-Class 확률 추론 → 매수 직전 신호 필터링까지 전 과정을 검증했습니다.
+        또한 재학습 또는 롤백으로 <code>models/active_model_manifest.json</code>이 갱신될 때 <code>ensure_latest_manifest_model()</code>을 통해 캐시된 구모델 없이 즉시 핫리로드됨을 확인했습니다.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>점검 항목</th>
+            <th>실측 결과</th>
+            <th>판정</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>로드된 모델 ID / 경로</td>
+            <td><code>B_Normalized_72</code> (<code>models/model_normalized_72.pkl</code>)</td>
+            <td><span class="badge badge-pass">PASS</span></td>
+          </tr>
+          <tr>
+            <td>로드된 모델 SHA256</td>
+            <td><code>ef954c3be286d4fd4e429c5ed21b7e3da4842927c53e594ada86460029a0dcae</code></td>
+            <td><span class="badge badge-pass">PASS</span></td>
+          </tr>
+          <tr>
+            <td>스키마 / 피처 개수 / 클래스 매핑</td>
+            <td><code>B_normalized</code> / <code>72</code>개 / <code>[0, 1, 2]</code></td>
+            <td><span class="badge badge-pass">PASS</span></td>
+          </tr>
+          <tr>
+            <td>최신 SOXL 15m 캔들 추론 결과</td>
+            <td><code>direction="NONE"</code>, <code>conf=0.5000</code>, <code>gbdt_probs={"LONG": 0.1304, "SHORT": 0.1725, "NONE": 0.6971}</code> (합계 <code>1.0000</code>)</td>
+            <td><span class="badge badge-pass">PASS</span></td>
+          </tr>
+          <tr>
+            <td>매니페스트 변경 시 핫리로드 동작</td>
+            <td><code>evaluate_dual_filter_signal</code> 및 <code>predict_signal_full</code> 호출 시 매니페스트 SHA256 변경 감지 후 즉시 재로드 (<code>test_14</code> 검증)</td>
+            <td><span class="badge badge-pass">PASS</span></td>
+          </tr>
+          <tr>
+            <td>실제 주문 전송 횟수 / 계좌·DB 변경 여부</td>
+            <td><code>broker.send_order</code> 호출 <strong><code>0</code>회</strong> · <code>data/live_experience.db</code> SHA256 100% 불변</td>
+            <td><span class="badge badge-pass">PASS</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2>5. 폴백 및 롤백 시나리오 검증 결과 (STEP 6)</h2>
+    <div class="card">
+      <table>
+        <thead>
+          <tr>
+            <th>시나리오</th>
+            <th>테스트 조건</th>
+            <th>시스템 동작 및 검증 결과</th>
+            <th>판정</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>시나리오 A</strong></td>
+            <td><code>model_normalized_72.pkl</code> 파일 손상 (Corrupted bytes)</td>
+            <td>7단계 검증에서 즉시 감지 후 <code>models/model_champion.pkl</code> (<code>v4_champion</code>, 72피처)로 자동 폴백 (<code>FALLBACK_TO_CHAMPION</code>)</td>
+            <td><span class="badge badge-pass">PASS</span></td>
+          </tr>
+          <tr>
+            <td><strong>시나리오 B</strong></td>
+            <td>주 모델 SHA256 해시 불일치</td>
+            <td>무결성 오류 로그 기록 후 <code>models/model_champion.pkl</code>로 자동 폴백</td>
+            <td><span class="badge badge-pass">PASS</span></td>
+          </tr>
+          <tr>
+            <td><strong>시나리오 C</strong></td>
+            <td>피처 수 불일치 (77개 등)</td>
+            <td>피처 수 불일치 차단 후 <code>models/model_champion.pkl</code>로 자동 폴백</td>
+            <td><span class="badge badge-pass">PASS</span></td>
+          </tr>
+          <tr>
+            <td><strong>시나리오 D</strong></td>
+            <td>금지된 <code>v5_challenger</code> 모델 지정</td>
+            <td><code>LIVE_FORBIDDEN_SCHEMAS</code> 정책으로 즉시 차단 후 <code>models/model_champion.pkl</code>로 자동 폴백</td>
+            <td><span class="badge badge-pass">PASS</span></td>
+          </tr>
+          <tr>
+            <td><strong>시나리오 E</strong></td>
+            <td>자동 재학습 실패 (데이터 부족 / 검증 실패)</td>
+            <td>임시 파일만 폐기하고 기존 <code>model_normalized_72.pkl</code> 및 <code>active_model_manifest.json</code> 100% 보존</td>
+            <td><span class="badge badge-pass">PASS</span></td>
+          </tr>
+          <tr>
+            <td><strong>시나리오 F</strong></td>
+            <td>주 모델 + 폴백 모델 모두 실패</td>
+            <td><code>self.model = None</code>, <code>load_status = "BLOCKED"</code> 전환 · 신규 매수 진입 안전 차단(<code>sig=0, conf=0.50</code>) · 기존 보유 포지션 청산/감시 루프는 정상 유지</td>
+            <td><span class="badge badge-pass">PASS</span></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>즉시 롤백(Rollback) 절차 검증</h3>
+      <p>
+        <code>models/active_model_manifest.json</code>의 <code>active_model_id</code>를 <code>"v4_champion"</code>, <code>active_model_path</code>를 <code>"models/model_champion.pkl"</code>,
+        <code>expected_schema</code>를 <code>"v4_champion"</code>으로 교체하면 코드 수정이나 재학습 없이 즉시 기존 Champion(SHA256: <code>e1982612a986d08a69044551b92c96ba5f8508375187466af9a9966e63b3ed5f</code>)으로 복귀하며,
+        실행 중인 러너도 다음 캔들 추론 시 자동 핫리로드합니다 (<code>test_12</code> 검증 완료).
+      </p>
+    </div>
+
+    <h2>6. 10년 제한 및 엣지케이스 회귀 테스트 결과 (STEP 7 &amp; STEP 8)</h2>
+    <div class="card">
+      <table>
+        <thead>
+          <tr>
+            <th>테스트 케이스</th>
+            <th>입력 조건</th>
+            <th>검증 결과</th>
+            <th>판정</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Case 1: 3년치 데이터만 존재하는 경우</td>
+            <td>약 3년 스팬 캔들 데이터 (&lt; 10년)</td>
+            <td><code>excluded_older_than_10y_rows = 0</code>, 마지막 6봉 미확정 라벨 제외 후 정상 학습 (<code>span_days &lt;= 3640</code>)</td>
+            <td><span class="badge badge-pass">PASS</span></td>
+          </tr>
+          <tr>
+            <td>Case 2: 9년치 데이터가 존재하는 경우</td>
+            <td>약 9년 스팬 캔들 데이터 (&lt; 10년)</td>
+            <td><code>excluded_older_than_10y_rows = 0</code>, 마지막 6봉 제외 후 전 구간 정상 학습 (<code>span_days &lt;= 3640</code>)</td>
+            <td><span class="badge badge-pass">PASS</span></td>
+          </tr>
+          <tr>
+            <td>Case 3: 정확히 10년 경계 데이터</td>
+            <td><code>config.TRAINING_LOOKBACK_DAYS = 3640</code>일 경계</td>
+            <td><code>span_days &lt;= 3640.0</code> 엄격 준수 및 정상 학습</td>
+            <td><span class="badge badge-pass">PASS</span></td>
+          </tr>
+          <tr>
+            <td>Case 4: 10년 초과 데이터 (12년치)</td>
+            <td>약 12년 스팬 캔들 데이터 (&gt; 10년)</td>
+            <td><code>cutoff_10y_dt</code> 이전 샘플 자동 제외(<code>excluded_older_than_10y_rows &gt; 0</code>), 10년 경계 이전 데이터로 워밍업을 마쳐 경계 직후 <code>excluded_warmup_nan_rows = 0</code> 달성</td>
+            <td><span class="badge badge-pass">PASS</span></td>
+          </tr>
+          <tr>
+            <td>Case 5: 최근 일부 데이터 누락(갭)</td>
+            <td>중간 구간 결측 갭 포함 시계열</td>
+            <td>예외/크래시 없이 <code>B_normalized</code> 72개 피처 추출 및 학습 완료</td>
+            <td><span class="badge badge-pass">PASS</span></td>
+          </tr>
+          <tr>
+            <td>Case 6: 미확정 최근 6봉 라벨 제외</td>
+            <td><code>exclude_unconfirmed_tail=True</code></td>
+            <td>마지막 <code>int(config.TIME_STOP_MINUTES / 15) = 6</code>봉 정확히 제외 (미래 참조 원천 차단)</td>
+            <td><span class="badge badge-pass">PASS</span></td>
+          </tr>
+          <tr>
+            <td>Case 7: 데이터 부족 (&lt; 100행)</td>
+            <td>60행 시계열 입력</td>
+            <td>안전하게 <code>None</code> 반환 및 재학습 중단, 기존 운영 모델 100% 보존</td>
+            <td><span class="badge badge-pass">PASS</span></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>전체 테스트 스위트 실행 결과 (STEP 8)</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>테스트 스위트</th>
+            <th>실행 명령어</th>
+            <th>결과</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>tests/test_lgbm_trend_mr.py</code></td>
+            <td><code>python -m unittest tests/test_lgbm_trend_mr.py -v</code></td>
+            <td>17개 테스트 전수 통과 (<span class="badge badge-pass">PASS</span>)</td>
+          </tr>
+          <tr>
+            <td><code>tests/test_gbdt_3class.py</code></td>
+            <td><code>python tests/test_gbdt_3class.py</code></td>
+            <td>3-Class 확률·캘리브레이션·Neutral Veto 전수 통과 (<span class="badge badge-pass">PASS</span>)</td>
+          </tr>
+          <tr>
+            <td><code>tests/test_system_integrity.py</code></td>
+            <td><code>python tests/test_system_integrity.py</code></td>
+            <td>시스템 7대 핵심 인터락 무결성 검증 통과 (<span class="badge badge-pass">PASS</span>)</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</body>
+</html>

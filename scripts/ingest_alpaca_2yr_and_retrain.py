@@ -169,8 +169,12 @@ def main():
     print(f"   • 시작 시점: {long_15m_all.index[0]}")
     print(f"   • 종료 시점: {long_15m_all.index[-1]}")
     
-    # 롤링 재학습 수행 및 모델 파일 저장
-    orchestrator = train_and_save_moe_orchestrator(confidence_threshold=config.GBDT_CONFIDENCE_THRESHOLD, mode="hybrid_v3")
+    # 롤링 재학습 수행 및 모델 파일 저장 (B_normalized 스키마 및 10년 상한 유지)
+    orchestrator = train_and_save_moe_orchestrator(
+        confidence_threshold=config.GBDT_CONFIDENCE_THRESHOLD,
+        mode="hybrid_v3",
+        schema="B_normalized"
+    )
     
     print("\n✅ [학습 완료] 상위 10대 핵심 피처:")
     for rank, (feat, imp) in enumerate(zip(orchestrator.gbdt_engine.top_10_features, getattr(orchestrator.gbdt_engine.model, 'feature_importances_', [])[:10]), 1):

@@ -399,6 +399,289 @@ class TestLGBMTrendMeanReversion(unittest.TestCase):
             self.assertTrue(0.50 <= conf <= 0.95)
             self.assertEqual(set(probs.keys()), {"LONG", "SHORT", "NONE"})
 
+    def test_13_ten_year_boundary_and_edge_cases(self):
+        """[STEP 1 & 7] config.py 10년 상한(ROLLING_TRAINING_WEEKS=520, 3640일) 경계값 및 엣지케이스 검증"""
+        import config
+        self.assertEqual(config.ROLLING_TRAINING_WEEKS, 520)
+        self.assertEqual(config.TRAINING_LOOKBACK_DAYS, 3640)
+        eng = MLFeatureEngine(feature_schema="B_normalized")
+
+        def _make_daily_bars(years_span: float, n_bars: int = 240, gap_days: int = 0) -> pd.DataFrame:
+            rng = np.random.default_rng(12345)
+            end_ts = pd.Timestamp("2026-10-14 15:45:00")
+            start_ts = end_ts - pd.Timedelta(days=int(round(years_span * 364)))
+            idx = pd.date_range(start=start_ts, end=end_ts, periods=n_bars)
+            if gap_days > 0 and n_bars > 60:
+                keep_mask = np.ones(n_bars, dtype=bool)
+                keep_mask[-40:-20] = False
+                idx = idx[keep_mask]
+            m = len(idx)
+            rets = rng.normal(0.0002, 0.012, size=m)
+            rets[::9] = 0.038
+            rets[4::11] = -0.036
+            close = 40.0 * np.exp(np.cumsum(rets))
+            high = close * (1.0 + np.abs(rng.normal(0.008, 0.004, size=m)))
+            low = close * (1.0 - np.abs(rng.normal(0.008, 0.004, size=m)))
+            open_ = close * (1.0 + rng.normal(0.0, 0.003, size=m))
+            vol = rng.integers(100_000, 900_000, size=m).astype(float)
+            return pd.DataFrame(
+                {"open": open_, "high": high, "low": low, "close": close, "volume": vol},
+                index=idx,
+            )
+
+        with patch("core.data_lake.MarketDataLake.load_candles", return_value=pd.DataFrame()):
+            # 1) 3년치 데이터 (<10년): 10년 초과 제외 0건, 마지막 6봉 미확정 라벨 제외
+            df_3y = _make_daily_bars(3.0, n_bars=220)
+            m_3y, _, _ = eng.train_and_select_top_features(df_3y, schema="B_normalized", exclude_unconfirmed_tail=True)
+            meta_3y = eng.last_training_window_meta
+            self.assertIsNotNone(m_3y)
+            self.assertTrue(meta_3y["is_valid_window"])
+            self.assertEqual(meta_3y["excluded_older_than_10y_rows"], 0)
+            self.assertEqual(meta_3y["excluded_unconfirmed_tail_rows"], 6)
+            self.assertLessEqual(meta_3y["span_days"], config.TRAINING_LOOKBACK_DAYS)
+
+            # 2) 9년치 데이터 (<10년): 10년 초과 제외 0건
+            df_9y = _make_daily_bars(9.0, n_bars=240)
+            m_9y, _, _ = eng.train_and_select_top_features(df_9y, schema="B_normalized", exclude_unconfirmed_tail=True)
+            meta_9y = eng.last_training_window_meta
+            self.assertIsNotNone(m_9y)
+            self.assertTrue(meta_9y["is_valid_window"])
+            self.assertEqual(meta_9y["excluded_older_than_10y_rows"], 0)
+            self.assertEqual(meta_9y["excluded_unconfirmed_tail_rows"], 6)
+            self.assertLessEqual(meta_9y["span_days"], config.TRAINING_LOOKBACK_DAYS)
+
+            # 3) 정확히 10년 경계 (3640일): span_days <= 3640.0
+            df_10y = _make_daily_bars(10.0, n_bars=260)
+            m_10y, _, _ = eng.train_and_select_top_features(df_10y, schema="B_normalized", exclude_unconfirmed_tail=True)
+            meta_10y = eng.last_training_window_meta
+            self.assertIsNotNone(m_10y)
+            self.assertTrue(meta_10y["is_valid_window"])
+            self.assertLessEqual(meta_10y["span_days"], config.TRAINING_LOOKBACK_DAYS)
+
+            # 4) 10년 초과 데이터 (12년치): 10년 이전 구간 자동 절삭 & 워밍업 보존 검증
+            df_12y = _make_daily_bars(12.0, n_bars=320)
+            m_12y, _, _ = eng.train_and_select_top_features(df_12y, schema="B_normalized", exclude_unconfirmed_tail=True)
+            meta_12y = eng.last_training_window_meta
+            self.assertIsNotNone(m_12y)
+            self.assertTrue(meta_12y["is_valid_window"])
+            self.assertGreater(meta_12y["excluded_older_than_10y_rows"], 0)
+            self.assertEqual(meta_12y["excluded_warmup_nan_rows"], 0)  # 10년 경계 이전 데이터로 워밍업이 이미 완료됨
+            self.assertEqual(meta_12y["excluded_unconfirmed_tail_rows"], 6)
+            self.assertLessEqual(meta_12y["span_days"], config.TRAINING_LOOKBACK_DAYS)
+            self.assertGreaterEqual(
+                pd.Timestamp(meta_12y["train_start_dt"]),
+                pd.Timestamp(meta_12y["cutoff_10y_dt"]),
+            )
+
+            # 5) 최근 일부 데이터 누락(갭) 존재 시에도 정상 학습
+            df_gap = _make_daily_bars(5.0, n_bars=260, gap_days=15)
+            m_gap, _, _ = eng.train_and_select_top_features(df_gap, schema="B_normalized", exclude_unconfirmed_tail=True)
+            self.assertIsNotNone(m_gap)
+            self.assertTrue(eng.last_training_window_meta["is_valid_window"])
+
+            # 6) 데이터 부족 (<100행) 시 안전하게 중단 (None 반환)
+            df_short = self.sample_df.iloc[:60].copy()
+            m_short, top_short, _ = eng.train_and_select_top_features(df_short, schema="B_normalized", exclude_unconfirmed_tail=True)
+            self.assertIsNone(m_short)
+            self.assertEqual(len(top_short), 10)
+            self.assertFalse(eng.last_training_window_meta["is_valid_window"])
+
+    def test_14_atomic_retraining_activation_and_hot_reload(self):
+        """[STEP 2, 3, 4] 임시 디렉토리에서 원자적 재학습·검증·활성화 및 런타임 핫리로드 검증"""
+        import hashlib
+        import json
+        import shutil
+        import tempfile
+        from core.moe_orchestrator import train_and_save_moe_orchestrator
+        from core.system_logger import system_logger
+
+        with tempfile.TemporaryDirectory() as tmp_dir_str:
+            tmp_dir = Path(tmp_dir_str)
+            shutil.copy2(PROJECT_ROOT / "models" / "model_champion.pkl", tmp_dir / "model_champion.pkl")
+            shutil.copy2(PROJECT_ROOT / "models" / "model_normalized_72.pkl", tmp_dir / "model_normalized_72.pkl")
+            shutil.copy2(PROJECT_ROOT / "models" / "active_model_manifest.json", tmp_dir / "active_model_manifest.json")
+
+            manifest_file = tmp_dir / "active_model_manifest.json"
+            m_data = json.loads(manifest_file.read_text(encoding="utf-8"))
+            m_data["active_model_path"] = str(tmp_dir / "model_normalized_72.pkl")
+            m_data["fallback_model_path"] = str(tmp_dir / "model_champion.pkl")
+            manifest_file.write_text(json.dumps(m_data, indent=2), encoding="utf-8")
+
+            running_moe = MoEMetaOrchestrator(manifest_path=manifest_file)
+            old_sha = running_moe.get_active_model_info()["sha256"]
+
+            with patch.object(system_logger, "log") as mock_syslog:
+                retrained_moe = train_and_save_moe_orchestrator(
+                    schema="B_normalized",
+                    df_15m=self.sample_df,
+                    models_dir_override=tmp_dir,
+                )
+
+            new_pkl = tmp_dir / "model_normalized_72.pkl"
+            new_sha = hashlib.sha256(new_pkl.read_bytes()).hexdigest()
+            self.assertNotEqual(old_sha, new_sha)
+            self.assertEqual(retrained_moe.get_active_model_info()["sha256"], new_sha)
+
+            logged_messages = [str(call.args[2]) for call in mock_syslog.call_args_list if len(call.args) >= 3]
+            self.assertTrue(any("RETRAIN_COMPLETED" in msg for msg in logged_messages))
+            self.assertTrue(any("MODEL_ACTIVATION_SUCCEEDED" in msg for msg in logged_messages))
+
+            tmp_leftovers = list(tmp_dir.glob("*.tmp.*"))
+            self.assertEqual(tmp_leftovers, [])
+
+            running_moe.evaluate_dual_filter_signal(self.sample_df.tail(80))
+            self.assertEqual(running_moe.get_active_model_info()["sha256"], new_sha)
+
+    def test_15_retraining_failure_preserves_existing_model_100_percent(self):
+        """[STEP 3 & 6-E] 재학습 실패/검증 실패 시 기존 model_normalized_72.pkl과 manifest가 100% 보존되는지 검증"""
+        import hashlib
+        import shutil
+        import tempfile
+        from core.moe_orchestrator import train_and_save_moe_orchestrator
+
+        with tempfile.TemporaryDirectory() as tmp_dir_str:
+            tmp_dir = Path(tmp_dir_str)
+            pkl_path = tmp_dir / "model_normalized_72.pkl"
+            manifest_path = tmp_dir / "active_model_manifest.json"
+            shutil.copy2(PROJECT_ROOT / "models" / "model_champion.pkl", tmp_dir / "model_champion.pkl")
+            shutil.copy2(PROJECT_ROOT / "models" / "model_normalized_72.pkl", pkl_path)
+            shutil.copy2(PROJECT_ROOT / "models" / "active_model_manifest.json", manifest_path)
+
+            orig_pkl_sha = hashlib.sha256(pkl_path.read_bytes()).hexdigest()
+            orig_manifest_sha = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+
+            # 1) 금지 스키마(v5_challenger) 재학습 시도 -> 즉시 차단
+            with self.assertRaises(ValueError):
+                train_and_save_moe_orchestrator(
+                    schema="v5_challenger",
+                    df_15m=self.sample_df,
+                    models_dir_override=tmp_dir,
+                )
+
+            # 2) 데이터 부족(<100행)으로 재학습 실패 -> 기존 파일 불변
+            with self.assertRaises(RuntimeError):
+                train_and_save_moe_orchestrator(
+                    schema="B_normalized",
+                    df_15m=self.sample_df.iloc[:40],
+                    models_dir_override=tmp_dir,
+                )
+
+            # 3) 후보 모델 검증 실패 시뮬레이션 -> 기존 파일 불변 & 임시 파일 삭제
+            with patch("core.data_lake.MarketDataLake.load_candles", return_value=pd.DataFrame()), \
+                 patch.object(MLFeatureEngine, "verify_model_artifact", return_value={"ok": False, "error": "simulated_verification_failure"}):
+                with self.assertRaises(RuntimeError):
+                    train_and_save_moe_orchestrator(
+                        schema="B_normalized",
+                        df_15m=self.sample_df,
+                        models_dir_override=tmp_dir,
+                    )
+
+            self.assertEqual(hashlib.sha256(pkl_path.read_bytes()).hexdigest(), orig_pkl_sha)
+            self.assertEqual(hashlib.sha256(manifest_path.read_bytes()).hexdigest(), orig_manifest_sha)
+            self.assertEqual(list(tmp_dir.glob("*.tmp.*")), [])
+
+    def test_16_fallback_and_rollback_scenarios_a_to_f(self):
+        """[STEP 6] 시나리오 A~F 폴백·차단·즉시 롤백 전수 검증"""
+        import json
+        import shutil
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp_dir_str:
+            tmp_dir = Path(tmp_dir_str)
+            b_pkl = tmp_dir / "model_normalized_72.pkl"
+            c_pkl = tmp_dir / "model_champion.pkl"
+            e_pkl = tmp_dir / "model_challenger_trend_mr.pkl"
+            manifest_file = tmp_dir / "active_model_manifest.json"
+
+            shutil.copy2(PROJECT_ROOT / "models" / "model_normalized_72.pkl", b_pkl)
+            shutil.copy2(PROJECT_ROOT / "models" / "model_champion.pkl", c_pkl)
+            shutil.copy2(PROJECT_ROOT / "models" / "model_challenger_trend_mr.pkl", e_pkl)
+            orig_manifest = json.loads((PROJECT_ROOT / "models" / "active_model_manifest.json").read_text(encoding="utf-8"))
+
+            def _write_manifest(**overrides):
+                m = dict(orig_manifest)
+                m["active_model_path"] = str(b_pkl)
+                m["fallback_model_path"] = str(c_pkl)
+                m.update(overrides)
+                manifest_file.write_text(json.dumps(m, indent=2), encoding="utf-8")
+
+            # 시나리오 A: model_normalized_72.pkl 파일 손상 -> Champion 자동 폴백
+            b_pkl.write_bytes(b"corrupted_pickle_bytes")
+            _write_manifest()
+            eng_a = MLFeatureEngine(manifest_path=manifest_file)
+            self.assertEqual(eng_a.get_active_model_info()["load_status"], "FALLBACK_TO_CHAMPION")
+            self.assertEqual(eng_a.get_active_model_info()["feature_schema"], "v4_champion")
+
+            # 복구 후 시나리오 B: SHA256 불일치 -> Champion 자동 폴백
+            shutil.copy2(PROJECT_ROOT / "models" / "model_normalized_72.pkl", b_pkl)
+            _write_manifest(expected_sha256="a" * 64)
+            eng_b = MLFeatureEngine(manifest_path=manifest_file)
+            self.assertEqual(eng_b.get_active_model_info()["load_status"], "FALLBACK_TO_CHAMPION")
+
+            # 시나리오 C: 피처 수(77개) 불일치 -> Champion 자동 폴백
+            _write_manifest(expected_num_features=77)
+            eng_c = MLFeatureEngine(manifest_path=manifest_file)
+            self.assertEqual(eng_c.get_active_model_info()["load_status"], "FALLBACK_TO_CHAMPION")
+
+            # 시나리오 D: 금지된 v5_challenger 모델 지정 -> 차단 후 Champion 자동 폴백
+            _write_manifest(active_model_path=str(e_pkl), expected_schema="v5_challenger", expected_num_features=77, expected_sha256="")
+            eng_d = MLFeatureEngine(manifest_path=manifest_file)
+            self.assertEqual(eng_d.get_active_model_info()["load_status"], "FALLBACK_TO_CHAMPION")
+
+            # 시나리오 F: 주 모델 + 폴백 모델 모두 실패 -> self.model=None, 신규 진입 차단(0, 0.50)
+            _write_manifest(expected_sha256="a" * 64, fallback_expected_sha256="b" * 64)
+            eng_f = MLFeatureEngine(manifest_path=manifest_file)
+            self.assertEqual(eng_f.get_active_model_info()["load_status"], "BLOCKED")
+            self.assertIsNone(eng_f.model)
+            sig_f, conf_f, _, _ = eng_f.predict_signal_full(self.sample_df)
+            self.assertEqual((sig_f, conf_f), (0, 0.50))
+
+    def test_17_orderless_live_runner_startup_and_pre_order_verification(self):
+        """[STEP 4 & 5] KiwoomLiveRunner 무주문 기동 및 매수 직전 신호 판정·포트폴리오 불변 검증"""
+        import hashlib
+        from core.live_runner import KiwoomLiveRunner
+
+        live_db_path = PROJECT_ROOT / "data" / "live_experience.db"
+        db_sha_before = hashlib.sha256(live_db_path.read_bytes()).hexdigest()
+
+        with patch("core.live_runner.KiwoomBroker") as MockBroker, \
+             patch("core.live_runner.DispatcherAgent"), \
+             patch("core.live_runner.TelegramController"), \
+             patch("core.live_runner.system_logger"):
+            broker_inst = MockBroker.return_value
+            broker_inst.get_account_balance.return_value = {
+                "ok": True,
+                "usd_avail": 1000.0,
+                "total_asset": 1000.0,
+                "holdings": [],
+            }
+            broker_inst.get_unfilled_orders.return_value = {"ok": True, "orders": []}
+            broker_inst.send_order.side_effect = AssertionError("send_order MUST NOT be called during STEP 5 orderless check!")
+
+            runner = KiwoomLiveRunner(is_simulation=True)
+            model_info = runner.moe_orchestrator.get_active_model_info()
+            self.assertEqual(model_info["active_model_id"], "B_Normalized_72")
+            self.assertEqual(model_info["feature_schema"], "B_normalized")
+            self.assertEqual(model_info["num_features"], 72)
+            self.assertEqual(model_info["load_status"], "ACTIVE_B_NORMALIZED")
+            self.assertFalse(model_info["is_fallback"])
+            self.assertTrue(model_info["is_ready"])
+
+            # 15m 캔들 로드 -> 72개 피처 생성 -> 3-class 확률 산출 -> 신호 필터링(매수 직전 단계) 수행
+            df_15m = runner.data_lake.load_candles("SOXL", "15m").tail(120)
+            decision = runner.moe_orchestrator.evaluate_dual_filter_signal(df_15m)
+            self.assertIn(decision["direction"], ["LONG", "SHORT", "NONE"])
+            self.assertEqual(set(decision["gbdt_probs"].keys()), {"LONG", "SHORT", "NONE"})
+            for p_val in decision["gbdt_probs"].values():
+                self.assertTrue(0.0 <= float(p_val) <= 1.0)
+            self.assertEqual(len(runner.moe_orchestrator.gbdt_engine.feature_names), 72)
+
+            # 주문 호출 0건, 포지션/DB 상태 100% 불변 확인
+            self.assertEqual(broker_inst.send_order.call_count, 0)
+            self.assertIsNone(runner._active_position)
+            db_sha_after = hashlib.sha256(live_db_path.read_bytes()).hexdigest()
+            self.assertEqual(db_sha_before, db_sha_after)
+
 
 if __name__ == "__main__":
     unittest.main()

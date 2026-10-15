@@ -49,7 +49,8 @@ class MoEMetaOrchestrator:
         confidence_threshold: float = GBDT_CONFIDENCE_THRESHOLD,
         cross_asset_threshold: float = GBDT_CONFIDENCE_THRESHOLD,
         gbdt_threshold: float = GBDT_CONFIDENCE_THRESHOLD,
-        mode: str = "hybrid_v3"
+        mode: str = "hybrid_v3",
+        manifest_path: Optional[Path] = None
     ):
         self.confidence_threshold = confidence_threshold
         self.cross_asset_threshold = cross_asset_threshold
@@ -57,7 +58,11 @@ class MoEMetaOrchestrator:
         self.mode = mode
         self.data_lake = MarketDataLake()
         self.cross_asset_model = CrossAssetDislocationModel(dislocation_z_threshold=1.6)
-        self.gbdt_engine = MLFeatureEngine(confidence_threshold=0.40, feature_schema="B_normalized")
+        self.gbdt_engine = MLFeatureEngine(
+            confidence_threshold=0.40,
+            feature_schema="B_normalized",
+            manifest_path=manifest_path
+        )
         self._try_load_default_models()
         self.experts = {
             "cross_asset": self.cross_asset_model,
@@ -256,6 +261,8 @@ class MoEMetaOrchestrator:
         conf_gbdt = 0.50
         gbdt_probs = {"LONG": 0.33, "SHORT": 0.33, "NONE": 0.34}
         try:
+            if hasattr(self, "gbdt_engine") and hasattr(self.gbdt_engine, "ensure_latest_manifest_model"):
+                self.gbdt_engine.ensure_latest_manifest_model()
             live_long_15m = _get_live_df(config.TRADE_SYMBOLS[0], current_time_str) if "live_prices" in locals() else df_candle_15m
             gbdt_sig, gbdt_conf, _, gbdt_probs = self.gbdt_engine.predict_signal_full(live_long_15m)
             conf_gbdt = gbdt_conf
@@ -394,53 +401,156 @@ class MoEMetaOrchestrator:
 def train_and_save_moe_orchestrator(
     confidence_threshold: float = GBDT_CONFIDENCE_THRESHOLD,
     mode: str = "hybrid_v3",
-    schema: str = "B_normalized"
+    schema: str = "B_normalized",
+    df_15m: Optional[pd.DataFrame] = None,
+    models_dir_override: Optional[Path] = None,
+    live_experience_df: Optional[pd.DataFrame] = None
 ) -> MoEMetaOrchestrator:
     import hashlib
-    logger.info(f"🚀 [훈련 개시] Lumos 듀얼 챔피언 MoE 스나이퍼 학습 중... (스키마: {schema}, 임계값 {confidence_threshold*100:.0f}%)")
-    orchestrator = MoEMetaOrchestrator(confidence_threshold=confidence_threshold, gbdt_threshold=confidence_threshold, mode=mode)
-    orchestrator.gbdt_engine.feature_schema = schema
-    data_lake = MarketDataLake()
-    long_15m = data_lake.load_candles(config.TRADE_SYMBOLS[0], "15m")
-    if not long_15m.empty and len(long_15m) >= 100:
-        orchestrator.gbdt_engine.train_and_select_top_features(
-            long_15m,
-            schema=schema,
-            exclude_unconfirmed_tail=True
-        )
+    from core.system_logger import system_logger
 
-    models_dir = Path(__file__).resolve().parent.parent / "models"
-    if schema == "B_normalized":
-        target_path = models_dir / "model_normalized_72.pkl"
+    if schema in MLFeatureEngine.LIVE_FORBIDDEN_SCHEMAS or schema != "B_normalized":
+        raise ValueError(f"Live retraining strictly requires schema='B_normalized' (got '{schema}')")
+
+    target_dir = Path(models_dir_override) if models_dir_override is not None else MODELS_DIR
+    target_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = target_dir / "active_model_manifest.json"
+    target_path = target_dir / "model_normalized_72.pkl"
+    tmp_model_path = target_dir / f".model_normalized_72.pkl.tmp.{os.getpid()}"
+    tmp_manifest_path = target_dir / f".active_model_manifest.json.tmp.{os.getpid()}"
+
+    logger.info(f"🚀 [훈련 개시] Lumos 듀얼 챔피언 MoE 스나이퍼 학습 중... (스키마: {schema}, 임계값 {confidence_threshold*100:.0f}%)")
+    orchestrator = MoEMetaOrchestrator(
+        confidence_threshold=confidence_threshold,
+        gbdt_threshold=confidence_threshold,
+        mode=mode,
+        manifest_path=manifest_path if manifest_path.exists() else None
+    )
+    orchestrator.gbdt_engine.feature_schema = schema
+
+    if df_15m is not None:
+        long_15m = df_15m.copy()
+    else:
+        data_lake = MarketDataLake()
+        long_15m = data_lake.load_candles(config.TRADE_SYMBOLS[0], "15m")
+
+    if long_15m is None or long_15m.empty or len(long_15m) < 100:
+        raise RuntimeError("Insufficient training data (<100 bars); aborting retraining to preserve existing active model.")
+
+    trained_model, _, _ = orchestrator.gbdt_engine.train_and_select_top_features(
+        long_15m,
+        schema=schema,
+        exclude_unconfirmed_tail=True,
+        live_experience_df=live_experience_df
+    )
+    if trained_model is None or orchestrator.gbdt_engine.model is None:
+        raise RuntimeError("Retraining failed to produce a valid LightGBM model; preserving existing active model.")
+
+    try:
+        # 1. 임시 파일로 신규 모델 저장
         orchestrator.gbdt_engine.active_model_id = "B_Normalized_72"
         orchestrator.gbdt_engine.active_model_path = str(target_path)
-        joblib.dump(orchestrator, target_path)
-        ver = MLFeatureEngine.verify_model_artifact(target_path, expected_schema="B_normalized", enforce_live_policy=True)
+        joblib.dump(orchestrator, tmp_model_path)
+
+        window_meta = getattr(orchestrator.gbdt_engine, "last_training_window_meta", {})
+        system_logger.log(
+            "INFO",
+            "AutoRetrain",
+            f"RETRAIN_COMPLETED | schema={schema} | tmp_path={tmp_model_path} | train_rows={window_meta.get('train_rows', 0)} | span_days={window_meta.get('span_days', 0)}"
+        )
+
+        # 2~5. SHA256, 스키마·피처 수·순서, 클래스 매핑([0,1,2]), 추론 self-test 검증
+        ver = MLFeatureEngine.verify_model_artifact(
+            tmp_model_path,
+            expected_schema="B_normalized",
+            enforce_live_policy=True
+        )
         if not ver["ok"]:
-            raise RuntimeError(f"Trained B_normalized model failed 7-point verification: {ver['error']}")
-        orchestrator.gbdt_engine.active_model_sha256 = ver["actual_sha256"]
-        manifest_path = models_dir / "active_model_manifest.json"
-        champ_path = models_dir / "model_champion.pkl"
+            raise RuntimeError(f"Trained B_normalized candidate failed 7-point verification: {ver['error']}")
+
+        # 6. 10년 학습 윈도우 규정 준수 검증
+        max_lookback_days = float(getattr(config, "TRAINING_LOOKBACK_DAYS", config.ROLLING_TRAINING_WEEKS * 7))
+        if not window_meta.get("is_valid_window", False) or float(window_meta.get("span_days", 0.0)) > max_lookback_days + 1e-6:
+            raise RuntimeError(f"Trained B_normalized candidate failed 10-year window compliance check: {window_meta}")
+
+        # 7. manifest 업데이트 및 검증 (임시 파일)
+        champ_path = target_dir / "model_champion.pkl"
+        if not champ_path.exists():
+            champ_path = MODELS_DIR / "model_champion.pkl"
         champ_sha = hashlib.sha256(champ_path.read_bytes()).hexdigest() if champ_path.exists() else ""
+
+        try:
+            rel_active_path = target_path.relative_to(BASE_DIR).as_posix()
+        except ValueError:
+            rel_active_path = str(target_path)
+
+        try:
+            rel_fallback_path = champ_path.relative_to(BASE_DIR).as_posix()
+        except ValueError:
+            rel_fallback_path = str(champ_path)
+
         manifest_data = {
             "active_model_id": "B_Normalized_72",
-            "active_model_path": "models/model_normalized_72.pkl",
+            "active_model_path": rel_active_path,
             "expected_schema": "B_normalized",
             "expected_num_features": 72,
             "expected_sha256": ver["actual_sha256"],
             "fallback_model_id": "v4_champion_fallback",
-            "fallback_model_path": "models/model_champion.pkl",
+            "fallback_model_path": rel_fallback_path,
             "fallback_expected_schema": "v4_champion",
             "fallback_expected_num_features": 72,
             "fallback_expected_sha256": champ_sha,
             "forbidden_schemas": sorted(list(MLFeatureEngine.LIVE_FORBIDDEN_SCHEMAS)),
+            "training_window_meta": {
+                "config_rolling_training_weeks": window_meta.get("config_rolling_training_weeks"),
+                "config_training_lookback_days": window_meta.get("config_training_lookback_days"),
+                "train_start_dt": window_meta.get("train_start_dt"),
+                "train_end_dt": window_meta.get("train_end_dt"),
+                "train_rows": window_meta.get("train_rows"),
+                "span_days": window_meta.get("span_days"),
+                "excluded_older_than_10y_rows": window_meta.get("excluded_older_than_10y_rows"),
+                "excluded_warmup_nan_rows": window_meta.get("excluded_warmup_nan_rows"),
+                "excluded_unconfirmed_tail_rows": window_meta.get("excluded_unconfirmed_tail_rows")
+            },
             "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
-        manifest_path.write_text(json.dumps(manifest_data, indent=2, ensure_ascii=False), encoding="utf-8")
-        logger.info(f"✅ [B_Normalized_72 실전 모델 저장 및 7단계 무결성 검증 완료] ➔ {target_path} (SHA256={ver['actual_sha256'][:16]}...)")
-    else:
-        joblib.dump(orchestrator, MOE_MODEL_PATH)
-        logger.info(f"✅ [MoE 모델 저장 완료] ➔ {MOE_MODEL_PATH}")
+        tmp_manifest_path.write_text(json.dumps(manifest_data, indent=2, ensure_ascii=False), encoding="utf-8")
+        parsed_manifest = json.loads(tmp_manifest_path.read_text(encoding="utf-8"))
+        if (
+            parsed_manifest.get("active_model_id") != "B_Normalized_72"
+            or parsed_manifest.get("expected_schema") != "B_normalized"
+            or int(parsed_manifest.get("expected_num_features", 0)) != 72
+            or parsed_manifest.get("expected_sha256") != ver["actual_sha256"]
+        ):
+            raise RuntimeError("Candidate manifest failed validation before atomic swap.")
+
+        # 8. 검증 통과 시 원자적(atomic) 교체 수행
+        prev_model_bytes = target_path.read_bytes() if target_path.exists() else None
+        os.replace(tmp_model_path, target_path)
+        try:
+            os.replace(tmp_manifest_path, manifest_path)
+        except Exception:
+            if prev_model_bytes is not None:
+                target_path.write_bytes(prev_model_bytes)
+            raise
+
+        orchestrator.gbdt_engine.active_model_sha256 = ver["actual_sha256"]
+        orchestrator.gbdt_engine._loaded_manifest_sha256 = ver["actual_sha256"]
+        orchestrator.gbdt_engine._manifest_path = manifest_path
+        system_logger.log(
+            "INFO",
+            "ModelActivation",
+            f"MODEL_ACTIVATION_SUCCEEDED | model_id=B_Normalized_72 | path={target_path} | sha256={ver['actual_sha256']}"
+        )
+        logger.info(f"✅ [B_Normalized_72 실전 모델 저장 및 원자적 활성화 완료] ➔ {target_path} (SHA256={ver['actual_sha256'][:16]}...)")
+    finally:
+        # 9. 실패 또는 완료 후 임시 파일 정리 (기존 모델 100% 보존 보장)
+        for p in (tmp_model_path, tmp_manifest_path):
+            try:
+                if p.exists():
+                    p.unlink()
+            except Exception:
+                pass
 
     return orchestrator
 

@@ -115,7 +115,8 @@ class MLFeatureEngine:
         self,
         confidence_threshold: float = GBDT_CONFIDENCE_THRESHOLD,
         feature_schema: str = "B_normalized",
-        model_path: Optional[str] = None
+        model_path: Optional[str] = None,
+        manifest_path: Optional[str] = None
     ):
         self.confidence_threshold = confidence_threshold
         self.feature_schema = feature_schema
@@ -128,9 +129,13 @@ class MLFeatureEngine:
         self.active_model_sha256: str = ""
         self.model_load_status: str = "INIT"
         self.model_load_error: str = ""
+        self.last_training_window_meta: Dict[str, Any] = {}
+        self._manifest_path_override: Optional[str] = str(manifest_path) if manifest_path else None
+        self._bound_to_default_manifest: bool = False
         if model_path:
             self.load_model(model_path, enforce_live_policy=False)
         else:
+            self._bound_to_default_manifest = True
             self._try_load_default_model()
 
     @classmethod
@@ -139,7 +144,8 @@ class MLFeatureEngine:
         model_path: Any,
         expected_sha256: Optional[str] = None,
         expected_schema: Optional[str] = None,
-        enforce_live_policy: bool = True
+        enforce_live_policy: bool = True,
+        expected_num_features: Optional[int] = None
     ) -> Dict[str, Any]:
         """
         [STEP 5: 실전 모델 로딩 7대 필수 무결성 검증]
@@ -271,6 +277,9 @@ class MLFeatureEngine:
 
         # 4. 피처 수 검증
         n_in = int(getattr(model_obj, "n_features_in_", len(feat_names)))
+        if expected_num_features is not None and (len(feat_names) != int(expected_num_features) or int(expected_num_features) != 72):
+            result["error"] = f"Feature count mismatch with manifest/policy: expected_num_features={expected_num_features}, actual={len(feat_names)}"
+            return result
         if enforce_live_policy or expected_schema in cls.LIVE_ALLOWED_SCHEMAS:
             if len(feat_names) != 72 or n_in != 72:
                 result["error"] = f"Feature count must be exactly 72 (got len={len(feat_names)}, n_features_in_={n_in})"
@@ -337,7 +346,9 @@ class MLFeatureEngine:
         model_path: Any,
         expected_sha256: Optional[str] = None,
         expected_schema: Optional[str] = None,
-        enforce_live_policy: bool = False
+        enforce_live_policy: bool = False,
+        _from_manifest_loader: bool = False,
+        expected_num_features: Optional[int] = None
     ) -> bool:
         """지정된 모델 파일을 7단계 무결성 검증 후 로드하고 내부 피처 스키마를 동기화"""
         from pathlib import Path
@@ -346,7 +357,8 @@ class MLFeatureEngine:
             p,
             expected_sha256=expected_sha256,
             expected_schema=expected_schema,
-            enforce_live_policy=enforce_live_policy
+            enforce_live_policy=enforce_live_policy,
+            expected_num_features=expected_num_features
         )
         if not ver["ok"]:
             self.model_load_error = ver["error"]
@@ -364,7 +376,15 @@ class MLFeatureEngine:
         self.active_model_sha256 = ext["sha256"]
         self.model_load_status = "ACTIVE"
         self.model_load_error = ""
+        if not _from_manifest_loader:
+            self._bound_to_default_manifest = False
         return True
+
+    def _get_manifest_path(self):
+        from pathlib import Path
+        if getattr(self, "_manifest_path_override", None):
+            return Path(self._manifest_path_override)
+        return Path(__file__).resolve().parent.parent / "models" / "active_model_manifest.json"
 
     def _try_load_default_model(self):
         """
@@ -376,33 +396,55 @@ class MLFeatureEngine:
         import json
         from pathlib import Path
 
-        models_dir = Path(__file__).resolve().parent.parent / "models"
-        manifest_path = models_dir / "active_model_manifest.json"
+        root_dir = Path(__file__).resolve().parent.parent
+        models_dir = root_dir / "models"
+        manifest_path = self._get_manifest_path()
 
         if manifest_path.exists():
             try:
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
                 act_rel = manifest.get("active_model_path", "models/model_normalized_72.pkl")
-                act_path = (Path(__file__).resolve().parent.parent / act_rel) if not Path(act_rel).is_absolute() else Path(act_rel)
+                act_path = (root_dir / act_rel) if not Path(act_rel).is_absolute() else Path(act_rel)
                 act_sha = manifest.get("expected_sha256")
                 act_schema = manifest.get("expected_schema", "B_normalized")
                 act_id = manifest.get("active_model_id", "B_Normalized_72")
+                act_n_feat = manifest.get("expected_num_features", 72)
 
-                if self.load_model(act_path, expected_sha256=act_sha, expected_schema=act_schema, enforce_live_policy=True):
+                if self.load_model(
+                    act_path,
+                    expected_sha256=act_sha,
+                    expected_schema=act_schema,
+                    enforce_live_policy=True,
+                    _from_manifest_loader=True,
+                    expected_num_features=act_n_feat
+                ):
                     self.active_model_id = act_id
                     self.model_load_status = f"ACTIVE_{act_schema.upper()}"
+                    self._loaded_manifest_sha256 = self.active_model_sha256
+                    try:
+                        self._loaded_manifest_mtime = manifest_path.stat().st_mtime
+                    except Exception:
+                        pass
                     return
 
                 primary_err = self.model_load_error
                 logger.error(f"⚠️ [모델 전환 방어] 주 모델({act_path.name}) 검증 실패({primary_err}) -> 기존 Champion 폴백 시도")
 
                 fb_rel = manifest.get("fallback_model_path", "models/model_champion.pkl")
-                fb_path = (Path(__file__).resolve().parent.parent / fb_rel) if not Path(fb_rel).is_absolute() else Path(fb_rel)
+                fb_path = (root_dir / fb_rel) if not Path(fb_rel).is_absolute() else Path(fb_rel)
                 fb_sha = manifest.get("fallback_expected_sha256")
                 fb_schema = manifest.get("fallback_expected_schema", "v4_champion")
                 fb_id = manifest.get("fallback_model_id", "v4_champion_fallback")
+                fb_n_feat = manifest.get("fallback_expected_num_features", 72)
 
-                if self.load_model(fb_path, expected_sha256=fb_sha, expected_schema=fb_schema, enforce_live_policy=True):
+                if self.load_model(
+                    fb_path,
+                    expected_sha256=fb_sha,
+                    expected_schema=fb_schema,
+                    enforce_live_policy=True,
+                    _from_manifest_loader=True,
+                    expected_num_features=fb_n_feat
+                ):
                     self.active_model_id = fb_id
                     self.model_load_status = "FALLBACK_TO_CHAMPION"
                     self.model_load_error = f"Primary failed ({primary_err}); safely fell back to {fb_path.name}"
@@ -426,7 +468,7 @@ class MLFeatureEngine:
             ("model_moe_orchestrator.pkl", "v4_champion"),
         ]:
             p = models_dir / fname
-            if p.exists() and self.load_model(p, expected_schema=exp_schema, enforce_live_policy=True):
+            if p.exists() and self.load_model(p, expected_schema=exp_schema, enforce_live_policy=True, _from_manifest_loader=True):
                 self.model_load_status = f"ACTIVE_{self.feature_schema.upper()}"
                 return
 
@@ -435,15 +477,44 @@ class MLFeatureEngine:
         self.active_model_id = "BLOCKED_NO_VALID_MODEL"
         self.model_load_status = "BLOCKED"
 
+    def ensure_latest_manifest_model(self) -> bool:
+        """
+        [STEP 4 & STEP 6: 모델 캐시 스톨(Stale) 방지 및 원자적 재학습/롤백 자동 반영]
+        기본 매니페스트에 바인딩된 실전 인스턴스가 추론 수행 전 매니페스트의 expected_sha256 변경 여부를 확인하고,
+        신규 B 모델이 원자적으로 활성화되었거나 롤백된 경우 즉시 핫리로드 수행.
+        """
+        if not getattr(self, "_bound_to_default_manifest", False):
+            return False
+        import json
+        manifest_path = self._get_manifest_path()
+        if not manifest_path.exists():
+            return False
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            target_sha = str(manifest.get("expected_sha256", "")).strip().lower()
+            target_id = str(manifest.get("active_model_id", "")).strip()
+            cur_sha = str(getattr(self, "active_model_sha256", "")).strip().lower()
+            cur_id = str(getattr(self, "active_model_id", "")).strip()
+            if target_sha and (target_sha != cur_sha or (target_id and target_id != cur_id)):
+                self._try_load_default_model()
+                return True
+        except Exception:
+            pass
+        return False
+
     def get_active_model_info(self) -> Dict[str, Any]:
         """현재 메모리에 로드된 실전 모델의 식별자, 스키마, SHA256 및 상태 반환"""
+        sha_val = getattr(self, "active_model_sha256", "")
+        status_val = getattr(self, "model_load_status", "UNKNOWN")
         return {
             "active_model_id": getattr(self, "active_model_id", "UNKNOWN"),
             "feature_schema": getattr(self, "feature_schema", "UNKNOWN"),
             "model_path": getattr(self, "active_model_path", ""),
-            "model_sha256": getattr(self, "active_model_sha256", ""),
+            "model_sha256": sha_val,
+            "sha256": sha_val,
             "num_features": len(getattr(self, "feature_names", [])),
-            "load_status": getattr(self, "model_load_status", "UNKNOWN"),
+            "load_status": status_val,
+            "is_fallback": status_val == "FALLBACK_TO_CHAMPION",
             "load_error": getattr(self, "model_load_error", ""),
             "is_ready": getattr(self, "model", None) is not None and len(getattr(self, "feature_names", [])) == 72,
         }
@@ -690,6 +761,8 @@ class MLFeatureEngine:
             df.index = pd.to_datetime(df['datetime'])
         elif 'Datetime' in df.columns:
             df.index = pd.to_datetime(df['Datetime'])
+        elif 'datetime_dt' in df.columns:
+            df.index = pd.to_datetime(df['datetime_dt']) - pd.Timedelta(minutes=15)
 
         num_cols = df.select_dtypes(include=[np.number]).columns
         if len(num_cols) > 0:
@@ -802,7 +875,7 @@ class MLFeatureEngine:
 
 
     @staticmethod
-    def get_feature_columns(df: pd.DataFrame, schema: str = "v4_champion") -> list:
+    def get_feature_columns(df: pd.DataFrame, schema: str = "B_normalized") -> list:
         exclude_cols = {
             'open', 'high', 'low', 'close', 'volume', 
             'Open', 'High', 'Low', 'Close', 'Volume',
@@ -825,7 +898,7 @@ class MLFeatureEngine:
             and pd.api.types.is_numeric_dtype(df[c])
         ]
 
-        schema_key = (schema or "v4_champion").strip()
+        schema_key = (schema or "B_normalized").strip()
         if schema_key in ("v4_champion", "A_champion"):
             return base_72
 
@@ -846,7 +919,7 @@ class MLFeatureEngine:
         elif schema_key in ("v5_challenger", "E_challenger"):
             return [c for c in base_72 if c not in dollar_set and c not in ablated_set] + norm_cols + trend_cols + mr_cols
 
-        return base_72
+        return [c for c in base_72 if c not in dollar_set] + norm_cols
 
     def train_and_select_top_features(
         self,
@@ -855,13 +928,41 @@ class MLFeatureEngine:
         schema: Optional[str] = None,
         exclude_unconfirmed_tail: bool = True
     ) -> Tuple[Any, List[str], List[str]]:
-        """3-Class Triple Barrier 기반 LightGBM 다중 분류 모델 학습 및 상위 10대 피처 선별 (실시간 실전 로그 자동 병합 및 가중치 반영)"""
-        feat_df = self.extract_features(df_15m)
-
+        """3-Class Triple Barrier 기반 LightGBM 다중 분류 모델 학습 및 상위 10대 피처 선별 (최대 10년 상한 및 미확정 라벨 절삭 포함)"""
         import pandas as pd
         target_schema = schema if schema is not None else getattr(self, "feature_schema", "B_normalized")
-        feature_cols = self.get_feature_columns(feat_df, schema=target_schema)
         horizon = int(config.TIME_STOP_MINUTES / 15)
+        lookback_days = int(getattr(config, "TRAINING_LOOKBACK_DAYS", config.ROLLING_TRAINING_WEEKS * 7))
+
+        raw_total_rows = int(len(df_15m)) if df_15m is not None else 0
+        if df_15m is None or df_15m.empty or raw_total_rows < 100:
+            self.last_training_window_meta = {
+                "is_valid_window": False,
+                "error": f"Insufficient raw rows ({raw_total_rows} < 100)",
+                "config_rolling_training_weeks": int(config.ROLLING_TRAINING_WEEKS),
+                "config_training_lookback_days": int(lookback_days),
+                "raw_total_rows": raw_total_rows,
+                "train_rows": 0,
+            }
+            self.top_10_features = list(self.CANONICAL_B_NORMALIZED_72_FEATURES[:10])
+            self.top_3_features = ["RSI_14", "VWAP_Diff", "Volume_Z"]
+            return None, self.top_10_features, self.top_3_features
+
+        feat_df = self.extract_features(df_15m)
+        if feat_df.empty:
+            self.last_training_window_meta = {
+                "is_valid_window": False,
+                "error": "Feature extraction returned empty DataFrame",
+                "config_rolling_training_weeks": int(config.ROLLING_TRAINING_WEEKS),
+                "config_training_lookback_days": int(lookback_days),
+                "raw_total_rows": raw_total_rows,
+                "train_rows": 0,
+            }
+            self.top_10_features = list(self.CANONICAL_B_NORMALIZED_72_FEATURES[:10])
+            self.top_3_features = ["RSI_14", "VWAP_Diff", "Volume_Z"]
+            return None, self.top_10_features, self.top_3_features
+
+        feature_cols = self.get_feature_columns(feat_df, schema=target_schema)
 
         feat_df['Target'] = self.compute_triple_barrier_labels(
             feat_df,
@@ -870,17 +971,80 @@ class MLFeatureEngine:
             horizon=horizon
         )
 
-        # 마지막 미확정 Triple Barrier 라벨(horizon=6봉) 제외 (단, 소규모 더미 단위테스트 입력은 보존)
-        if exclude_unconfirmed_tail and horizon > 0 and len(feat_df) > (horizon + 200):
+        raw_start_dt = feat_df.index.min() if isinstance(feat_df.index, pd.DatetimeIndex) else None
+        raw_end_dt = feat_df.index.max() if isinstance(feat_df.index, pd.DatetimeIndex) else None
+
+        # 1) 마지막 미확정 Triple Barrier 라벨(horizon=6봉) 제외
+        excluded_unconfirmed_tail_rows = 0
+        excluded_unconfirmed_datetimes: List[str] = []
+        if exclude_unconfirmed_tail and horizon > 0 and len(feat_df) > horizon:
+            unconfirmed_slice = feat_df.iloc[-horizon:]
+            excluded_unconfirmed_tail_rows = int(len(unconfirmed_slice))
+            if isinstance(unconfirmed_slice.index, pd.DatetimeIndex):
+                excluded_unconfirmed_datetimes = [str(ts) for ts in unconfirmed_slice.index]
             train_source_df = feat_df.iloc[:-horizon]
         else:
             train_source_df = feat_df
 
+        # 2) config.py의 최대 10년(ROLLING_TRAINING_WEEKS=520주 / TRAINING_LOOKBACK_DAYS=3640일) 학습 기간 상한 적용
+        #    보조지표 워밍업(EMA_200 등)은 전체 시계열에서 수행한 뒤, 학습 데이터(X, y)만 최근 10년 이내로 제한
+        excluded_older_than_10y_rows = 0
+        cutoff_10y_dt = None
+        if isinstance(train_source_df.index, pd.DatetimeIndex) and len(train_source_df) > 0 and raw_end_dt is not None:
+            cutoff_10y_dt = raw_end_dt - pd.Timedelta(days=lookback_days)
+            older_mask = train_source_df.index < cutoff_10y_dt
+            excluded_older_than_10y_rows = int(older_mask.sum())
+            if excluded_older_than_10y_rows > 0:
+                train_source_df = train_source_df.loc[~older_mask]
+
+        pre_dropna_rows = int(len(train_source_df))
         clean_data = train_source_df[feature_cols + ['Target']].replace([np.inf, -np.inf], np.nan).dropna()
+        excluded_warmup_nan_rows = int(pre_dropna_rows - len(clean_data))
+
         if len(clean_data) < 100:
+            self.last_training_window_meta = {
+                "is_valid_window": False,
+                "error": f"Insufficient confirmed training rows after warmup/tail exclusion ({len(clean_data)} < 100)",
+                "config_rolling_training_weeks": int(config.ROLLING_TRAINING_WEEKS),
+                "config_training_lookback_days": int(lookback_days),
+                "raw_start_dt": str(raw_start_dt) if raw_start_dt is not None else "",
+                "raw_end_dt": str(raw_end_dt) if raw_end_dt is not None else "",
+                "raw_total_rows": raw_total_rows,
+                "cutoff_10y_dt": str(cutoff_10y_dt) if cutoff_10y_dt is not None else "",
+                "train_rows": int(len(clean_data)),
+                "excluded_older_than_10y_rows": excluded_older_than_10y_rows,
+                "excluded_warmup_nan_rows": excluded_warmup_nan_rows,
+                "excluded_unconfirmed_tail_rows": excluded_unconfirmed_tail_rows,
+                "excluded_unconfirmed_datetimes": excluded_unconfirmed_datetimes,
+            }
             self.top_10_features = feature_cols[:10]
             self.top_3_features = ["RSI_14", "VWAP_Diff", "Volume_Z"]
             return None, self.top_10_features, self.top_3_features
+
+        train_start_dt = clean_data.index.min() if isinstance(clean_data.index, pd.DatetimeIndex) else None
+        train_end_dt = clean_data.index.max() if isinstance(clean_data.index, pd.DatetimeIndex) else None
+        span_days = int((train_end_dt - train_start_dt).days) if (train_start_dt is not None and train_end_dt is not None) else 0
+
+        self.last_training_window_meta = {
+            "is_valid_window": bool(span_days <= lookback_days and len(clean_data) >= 100),
+            "config_rolling_training_weeks": int(config.ROLLING_TRAINING_WEEKS),
+            "config_training_lookback_days": int(lookback_days),
+            "raw_start_dt": str(raw_start_dt) if raw_start_dt is not None else "",
+            "raw_end_dt": str(raw_end_dt) if raw_end_dt is not None else "",
+            "raw_total_rows": raw_total_rows,
+            "cutoff_10y_dt": str(cutoff_10y_dt) if cutoff_10y_dt is not None else "",
+            "train_start_dt": str(train_start_dt) if train_start_dt is not None else "",
+            "train_end_dt": str(train_end_dt) if train_end_dt is not None else "",
+            "train_rows": int(len(clean_data)),
+            "excluded_older_than_10y_rows": excluded_older_than_10y_rows,
+            "excluded_warmup_nan_rows": excluded_warmup_nan_rows,
+            "excluded_unconfirmed_tail_rows": excluded_unconfirmed_tail_rows,
+            "excluded_unconfirmed_datetimes": excluded_unconfirmed_datetimes,
+            "excluded_total_rows": int(raw_total_rows - len(clean_data)),
+            "span_days": span_days,
+            "feature_schema": str(target_schema),
+            "num_features": int(len(feature_cols)),
+        }
 
         X = clean_data[feature_cols].copy()
         # 클래스 레이블 매핑: {-1: 0, 0: 1, 1: 2} (0: Short, 1: Neutral, 2: Long)
@@ -905,7 +1069,7 @@ class MLFeatureEngine:
                 target_live_df = None
 
         if target_live_df is not None and not target_live_df.empty and "features_json" in target_live_df.columns:
-            # 2년(504 거래일) 롤링 윈도우 동기화: 과거 캔들 시작일 이후의 거래만 학습에 반영 (과거 꼬리 자동 절삭)
+            # 최대 10년(TRAINING_LOOKBACK_DAYS) 학습 윈도우 동기화: 학습 캔들 시작일 이후의 거래만 반영
             if isinstance(clean_data.index, pd.DatetimeIndex) and len(clean_data) > 0 and "entry_time" in target_live_df.columns:
                 cutoff_str = clean_data.index.min().strftime('%Y-%m-%d')
                 target_live_df = target_live_df[target_live_df["entry_time"].astype(str).str.slice(0, 10) >= cutoff_str]
@@ -983,6 +1147,7 @@ class MLFeatureEngine:
         self.model = model
         self.feature_names = feature_cols
         self.feature_schema = target_schema
+        self._bound_to_default_manifest = False
 
         # 중요도 순 정렬
         sorted_feats = sorted(zip(feature_cols, importances), key=lambda x: x[1], reverse=True)
@@ -1065,6 +1230,7 @@ class MLFeatureEngine:
         MoE 오케스트레이터 표준 인터페이스:
         - 반환값: (signal_code: 1 | -1 | 0, confidence: float 0.0~1.0, reason: str)
         """
+        self.ensure_latest_manifest_model()
         if df_candle_15m is None or df_candle_15m.empty or len(df_candle_15m) < 15:
             return 0, 0.50, "데이터 부족"
 
@@ -1088,6 +1254,7 @@ class MLFeatureEngine:
         return 0, conf, "GBDT 관망/중립 상태"
 
     def predict_signal_full(self, df_candle_15m: pd.DataFrame) -> Tuple[int, float, str, Dict[str, float]]:
+        self.ensure_latest_manifest_model()
         if hasattr(self.predict_signal, "_mock_name") or hasattr(self.predict_signal, "assert_called"):
             sig, conf, reason = self.predict_signal(df_candle_15m)
             rem = max(0.0, 1.0 - float(conf))
