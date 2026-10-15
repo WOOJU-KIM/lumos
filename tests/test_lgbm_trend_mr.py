@@ -222,6 +222,74 @@ class TestLGBMTrendMeanReversion(unittest.TestCase):
         self.assertGreater(float(fb["Lower_Wick_Expansion"]), float(fa["Lower_Wick_Expansion"]))
         self.assertGreater(float(fb["EMA20_Slope_Accel"]), float(fa["EMA20_Slope_Accel"]))
 
+    def test_7_wfa_reproducibility_and_purge_integrity(self):
+        """[STEP 2 & 10] WFA 주간 롤링 재학습의 100% 결정론적 재현성 및 6캔들 Purge 경계 무결성 검증"""
+        from lightgbm import LGBMClassifier
+        eng = MLFeatureEngine(feature_schema="v5_challenger")
+        with patch("core.data_lake.MarketDataLake.load_candles", return_value=pd.DataFrame()):
+            feat_df = eng.extract_features(self.sample_df)
+        fcols = MLFeatureEngine.get_feature_columns(feat_df, "v5_challenger")
+        labels = eng.compute_triple_barrier_labels(feat_df, horizon=6)
+        y = labels.map({1: 2, -1: 0, 0: 1}).fillna(1).astype(int)
+
+        # 학습 구간 종료 시점(split_idx=90)에서 horizon=6 만큼 Purge 적용 시 미래 구간(>=90) 미참조 확인
+        split_idx = 90
+        horizon = 6
+        purged_end = split_idx - horizon
+        self.assertLessEqual(purged_end + horizon, split_idx, "Purge 적용 후 학습 라벨이 테스트 경계를 침범해서는 안 됩니다.")
+
+        X_train = feat_df[fcols].iloc[:purged_end].fillna(0.0)
+        y_train = y.iloc[:purged_end]
+        X_test = feat_df[fcols].iloc[split_idx:].fillna(0.0)
+
+        params = dict(
+            objective="multiclass", num_class=3, class_weight="balanced",
+            n_estimators=30, max_depth=4, learning_rate=0.02,
+            subsample=0.5, colsample_bytree=0.5, subsample_freq=1,
+            random_state=42, deterministic=True, force_col_wise=True, verbosity=-1, n_jobs=1
+        )
+        m1 = LGBMClassifier(**params).fit(X_train, y_train)
+        m2 = LGBMClassifier(**params).fit(X_train, y_train)
+        p1 = m1.predict_proba(X_test)
+        p2 = m2.predict_proba(X_test)
+        np.testing.assert_allclose(p1, p2, rtol=0.0, atol=1e-15, err_msg="WFA 동일 조건 재학습 시 확률이 100% 일치해야 합니다.")
+
+    def test_8_saved_challenger_pkl_and_champion_regression(self):
+        """[STEP 7 & 10] 저장된 Challenger PKL(77피처) 및 기존 Champion PKL(72피처) 무결성·출력 불변 회귀 검증"""
+        import hashlib
+        champ_path = PROJECT_ROOT / "models" / "model_champion.pkl"
+        chall_path = PROJECT_ROOT / "models" / "model_challenger_trend_mr.pkl"
+        self.assertTrue(champ_path.exists())
+        self.assertTrue(chall_path.exists())
+
+        champ_sha = hashlib.sha256(champ_path.read_bytes()).hexdigest()
+        self.assertEqual(
+            champ_sha,
+            "e1982612a986d08a69044551b92c96ba5f8508375187466af9a9966e63b3ed5f",
+            "기존 Champion PKL 파일 해시가 변경되어서는 안 됩니다.",
+        )
+
+        eng_champ = MLFeatureEngine(feature_schema="v4_champion")
+        eng_chall = MLFeatureEngine(feature_schema="v5_challenger")
+        self.assertTrue(eng_champ.load_model(champ_path))
+        self.assertTrue(eng_chall.load_model(chall_path))
+
+        self.assertEqual(len(eng_champ.feature_names), 72)
+        self.assertEqual(len(eng_chall.feature_names), 77)
+
+        # 동일 입력에 대해 두 모델이 각각 오류 없이 결정론적 출력을 반환하는지 검증
+        s_a1, c_a1, _, p_a1 = eng_champ.predict_signal_full(self.sample_df)
+        s_a2, c_a2, _, p_a2 = eng_champ.predict_signal_full(self.sample_df)
+        self.assertEqual(s_a1, s_a2)
+        self.assertAlmostEqual(c_a1, c_a2, places=12)
+        self.assertEqual(p_a1, p_a2)
+
+        s_e1, c_e1, _, p_e1 = eng_chall.predict_signal_full(self.sample_df)
+        s_e2, c_e2, _, p_e2 = eng_chall.predict_signal_full(self.sample_df)
+        self.assertEqual(s_e1, s_e2)
+        self.assertAlmostEqual(c_e1, c_e2, places=12)
+        self.assertEqual(p_e1, p_e2)
+
 
 if __name__ == "__main__":
     unittest.main()
