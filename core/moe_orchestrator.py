@@ -293,6 +293,8 @@ class MoEMetaOrchestrator:
                 if hasattr(self.gbdt_engine, "verify_manifest_memory_snapshot_consistency"):
                     consistency_res = self.gbdt_engine.verify_manifest_memory_snapshot_consistency(snapshot=gbdt_snap)
             live_long_15m = _get_live_df(config.TRADE_SYMBOLS[0], current_time_str) if "live_prices" in locals() else df_candle_15m
+            if live_long_15m is None or live_long_15m.empty or (df_candle_15m is not None and len(live_long_15m) < len(df_candle_15m)):
+                live_long_15m = df_candle_15m
             if consistency_res.get("ok", True):
                 if gbdt_snap is not None:
                     gbdt_sig, gbdt_conf, _, gbdt_probs = self.gbdt_engine.predict_signal_full(live_long_15m, snapshot=gbdt_snap)

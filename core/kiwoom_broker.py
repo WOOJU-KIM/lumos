@@ -1207,31 +1207,137 @@ class KiwoomBroker:
 
     def get_stock_quote(self, symbol: str = config.BASE_ASSET_LONG, exchange: Optional[str] = None) -> Dict[str, Any]:
         """
-        [TR: ust10000 / 실시간 피드] 미국주식 현재가 및 시세 조회
+        [TR: ust10000 / 실시간 피드] 미국주식 현재가 및 시세 조회 (프리마켓/정규장 시각 및 신선도 검증 포함)
         """
         sym_clean = symbol.upper().strip()
         stex = exchange or self._resolve_exchange(sym_clean)
-        
-        # 실시간 백업: yfinance / DataLake 실시간 시세
+        now_mono = time.time()
+        cache_map = getattr(self, "_quote_meta_cache", None)
+        if cache_map is None:
+            cache_map = {}
+            self._quote_meta_cache = cache_map
+        cached_entry = cache_map.get(sym_clean)
+        if isinstance(cached_entry, tuple) and len(cached_entry) == 2 and (now_mono - cached_entry[0]) < 5.0:
+            return dict(cached_entry[1])
+
+        from zoneinfo import ZoneInfo
         import yfinance as yf
+
+        ny_tz = ZoneInfo("America/New_York")
+        now_ny = datetime.now(ny_tz)
+        today_ny_str = now_ny.strftime("%Y-%m-%d")
+        now_hhmm = now_ny.strftime("%H:%M")
+        in_premarket_window = (now_ny.weekday() < 5) and ("04:00" <= now_hhmm < "09:30")
+        in_regular_window = (now_ny.weekday() < 5) and ("09:30" <= now_hhmm < "16:00")
+
         try:
             t = yf.Ticker(sym_clean)
+            hist_1m = None
+            try:
+                hist_1m = t.history(period="2d", interval="1m", prepost=True)
+            except Exception:
+                hist_1m = None
+
+            if hist_1m is not None and not hist_1m.empty and "Close" in hist_1m.columns:
+                valid_rows = hist_1m[hist_1m["Close"] > 0]
+                if not valid_rows.empty:
+                    last_px = round(float(valid_rows["Close"].iloc[-1]), 2)
+                    raw_ts = valid_rows.index[-1]
+                    if getattr(raw_ts, "tzinfo", None) is None:
+                        ts_ny = raw_ts.tz_localize(ny_tz)
+                    else:
+                        ts_ny = raw_ts.tz_convert(ny_tz)
+                    quote_date_et = ts_ny.strftime("%Y-%m-%d")
+                    quote_hhmm = ts_ny.strftime("%H:%M")
+                    quote_time_et = f"{quote_date_et} {quote_hhmm} ET"
+                    quote_timestamp_et = ts_ny.strftime("%Y-%m-%d %H:%M:%S ET")
+                    quote_age_sec = max(0.0, (now_ny - ts_ny).total_seconds())
+
+                    if "04:00" <= quote_hhmm < "09:30":
+                        quote_session = "PRE_MARKET"
+                    elif "09:30" <= quote_hhmm < "16:00":
+                        quote_session = "REGULAR_MARKET"
+                    else:
+                        quote_session = "AFTER_MARKET"
+
+                    is_prev_session = (in_premarket_window or in_regular_window) and (quote_date_et != today_ny_str)
+                    if in_regular_window and quote_session == "PRE_MARKET" and (now_hhmm >= "09:35"):
+                        is_prev_session = True
+                    max_age = 1800.0 if in_premarket_window else (600.0 if in_regular_window else 86400.0 * 4)
+                    is_fresh = (last_px > 0) and (not is_prev_session) and (quote_age_sec <= max_age)
+                    stale_reason = ""
+                    if is_prev_session:
+                        stale_reason = f"PREVIOUS_SESSION_QUOTE({quote_time_et})"
+                    elif not is_fresh:
+                        stale_reason = f"STALE_QUOTE_AGE({int(quote_age_sec)}s)"
+
+                    res = {
+                        "ok": True,
+                        "symbol": sym_clean,
+                        "exchange": stex,
+                        "last_price": last_px,
+                        "quote_time_et": quote_time_et,
+                        "quote_timestamp_et": quote_timestamp_et,
+                        "quote_date_et": quote_date_et,
+                        "quote_session": quote_session,
+                        "quote_age_sec": round(quote_age_sec, 1),
+                        "is_previous_session_quote": is_prev_session,
+                        "is_fresh": is_fresh,
+                        "stale_reason": stale_reason,
+                        "provider": "DataLake/RealtimeFeed",
+                        "msg": "정상 시세 수신" if is_fresh else f"지연/이전 세션 시세 수신 ({stale_reason})",
+                    }
+                    cache_map[sym_clean] = (now_mono, res)
+                    return dict(res)
+
             fi = t.fast_info
-            last_px = round(float(fi.last_price or fi.previous_close or config.FALLBACK_PRICE), 2)
-            return {
+            raw_last = getattr(fi, "last_price", None)
+            last_px = round(float(raw_last), 2) if (raw_last is not None and float(raw_last) > 0) else 0.0
+            if last_px <= 0:
+                return {
+                    "ok": False,
+                    "symbol": sym_clean,
+                    "exchange": stex,
+                    "last_price": 0.0,
+                    "quote_time_et": "UNAVAILABLE",
+                    "is_previous_session_quote": False,
+                    "is_fresh": False,
+                    "stale_reason": "QUOTE_PRICE_ZERO",
+                    "msg": "유효 시세 없음",
+                }
+
+            # fast_info.last_price는 프리마켓 시간대에 전일 정규장 종가를 반환하므로 프리마켓 실시간 시세로 인정하지 않음
+            is_prev_session = bool(in_premarket_window)
+            is_fresh = not is_prev_session
+            res = {
                 "ok": True,
                 "symbol": sym_clean,
                 "exchange": stex,
                 "last_price": last_px,
+                "quote_time_et": now_ny.strftime("%Y-%m-%d %H:%M ET") if is_fresh else "PREVIOUS_REGULAR_CLOSE",
+                "quote_timestamp_et": now_ny.strftime("%Y-%m-%d %H:%M:%S ET") if is_fresh else "PREVIOUS_REGULAR_CLOSE",
+                "quote_date_et": today_ny_str if is_fresh else "",
+                "quote_session": "REGULAR_CLOSE_FALLBACK" if is_prev_session else "FAST_INFO",
+                "quote_age_sec": 0.0 if is_fresh else 86400.0,
+                "is_previous_session_quote": is_prev_session,
+                "is_fresh": is_fresh,
+                "stale_reason": "PREVIOUS_REGULAR_CLOSE_IN_PREMARKET" if is_prev_session else "",
                 "provider": "DataLake/RealtimeFeed",
-                "msg": "정상 시세 수신"
+                "msg": "정상 시세 수신" if is_fresh else "프리마켓 중 전일 정규장 종가 감지(실시간 시세 아님)",
             }
+            cache_map[sym_clean] = (now_mono, res)
+            return dict(res)
         except Exception as e:
             return {
                 "ok": False,
                 "symbol": sym_clean,
+                "exchange": stex,
                 "last_price": 0.0,
-                "msg": f"시세 수신 실패: {e}"
+                "quote_time_et": "UNAVAILABLE",
+                "is_previous_session_quote": False,
+                "is_fresh": False,
+                "stale_reason": f"QUOTE_FETCH_ERROR: {e}",
+                "msg": f"시세 수신 실패: {e}",
             }
 
     def _resolve_exchange(self, symbol: str) -> str:

@@ -285,6 +285,10 @@ class MarketDataLake:
         df["datetime"] = (pd.to_datetime(df["datetime"])
                           .dt.tz_convert("America/New_York")
                           .dt.strftime("%Y-%m-%d %H:%M:%S"))
+        time_part = df["datetime"].astype(str).str.slice(11, 19)
+        df = df[(time_part >= "09:30:00") & (time_part < "16:00:00")]
+        if df.empty:
+            return 0
         df = df[["datetime", "Open", "High", "Low", "Close", "Volume"]].drop_duplicates(subset=["datetime"]).sort_values("datetime")
         return self.insert_candles(sym, tf, df)
 

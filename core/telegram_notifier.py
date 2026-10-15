@@ -318,9 +318,24 @@ class TelegramNotifier:
         kst_time_str: str,
         active_pos: Optional[Dict[str, Any]] = None,
         has_active_pos: Optional[bool] = None,
+        market_state: Optional[str] = None,
+        session_state: Optional[str] = None,
+        operation_mode: Optional[str] = None,
+        current_price: Optional[float] = None,
+        soxl_price: Optional[float] = None,
+        soxs_price: Optional[float] = None,
+        quote_time_et: Optional[str] = None,
+        candle_time_et: Optional[str] = None,
+        order_allowed: Optional[bool] = None,
+        order_block_reason: Optional[str] = None,
+        order_block_detail: Optional[str] = None,
+        order_executed: Optional[bool] = None,
+        premarket_policy: Optional[str] = None,
+        data_stale: Optional[bool] = None,
+        stale_reason: Optional[str] = None,
     ) -> str:
         """
-        [STEP 5-3] 15분 정기 매매 신호 / 진입 판단 브리핑 포맷 생성.
+        [STEP 5-3 & B-05] 15분 정기 매매 신호 / 진입 판단 브리핑 포맷 생성 (프리마켓 및 정규장 [ LUMOS AI SIGNAL ] 통합 포맷).
         반드시 신호 생성 시점의 모델 스냅샷(moe_res) 정보를 그대로 사용한다.
         """
         meta = self._extract_model_meta(moe_res)
@@ -330,10 +345,31 @@ class TelegramNotifier:
         direction = str(moe_res.get("direction", "NONE")).upper()
         pos_exists = bool(has_active_pos) if has_active_pos is not None else bool(active_pos)
 
+        is_stale = bool(data_stale) if data_stale is not None else bool(moe_res.get("data_stale", False))
+        stale_detail = str(stale_reason if stale_reason is not None else moe_res.get("stale_reason", "")).strip()
+
+        raw_mkt = str(market_state or moe_res.get("market_state") or "REGULAR_MARKET").strip().upper()
+        raw_sess = str(session_state or moe_res.get("session_state") or "").strip().upper()
+        if raw_mkt in ("PRE_MARKET_WAITING", "PRE_MARKET") or raw_sess == "PRE_MARKET_WAITING":
+            mkt_label = "PRE_MARKET"
+            sess_label = "PRE_MARKET_WAITING"
+        else:
+            mkt_label = "REGULAR_MARKET" if raw_mkt in ("REGULAR_MARKET_OPEN", "REGULAR_MARKET", "") else raw_mkt
+            sess_label = raw_sess or ("REGULAR_MARKET_OPEN" if mkt_label == "REGULAR_MARKET" else mkt_label)
+
+        op_mode = str(operation_mode or moe_res.get("operation_mode") or "").strip().upper()
+        if op_mode not in ("REAL", "SIMULATION"):
+            env_sim = os.getenv("KIWOOM_IS_SIMULATION", "1").strip()
+            op_mode = "SIMULATION" if (env_sim == "1" or env_sim.lower() == "true") else "REAL"
+
         gbdt_probs = moe_res.get("gbdt_probs", {"LONG": 0.0, "SHORT": 0.0, "NONE": 0.0})
         p_long = float(gbdt_probs.get("LONG", 0.0)) * 100.0
         p_short = float(gbdt_probs.get("SHORT", 0.0)) * 100.0
         p_none = float(gbdt_probs.get("NONE", 0.0)) * 100.0
+
+        if is_stale:
+            direction = "NONE"
+            is_appr = False
 
         if direction == "LONG":
             target_sym = config.BASE_ASSET_LONG
@@ -345,6 +381,53 @@ class TelegramNotifier:
             target_sym = "NONE"
             dir_str = "매수 관망 (NONE)"
 
+        cur_px_val = float(current_price if current_price is not None else moe_res.get("current_price", 0.0) or 0.0)
+        soxl_px_val = float(soxl_price if soxl_price is not None else moe_res.get("soxl_price", 0.0) or 0.0)
+        soxs_px_val = float(soxs_price if soxs_price is not None else moe_res.get("soxs_price", 0.0) or 0.0)
+        if cur_px_val <= 0:
+            cur_px_val = soxs_px_val if direction == "SHORT" and soxs_px_val > 0 else soxl_px_val
+
+        q_time_str = str(quote_time_et or moe_res.get("quote_time_et") or "").strip()
+        if not q_time_str:
+            q_time_str = f"{datetime.now().strftime('%Y-%m-%d')} {ny_time_str} ET"
+        c_time_str = str(candle_time_et or moe_res.get("candle_time_et") or "").strip()
+        if not c_time_str:
+            ts_raw = str(moe_res.get("timestamp") or "").strip()
+            c_time_str = f"{ts_raw[:16]} ET" if len(ts_raw) >= 16 else q_time_str
+
+        if order_allowed is None:
+            if is_stale or mkt_label == "PRE_MARKET" or meta["display_status"] == "BLOCKED" or not moe_res.get("model_consistency_ok", True) or pos_exists:
+                ord_allowed_bool = False
+            else:
+                ord_allowed_bool = True
+        else:
+            ord_allowed_bool = bool(order_allowed)
+
+        ord_allowed_str = "ALLOWED" if ord_allowed_bool else "BLOCKED"
+
+        if order_block_reason is not None:
+            ord_block_str = str(order_block_reason).strip().upper()
+        elif is_stale:
+            ord_block_str = "DATA_STALE"
+        elif mkt_label == "PRE_MARKET":
+            ord_block_str = "PRE_MARKET"
+        elif not ord_allowed_bool:
+            ord_block_str = "RISK_BLOCK"
+        else:
+            ord_block_str = "NONE"
+
+        ord_exec_bool = bool(order_executed) if order_executed is not None else False
+        ord_exec_str = "YES" if ord_exec_bool else "NO"
+
+        if premarket_policy is not None:
+            pm_policy = str(premarket_policy).strip()
+        elif is_stale:
+            pm_policy = "SIGNAL_UNAVAILABLE_STALE_DATA"
+        elif mkt_label == "PRE_MARKET":
+            pm_policy = "SIGNAL_ONLY — NO ORDER" if (is_appr and direction in ("LONG", "SHORT")) else "NONE"
+        else:
+            pm_policy = "REGULAR_EXECUTION_POLICY"
+
         use_veto = bool(getattr(config, "USE_CROSS_ASSET_VETO", False))
         is_cross_veto = bool(moe_res.get("is_cross_veto", False))
         veto_str = ("차단 (VETO)" if is_cross_veto else "통과 (PASS)") if use_veto else "비활성 (OFF)"
@@ -353,16 +436,53 @@ class TelegramNotifier:
         is_60m_ok = bool(moe_res.get("is_60m_trend_ok", True))
         trend_60m_str = ("통과 (PASS)" if is_60m_ok else "차단 (BLOCKED)") if use_60m else "비활성 (OFF)"
 
-        if meta["display_status"] == "BLOCKED" or not moe_res.get("model_consistency_ok", True):
+        if is_stale:
+            status_line = f"신호 보류 🚨 (SIGNAL_UNAVAILABLE_STALE_DATA | {self._escape_html(stale_detail or 'DATA_STALE')})"
+        elif meta["display_status"] == "BLOCKED" or not moe_res.get("model_consistency_ok", True):
             status_line = "신규 진입 차단 🚨 (MODEL BLOCKED / 불일치 감지)"
+        elif mkt_label == "PRE_MARKET" and is_appr and direction in ("LONG", "SHORT"):
+            status_line = "프리마켓 신호 감지 🟠 (SIGNAL_ONLY — NO ORDER)"
+        elif mkt_label == "PRE_MARKET":
+            status_line = "프리마켓 관망 대기 🟡 (PRE_MARKET_WAITING | NONE)"
         elif is_appr and pos_exists:
             status_line = "진입 승인 🟢 (보유종목 있어 실제 진입은 Skip)"
+        elif is_appr and not ord_allowed_bool:
+            status_line = f"주문 차단 🛡️ ({self._escape_html(ord_block_str)})"
         elif is_appr:
             status_line = "진입 승인 🟢"
         else:
             status_line = "관망 유지 🟡"
 
+        extra_lines = ""
+        if is_stale:
+            extra_lines += f"신호 상태: SIGNAL_UNAVAILABLE_STALE_DATA ({self._escape_html(stale_detail or 'DATA_STALE')})\n"
+        if mkt_label == "PRE_MARKET":
+            extra_lines += f"프리마켓 정책: {self._escape_html(pm_policy)}\n"
+            extra_lines += "추론 입력 데이터: 전일 정규장 15분봉 + 프리마켓 실시간 시세 오버레이 (정규장 15분봉 학습 분포와 상이 — 참고용 신호)\n"
+        elif mkt_label == "REGULAR_MARKET":
+            extra_lines += "추론 입력 데이터: 정규장 15분봉 + 실시간 시세 (모델 학습 분포와 동일)\n"
+        if order_block_detail:
+            extra_lines += f"차단 상세: {self._escape_html(str(order_block_detail))}\n"
+
+        px_detail_str = f"${cur_px_val:.2f}"
+        if soxl_px_val > 0 and soxs_px_val > 0:
+            px_detail_str = f"${cur_px_val:.2f} (SOXL ${soxl_px_val:.2f} | SOXS ${soxs_px_val:.2f})"
+
         return (
+            f"[ LUMOS AI SIGNAL ]\n"
+            f"시장 상태: {self._escape_html(mkt_label)} ({self._escape_html(sess_label)})\n"
+            f"운영 모드: {self._escape_html(op_mode)}\n"
+            f"활성 모델: {self._escape_html(meta['model_id'])}\n"
+            f"AI 판단: {self._escape_html(direction)}\n"
+            f"확신도: {conf:.1f}%\n"
+            f"진입 임계값: {threshold_pct:.1f}%\n"
+            f"현재가: {self._escape_html(px_detail_str)}\n"
+            f"시세 기준 시각: {self._escape_html(q_time_str)}\n"
+            f"캔들 기준 시각: {self._escape_html(c_time_str)}\n"
+            f"주문 가능 여부: {self._escape_html(ord_allowed_str)}\n"
+            f"주문 차단 사유: {self._escape_html(ord_block_str)}\n"
+            f"실제 주문 실행 여부: {self._escape_html(ord_exec_str)}\n"
+            f"{extra_lines}\n"
             f"🤖 <b>[Lumos AI 정기 브리핑]</b>\n"
             f"⏰ <b>판정 시각:</b> {self._escape_html(ny_time_str)} (NYT) / {self._escape_html(kst_time_str)} (KST)\n"
             f"🎯 <b>대상 종목 / 방향:</b> <code>{self._escape_html(target_sym)}</code> ({self._escape_html(dir_str)})\n"
@@ -384,6 +504,7 @@ class TelegramNotifier:
         kst_time_str: str,
         active_pos: Optional[Dict[str, Any]] = None,
         has_active_pos: Optional[bool] = None,
+        **kwargs: Any,
     ) -> Dict[str, Any]:
         msg = self.compose_signal_briefing_alert(
             moe_res=moe_res,
@@ -391,6 +512,7 @@ class TelegramNotifier:
             kst_time_str=kst_time_str,
             active_pos=active_pos,
             has_active_pos=has_active_pos,
+            **kwargs,
         )
         return self._dispatch_message(msg, alert_type="SIGNAL_BRIEFING")
 
