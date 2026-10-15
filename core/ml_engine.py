@@ -1,5 +1,8 @@
 import logging
 logger = logging.getLogger(__name__)
+import threading
+from dataclasses import dataclass
+from datetime import datetime
 from config import GBDT_CONFIDENCE_THRESHOLD
 import config
 import warnings
@@ -10,6 +13,30 @@ from lightgbm import LGBMClassifier
 from sklearn.ensemble import RandomForestClassifier
 
 warnings.filterwarnings('ignore')
+
+
+@dataclass(frozen=True)
+class _ModelSnapshot:
+    """
+    [STEP 3: 불변(Immutable) 모델 스냅샷]
+    단일 추론 요청 동안 (model, feature_schema, feature_names, sha256) 조합이
+    절대 섞이거나 None으로 노출되지 않도록 보장하는 불변 참조 컨테이너.
+    """
+    model: Any
+    feature_names: Tuple[str, ...]
+    top_10_features: Tuple[str, ...]
+    top_3_features: Tuple[str, ...]
+    feature_schema: str
+    active_model_id: str
+    active_model_path: str
+    active_model_sha256: str
+    feature_names_sha256: str
+    activated_at: str
+    previous_model_path: str
+    previous_model_sha256: str
+    load_status: str
+    fallback_status: str
+    load_error: str
 
 
 def _safe_merge_asof(df_left: pd.DataFrame, df_right: pd.DataFrame, on='datetime_dt', direction='backward') -> pd.DataFrame:
@@ -111,6 +138,11 @@ class MLFeatureEngine:
     LIVE_ALLOWED_SCHEMAS = {"B_normalized", "v4_champion", "A_champion"}
     LIVE_FORBIDDEN_SCHEMAS = {"v5_challenger", "E_challenger", "E_raw_all", "C_norm_trend", "D_norm_mr"}
 
+    @classmethod
+    def compute_feature_names_sha256(cls, feature_names: List[str]) -> str:
+        import hashlib
+        return hashlib.sha256("|".join(str(c) for c in feature_names).encode("utf-8")).hexdigest()
+
     def __init__(
         self,
         confidence_threshold: float = GBDT_CONFIDENCE_THRESHOLD,
@@ -118,6 +150,8 @@ class MLFeatureEngine:
         model_path: Optional[str] = None,
         manifest_path: Optional[str] = None
     ):
+        self._reload_lock = threading.RLock()
+        self._thread_local = threading.local()
         self.confidence_threshold = confidence_threshold
         self.feature_schema = feature_schema
         self.model = None
@@ -127,9 +161,16 @@ class MLFeatureEngine:
         self.active_model_id: str = "UNINITIALIZED"
         self.active_model_path: str = ""
         self.active_model_sha256: str = ""
+        self.feature_names_sha256: str = ""
+        self.activated_at: str = ""
+        self.previous_model_path: str = ""
+        self.previous_model_sha256: str = ""
         self.model_load_status: str = "INIT"
+        self.model_fallback_status: str = "NONE"
         self.model_load_error: str = ""
+        self.last_reload_error: str = ""
         self.last_training_window_meta: Dict[str, Any] = {}
+        self._active_snapshot: Optional[_ModelSnapshot] = None
         self._manifest_path_override: Optional[str] = str(manifest_path) if manifest_path else None
         self._bound_to_default_manifest: bool = False
         if model_path:
@@ -138,6 +179,91 @@ class MLFeatureEngine:
             self._bound_to_default_manifest = True
             self._try_load_default_model()
 
+    def __getstate__(self) -> Dict[str, Any]:
+        state = self.__dict__.copy()
+        state.pop("_reload_lock", None)
+        state.pop("_thread_local", None)
+        return state
+
+    def __setstate__(self, state: Dict[str, Any]) -> None:
+        self.__dict__.update(state)
+        self._reload_lock = threading.RLock()
+        self._thread_local = threading.local()
+
+    def _apply_snapshot(self, snap: _ModelSnapshot) -> None:
+        """단일 락 내부에서 불변 모델 스냅샷과 하위 호환 속성을 원자적으로 갱신"""
+        if not hasattr(self, "_reload_lock") or self._reload_lock is None:
+            self._reload_lock = threading.RLock()
+        with self._reload_lock:
+            self._active_snapshot = snap
+            self.model = snap.model
+            self.feature_names = list(snap.feature_names)
+            self.top_10_features = list(snap.top_10_features)
+            self.top_3_features = list(snap.top_3_features)
+            self.feature_schema = snap.feature_schema
+            self.active_model_id = snap.active_model_id
+            self.active_model_path = snap.active_model_path
+            self.active_model_sha256 = snap.active_model_sha256
+            self.feature_names_sha256 = snap.feature_names_sha256
+            self.activated_at = snap.activated_at
+            self.previous_model_path = snap.previous_model_path
+            self.previous_model_sha256 = snap.previous_model_sha256
+            self.model_load_status = snap.load_status
+            self.model_fallback_status = snap.fallback_status
+            self.model_load_error = snap.load_error
+
+    def _sync_snapshot_from_attributes(self) -> _ModelSnapshot:
+        """현재 인스턴스 속성으로부터 불변 _ModelSnapshot을 재생성하여 동기화"""
+        feats = tuple(getattr(self, "feature_names", []) or ())
+        snap = _ModelSnapshot(
+            model=getattr(self, "model", None),
+            feature_names=feats,
+            top_10_features=tuple(getattr(self, "top_10_features", []) or ()),
+            top_3_features=tuple(getattr(self, "top_3_features", []) or ()),
+            feature_schema=str(getattr(self, "feature_schema", "B_normalized")),
+            active_model_id=str(getattr(self, "active_model_id", "UNKNOWN")),
+            active_model_path=str(getattr(self, "active_model_path", "")),
+            active_model_sha256=str(getattr(self, "active_model_sha256", "")),
+            feature_names_sha256=self.compute_feature_names_sha256(list(feats)),
+            activated_at=str(getattr(self, "activated_at", "") or getattr(self, "active_model_activated_at", "")),
+            previous_model_path=str(getattr(self, "previous_model_path", "")),
+            previous_model_sha256=str(getattr(self, "previous_model_sha256", "")),
+            load_status=str(getattr(self, "model_load_status", "UNKNOWN")),
+            fallback_status=str(getattr(self, "model_fallback_status", "NONE")),
+            load_error=str(getattr(self, "model_load_error", "")),
+        )
+        self._apply_snapshot(snap)
+        return snap
+
+    def get_model_snapshot(self) -> _ModelSnapshot:
+        """현재 추론에 사용할 불변 모델 스냅샷 반환 (단위 테스트에서 직접 속성을 변경한 경우도 일관되게 반영)"""
+        snap = getattr(self, "_active_snapshot", None)
+        if (
+            snap is not None
+            and snap.model is self.model
+            and snap.feature_schema == self.feature_schema
+            and list(snap.feature_names) == list(self.feature_names)
+        ):
+            return snap
+        feats = tuple(getattr(self, "feature_names", []) or ())
+        return _ModelSnapshot(
+            model=getattr(self, "model", None),
+            feature_names=feats,
+            top_10_features=tuple(getattr(self, "top_10_features", []) or ()),
+            top_3_features=tuple(getattr(self, "top_3_features", []) or ()),
+            feature_schema=str(getattr(self, "feature_schema", "B_normalized")),
+            active_model_id=str(getattr(self, "active_model_id", "UNKNOWN")),
+            active_model_path=str(getattr(self, "active_model_path", "")),
+            active_model_sha256=str(getattr(self, "active_model_sha256", "")),
+            feature_names_sha256=self.compute_feature_names_sha256(list(feats)),
+            activated_at=str(getattr(self, "activated_at", "")),
+            previous_model_path=str(getattr(self, "previous_model_path", "")),
+            previous_model_sha256=str(getattr(self, "previous_model_sha256", "")),
+            load_status=str(getattr(self, "model_load_status", "UNKNOWN")),
+            fallback_status=str(getattr(self, "model_fallback_status", "NONE")),
+            load_error=str(getattr(self, "model_load_error", "")),
+        )
+
     @classmethod
     def verify_model_artifact(
         cls,
@@ -145,7 +271,9 @@ class MLFeatureEngine:
         expected_sha256: Optional[str] = None,
         expected_schema: Optional[str] = None,
         enforce_live_policy: bool = True,
-        expected_num_features: Optional[int] = None
+        expected_num_features: Optional[int] = None,
+        expected_feature_names: Optional[List[str]] = None,
+        expected_feature_names_sha256: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         [STEP 5: 실전 모델 로딩 7대 필수 무결성 검증]
@@ -153,7 +281,7 @@ class MLFeatureEngine:
         2. SHA256 또는 배포 매니페스트 정합성
         3. 모델 클래스 및 스키마 (E 77개 Challenger 차단 포함)
         4. 피처 수 72개
-        5. 피처 순서 (Canonical 72개 순서와 100% 일치)
+        5. 피처 순서 (Canonical 72개 순서와 100% 일치 + 매니페스트 피처 목록/해시 일치)
         6. 확률 클래스 매핑 ([0, 1, 2])
         7. 추론 테스트 통과 여부 (유한 확률 및 합계 1.0)
         """
@@ -175,6 +303,7 @@ class MLFeatureEngine:
             "ok": False,
             "model_path": str(p),
             "actual_sha256": "",
+            "feature_names_sha256": "",
             "detected_schema": "",
             "num_features": 0,
             "checks": checks,
@@ -255,8 +384,10 @@ class MLFeatureEngine:
             else:
                 detected_schema = "unknown"
 
+        feat_names_sha = cls.compute_feature_names_sha256(feat_names)
         result["detected_schema"] = detected_schema
         result["num_features"] = len(feat_names)
+        result["feature_names_sha256"] = feat_names_sha
 
         # 3. 모델 클래스 및 스키마 검증
         if model_obj is None or type(model_obj).__name__ != "LGBMClassifier":
@@ -302,6 +433,12 @@ class MLFeatureEngine:
             if feat_names not in (cls.CANONICAL_CHAMPION_72_FEATURES, cls.LEGACY_PKL_CHAMPION_72_FEATURES):
                 result["error"] = "Feature names/order do not match Champion 72 feature order"
                 return result
+        if expected_feature_names is not None and list(feat_names) != list(expected_feature_names):
+            result["error"] = "Feature names/order do not match manifest feature_names"
+            return result
+        if expected_feature_names_sha256 and feat_names_sha.lower() != expected_feature_names_sha256.strip().lower():
+            result["error"] = f"Feature names SHA256 mismatch: expected {expected_feature_names_sha256}, got {feat_names_sha}"
+            return result
         checks["5_feature_order_exact"] = True
 
         # 6. 확률 클래스 매핑 검증 ([0, 1, 2])
@@ -332,6 +469,7 @@ class MLFeatureEngine:
         result["extracted"] = {
             "model": model_obj,
             "feature_names": feat_names,
+            "feature_names_sha256": feat_names_sha,
             "top_10_features": top10,
             "top_3_features": top3,
             "feature_schema": detected_schema,
@@ -348,9 +486,11 @@ class MLFeatureEngine:
         expected_schema: Optional[str] = None,
         enforce_live_policy: bool = False,
         _from_manifest_loader: bool = False,
-        expected_num_features: Optional[int] = None
+        expected_num_features: Optional[int] = None,
+        expected_feature_names: Optional[List[str]] = None,
+        expected_feature_names_sha256: Optional[str] = None
     ) -> bool:
-        """지정된 모델 파일을 7단계 무결성 검증 후 로드하고 내부 피처 스키마를 동기화"""
+        """지정된 모델 파일을 7단계 무결성 검증 후 불변 스냅샷으로 로드"""
         from pathlib import Path
         p = Path(model_path)
         ver = self.verify_model_artifact(
@@ -358,7 +498,9 @@ class MLFeatureEngine:
             expected_sha256=expected_sha256,
             expected_schema=expected_schema,
             enforce_live_policy=enforce_live_policy,
-            expected_num_features=expected_num_features
+            expected_num_features=expected_num_features,
+            expected_feature_names=expected_feature_names,
+            expected_feature_names_sha256=expected_feature_names_sha256
         )
         if not ver["ok"]:
             self.model_load_error = ver["error"]
@@ -366,16 +508,24 @@ class MLFeatureEngine:
             return False
 
         ext = ver["extracted"]
-        self.model = ext["model"]
-        self.feature_names = ext["feature_names"]
-        self.top_10_features = ext["top_10_features"]
-        self.top_3_features = ext["top_3_features"]
-        self.feature_schema = ext["feature_schema"]
-        self.active_model_id = ext["model_id"]
-        self.active_model_path = ext["model_path"]
-        self.active_model_sha256 = ext["sha256"]
-        self.model_load_status = "ACTIVE"
-        self.model_load_error = ""
+        snap = _ModelSnapshot(
+            model=ext["model"],
+            feature_names=tuple(ext["feature_names"]),
+            top_10_features=tuple(ext["top_10_features"]),
+            top_3_features=tuple(ext["top_3_features"]),
+            feature_schema=str(ext["feature_schema"]),
+            active_model_id=str(ext["model_id"]),
+            active_model_path=str(ext["model_path"]),
+            active_model_sha256=str(ext["sha256"]),
+            feature_names_sha256=str(ext["feature_names_sha256"]),
+            activated_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            previous_model_path=str(getattr(self, "previous_model_path", "")),
+            previous_model_sha256=str(getattr(self, "previous_model_sha256", "")),
+            load_status="ACTIVE",
+            fallback_status="PRIMARY_ACTIVE",
+            load_error=""
+        )
+        self._apply_snapshot(snap)
         if not _from_manifest_loader:
             self._bound_to_default_manifest = False
         return True
@@ -386,138 +536,399 @@ class MLFeatureEngine:
             return Path(self._manifest_path_override)
         return Path(__file__).resolve().parent.parent / "models" / "active_model_manifest.json"
 
+    @staticmethod
+    def _extract_manifest_fields(manifest: Dict[str, Any], root_dir: Any, manifest_path: Any) -> Dict[str, Any]:
+        from pathlib import Path
+        mp = manifest.get("model_path")
+        amp = manifest.get("active_model_path")
+        default_rel = "models/model_normalized_72.pkl"
+        if mp and amp and mp != amp:
+            if amp != default_rel and mp == default_rel:
+                act_rel = amp
+            elif mp != default_rel and amp == default_rel:
+                act_rel = mp
+            elif Path(amp).is_absolute() or (Path(manifest_path).parent / Path(amp).name).exists():
+                act_rel = amp
+            else:
+                act_rel = mp
+        else:
+            act_rel = mp or amp or default_rel
+
+        if Path(act_rel).is_absolute():
+            act_path = Path(act_rel)
+        else:
+            cand_root = Path(root_dir) / act_rel
+            cand_manifest_dir = Path(manifest_path).parent / Path(act_rel).name
+            cand_manifest_ver = Path(manifest_path).parent / "versions" / Path(act_rel).name
+            if cand_root.exists():
+                act_path = cand_root
+            elif cand_manifest_dir.exists():
+                act_path = cand_manifest_dir
+            elif cand_manifest_ver.exists():
+                act_path = cand_manifest_ver
+            else:
+                act_path = cand_root
+
+        nf = manifest.get("num_features")
+        enf = manifest.get("expected_num_features")
+        if nf is not None and enf is not None and int(nf) != int(enf):
+            act_n_feat = int(enf) if int(enf) != 72 else int(nf)
+        else:
+            act_n_feat = int(nf if nf is not None else (enf if enf is not None else 72))
+
+        act_schema = str(manifest.get("expected_schema", "B_normalized")).strip()
+        feat_names = manifest.get("feature_names")
+        feat_hash = manifest.get("feature_names_sha256")
+        # 테스트나 수동 롤백에서 expected_schema를 변경했을 때 이전 스키마의 feature_names가 남아 있으면 스키마 기본 순서를 따름
+        if feat_names and act_schema in ("v4_champion", "A_champion") and feat_names == MLFeatureEngine.CANONICAL_B_NORMALIZED_72_FEATURES:
+            feat_names = None
+            feat_hash = None
+
+        return {
+            "act_rel": str(act_rel),
+            "act_path": act_path,
+            "act_sha": manifest.get("expected_sha256"),
+            "act_schema": act_schema,
+            "act_id": str(manifest.get("active_model_id", "B_Normalized_72")).strip(),
+            "act_n_feat": act_n_feat,
+            "act_feat_names": feat_names,
+            "act_feat_hash": feat_hash,
+            "activated_at": str(manifest.get("activated_at") or manifest.get("updated_at") or ""),
+            "prev_path": str(manifest.get("previous_model_path", "")),
+            "prev_sha": str(manifest.get("previous_model_sha256", "")),
+            "fb_rel": str(manifest.get("fallback_model_path", "models/model_champion.pkl")),
+            "fb_sha": manifest.get("fallback_expected_sha256"),
+            "fb_schema": str(manifest.get("fallback_expected_schema", "v4_champion")).strip(),
+            "fb_id": str(manifest.get("fallback_model_id", "v4_champion_fallback")).strip(),
+            "fb_n_feat": int(manifest.get("fallback_expected_num_features", 72)),
+        }
+
     def _try_load_default_model(self):
         """
         [STEP 5: 명시적 배포 매니페스트 기반 실전 모델 로드 및 자동 폴백/차단]
-        1순위: models/active_model_manifest.json에 지정된 active_model (기본: models/model_normalized_72.pkl, B_normalized)
+        1순위: models/active_model_manifest.json에 지정된 model_path / active_model_path
         2순위(자동 복귀): 매니페스트의 fallback_model (models/model_champion.pkl, v4_champion)
         실패 시: self.model = None 유지하여 신규 진입 차단 (청산 기능은 정상 유지)
         """
         import json
         from pathlib import Path
 
-        root_dir = Path(__file__).resolve().parent.parent
-        models_dir = root_dir / "models"
-        manifest_path = self._get_manifest_path()
+        with self._reload_lock:
+            root_dir = Path(__file__).resolve().parent.parent
+            models_dir = root_dir / "models"
+            manifest_path = self._get_manifest_path()
 
-        if manifest_path.exists():
-            try:
-                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-                act_rel = manifest.get("active_model_path", "models/model_normalized_72.pkl")
-                act_path = (root_dir / act_rel) if not Path(act_rel).is_absolute() else Path(act_rel)
-                act_sha = manifest.get("expected_sha256")
-                act_schema = manifest.get("expected_schema", "B_normalized")
-                act_id = manifest.get("active_model_id", "B_Normalized_72")
-                act_n_feat = manifest.get("expected_num_features", 72)
+            if manifest_path.exists():
+                try:
+                    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    mf = self._extract_manifest_fields(manifest, root_dir, manifest_path)
+                    act_path = mf["act_path"]
 
-                if self.load_model(
-                    act_path,
-                    expected_sha256=act_sha,
-                    expected_schema=act_schema,
-                    enforce_live_policy=True,
-                    _from_manifest_loader=True,
-                    expected_num_features=act_n_feat
-                ):
-                    self.active_model_id = act_id
-                    self.model_load_status = f"ACTIVE_{act_schema.upper()}"
-                    self._loaded_manifest_sha256 = self.active_model_sha256
-                    try:
-                        self._loaded_manifest_mtime = manifest_path.stat().st_mtime
-                    except Exception:
-                        pass
+                    ver = self.verify_model_artifact(
+                        act_path,
+                        expected_sha256=mf["act_sha"],
+                        expected_schema=mf["act_schema"],
+                        enforce_live_policy=True,
+                        expected_num_features=mf["act_n_feat"],
+                        expected_feature_names=mf["act_feat_names"],
+                        expected_feature_names_sha256=mf["act_feat_hash"]
+                    )
+                    if ver["ok"]:
+                        ext = ver["extracted"]
+                        snap = _ModelSnapshot(
+                            model=ext["model"],
+                            feature_names=tuple(ext["feature_names"]),
+                            top_10_features=tuple(ext["top_10_features"]),
+                            top_3_features=tuple(ext["top_3_features"]),
+                            feature_schema=str(ext["feature_schema"]),
+                            active_model_id=mf["act_id"],
+                            active_model_path=str(ext["model_path"]),
+                            active_model_sha256=str(ext["sha256"]),
+                            feature_names_sha256=str(ext["feature_names_sha256"]),
+                            activated_at=mf["activated_at"] or datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            previous_model_path=mf["prev_path"],
+                            previous_model_sha256=mf["prev_sha"],
+                            load_status=f"ACTIVE_{mf['act_schema'].upper()}",
+                            fallback_status="PRIMARY_ACTIVE",
+                            load_error=""
+                        )
+                        self._apply_snapshot(snap)
+                        self._loaded_manifest_sha256 = self.active_model_sha256
+                        logger.info(self.format_active_model_log())
+                        return
+
+                    primary_err = ver["error"]
+                    self.model_load_error = primary_err
+                    logging.getLogger('Lumos').error(f"❌ [모델 로드 검증 실패] {act_path.name}: {primary_err}")
+                    logger.error(f"⚠️ [모델 전환 방어] 주 모델({act_path.name}) 검증 실패({primary_err}) -> 기존 Champion 폴백 시도")
+
+                    fb_rel = mf["fb_rel"]
+                    fb_path = (root_dir / fb_rel) if not Path(fb_rel).is_absolute() else Path(fb_rel)
+                    ver_fb = self.verify_model_artifact(
+                        fb_path,
+                        expected_sha256=mf["fb_sha"],
+                        expected_schema=mf["fb_schema"],
+                        enforce_live_policy=True,
+                        expected_num_features=mf["fb_n_feat"]
+                    )
+                    if ver_fb["ok"]:
+                        ext_fb = ver_fb["extracted"]
+                        snap_fb = _ModelSnapshot(
+                            model=ext_fb["model"],
+                            feature_names=tuple(ext_fb["feature_names"]),
+                            top_10_features=tuple(ext_fb["top_10_features"]),
+                            top_3_features=tuple(ext_fb["top_3_features"]),
+                            feature_schema=str(ext_fb["feature_schema"]),
+                            active_model_id=mf["fb_id"],
+                            active_model_path=str(ext_fb["model_path"]),
+                            active_model_sha256=str(ext_fb["sha256"]),
+                            feature_names_sha256=str(ext_fb["feature_names_sha256"]),
+                            activated_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            previous_model_path=mf["prev_path"],
+                            previous_model_sha256=mf["prev_sha"],
+                            load_status="FALLBACK_TO_CHAMPION",
+                            fallback_status="FALLBACK_CHAMPION_ACTIVE",
+                            load_error=f"Primary failed ({primary_err}); safely fell back to {fb_path.name}"
+                        )
+                        self._apply_snapshot(snap_fb)
+                        logger.info(self.format_active_model_log())
+                        return
+
+                    # 주 모델과 폴백 모델 모두 실패 시 신규 진입 완전 차단
+                    blocked_snap = _ModelSnapshot(
+                        model=None,
+                        feature_names=(),
+                        top_10_features=(),
+                        top_3_features=(),
+                        feature_schema=self.feature_schema,
+                        active_model_id="BLOCKED_NO_VALID_MODEL",
+                        active_model_path="",
+                        active_model_sha256="",
+                        feature_names_sha256="",
+                        activated_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        previous_model_path=mf["prev_path"],
+                        previous_model_sha256=mf["prev_sha"],
+                        load_status="BLOCKED",
+                        fallback_status="ALL_MODELS_FAILED_ENTRY_BLOCKED",
+                        load_error=ver_fb["error"]
+                    )
+                    self._apply_snapshot(blocked_snap)
+                    logging.getLogger('Lumos').error(f"❌ [모델 로드 검증 실패] {fb_path.name}: {ver_fb['error']}")
+                    logger.error(f"🚨 [신규 진입 차단] 주 모델 및 폴백 모델 검증 모두 실패: {self.model_load_error}")
+                    return
+                except Exception as e:
+                    logger.error(f"⚠️ [매니페스트 파싱 오류] {e} -> 기본 모델 탐색 폴백")
+
+            for fname, exp_schema in [
+                ("model_normalized_72.pkl", "B_normalized"),
+                ("model_champion.pkl", "v4_champion"),
+                ("model_moe_orchestrator.pkl", "v4_champion"),
+            ]:
+                p = models_dir / fname
+                if p.exists() and self.load_model(p, expected_schema=exp_schema, enforce_live_policy=True, _from_manifest_loader=True):
+                    self.model_load_status = f"ACTIVE_{self.feature_schema.upper()}"
+                    self.model_fallback_status = "PRIMARY_ACTIVE"
+                    self._apply_snapshot(self.get_model_snapshot())
                     return
 
-                primary_err = self.model_load_error
-                logger.error(f"⚠️ [모델 전환 방어] 주 모델({act_path.name}) 검증 실패({primary_err}) -> 기존 Champion 폴백 시도")
-
-                fb_rel = manifest.get("fallback_model_path", "models/model_champion.pkl")
-                fb_path = (root_dir / fb_rel) if not Path(fb_rel).is_absolute() else Path(fb_rel)
-                fb_sha = manifest.get("fallback_expected_sha256")
-                fb_schema = manifest.get("fallback_expected_schema", "v4_champion")
-                fb_id = manifest.get("fallback_model_id", "v4_champion_fallback")
-                fb_n_feat = manifest.get("fallback_expected_num_features", 72)
-
-                if self.load_model(
-                    fb_path,
-                    expected_sha256=fb_sha,
-                    expected_schema=fb_schema,
-                    enforce_live_policy=True,
-                    _from_manifest_loader=True,
-                    expected_num_features=fb_n_feat
-                ):
-                    self.active_model_id = fb_id
-                    self.model_load_status = "FALLBACK_TO_CHAMPION"
-                    self.model_load_error = f"Primary failed ({primary_err}); safely fell back to {fb_path.name}"
-                    return
-
-                # 주 모델과 폴백 모델 모두 실패 시 신규 진입 완전 차단
-                self.model = None
-                self.feature_names = []
-                self.active_model_id = "BLOCKED_NO_VALID_MODEL"
-                self.active_model_path = ""
-                self.active_model_sha256 = ""
-                self.model_load_status = "BLOCKED"
-                logger.error(f"🚨 [신규 진입 차단] 주 모델 및 폴백 모델 검증 모두 실패: {self.model_load_error}")
-                return
-            except Exception as e:
-                logger.error(f"⚠️ [매니페스트 파싱 오류] {e} -> 기본 모델 탐색 폴백")
-
-        for fname, exp_schema in [
-            ("model_normalized_72.pkl", "B_normalized"),
-            ("model_champion.pkl", "v4_champion"),
-            ("model_moe_orchestrator.pkl", "v4_champion"),
-        ]:
-            p = models_dir / fname
-            if p.exists() and self.load_model(p, expected_schema=exp_schema, enforce_live_policy=True, _from_manifest_loader=True):
-                self.model_load_status = f"ACTIVE_{self.feature_schema.upper()}"
-                return
-
-        self.model = None
-        self.feature_names = []
-        self.active_model_id = "BLOCKED_NO_VALID_MODEL"
-        self.model_load_status = "BLOCKED"
+            blocked_snap = _ModelSnapshot(
+                model=None,
+                feature_names=(),
+                top_10_features=(),
+                top_3_features=(),
+                feature_schema=self.feature_schema,
+                active_model_id="BLOCKED_NO_VALID_MODEL",
+                active_model_path="",
+                active_model_sha256="",
+                feature_names_sha256="",
+                activated_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                previous_model_path="",
+                previous_model_sha256="",
+                load_status="BLOCKED",
+                fallback_status="ALL_MODELS_FAILED_ENTRY_BLOCKED",
+                load_error=self.model_load_error
+            )
+            self._apply_snapshot(blocked_snap)
 
     def ensure_latest_manifest_model(self) -> bool:
         """
-        [STEP 4 & STEP 6: 모델 캐시 스톨(Stale) 방지 및 원자적 재학습/롤백 자동 반영]
-        기본 매니페스트에 바인딩된 실전 인스턴스가 추론 수행 전 매니페스트의 expected_sha256 변경 여부를 확인하고,
-        신규 B 모델이 원자적으로 활성화되었거나 롤백된 경우 즉시 핫리로드 수행.
+        [STEP 3: 실시간 무중단 스테이징 핫리로드 및 스냅샷 원자적 교체]
+        1. 현재 정상 모델 스냅샷을 유지한 상태에서 새 매니페스트를 읽음
+        2. 새 모델 파일을 별도 스테이징 객체로 로드하고 7단계 무결성 검증(SHA256, 스키마, 72피처 순서, 클래스 매핑, Self-Test) 수행
+        3. 모든 검증을 통과한 경우에만 단일 참조 교체(_apply_snapshot)로 새 모델 활성화
+        4. 검증 실패 시 기존 정상 모델 스냅샷을 그대로 유지 (None 노출 및 구스키마/신규모델 혼합 원천 차단)
         """
         if not getattr(self, "_bound_to_default_manifest", False):
             return False
         import json
+        from pathlib import Path
+
         manifest_path = self._get_manifest_path()
         if not manifest_path.exists():
             return False
-        try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            target_sha = str(manifest.get("expected_sha256", "")).strip().lower()
-            target_id = str(manifest.get("active_model_id", "")).strip()
-            cur_sha = str(getattr(self, "active_model_sha256", "")).strip().lower()
-            cur_id = str(getattr(self, "active_model_id", "")).strip()
-            if target_sha and (target_sha != cur_sha or (target_id and target_id != cur_id)):
-                self._try_load_default_model()
-                return True
-        except Exception:
-            pass
-        return False
 
-    def get_active_model_info(self) -> Dict[str, Any]:
-        """현재 메모리에 로드된 실전 모델의 식별자, 스키마, SHA256 및 상태 반환"""
-        sha_val = getattr(self, "active_model_sha256", "")
-        status_val = getattr(self, "model_load_status", "UNKNOWN")
+        with self._reload_lock:
+            cur_snap = self.get_model_snapshot()
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except Exception as e:
+                self.last_reload_error = f"Manifest read/parse error: {e}"
+                return False
+
+            root_dir = Path(__file__).resolve().parent.parent
+            mf = self._extract_manifest_fields(manifest, root_dir, manifest_path)
+            target_sha = str(mf["act_sha"] or "").strip().lower()
+            target_id = mf["act_id"]
+            target_schema = mf["act_schema"]
+            target_n_feat = mf["act_n_feat"]
+            target_path = mf["act_path"]
+
+            cur_sha = str(cur_snap.active_model_sha256 or "").strip().lower()
+            cur_id = str(cur_snap.active_model_id or "").strip()
+            cur_schema = str(cur_snap.feature_schema or "").strip()
+            cur_path_str = ""
+            try:
+                cur_path_str = str(Path(cur_snap.active_model_path).resolve()) if cur_snap.active_model_path else ""
+            except Exception:
+                cur_path_str = str(cur_snap.active_model_path or "")
+            try:
+                target_path_str = str(target_path.resolve())
+            except Exception:
+                target_path_str = str(target_path)
+
+            if (
+                cur_snap.model is not None
+                and len(cur_snap.feature_names) == 72
+                and target_sha
+                and target_sha == cur_sha
+                and target_id == cur_id
+                and target_schema == cur_schema
+                and target_n_feat == len(cur_snap.feature_names)
+                and (not cur_path_str or cur_path_str == target_path_str)
+            ):
+                return False
+
+            # 현재 활성 모델이 이미 존재하는 상태에서 매니페스트가 변경된 경우: 별도 스테이징 검증 수행
+            if cur_snap.model is not None and len(cur_snap.feature_names) == 72:
+                ver = self.verify_model_artifact(
+                    target_path,
+                    expected_sha256=mf["act_sha"],
+                    expected_schema=target_schema,
+                    enforce_live_policy=True,
+                    expected_num_features=target_n_feat,
+                    expected_feature_names=mf["act_feat_names"],
+                    expected_feature_names_sha256=mf["act_feat_hash"]
+                )
+                if ver["ok"]:
+                    ext = ver["extracted"]
+                    new_snap = _ModelSnapshot(
+                        model=ext["model"],
+                        feature_names=tuple(ext["feature_names"]),
+                        top_10_features=tuple(ext["top_10_features"]),
+                        top_3_features=tuple(ext["top_3_features"]),
+                        feature_schema=str(ext["feature_schema"]),
+                        active_model_id=target_id,
+                        active_model_path=str(ext["model_path"]),
+                        active_model_sha256=str(ext["sha256"]),
+                        feature_names_sha256=str(ext["feature_names_sha256"]),
+                        activated_at=mf["activated_at"] or datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        previous_model_path=mf["prev_path"] or cur_snap.active_model_path,
+                        previous_model_sha256=mf["prev_sha"] or cur_snap.active_model_sha256,
+                        load_status=f"ACTIVE_{target_schema.upper()}",
+                        fallback_status="HOT_RELOAD_PRIMARY_ACTIVE",
+                        load_error=""
+                    )
+                    self._apply_snapshot(new_snap)
+                    self.last_reload_error = ""
+                    logger.info(f"🔄 [실시간 핫리로드 완료] {self.format_active_model_log()}")
+                    return True
+                else:
+                    # 신규 모델 검증 실패 시 기존 정상 모델 스냅샷을 그대로 유지 (무중단 방어)
+                    self.last_reload_error = ver["error"]
+                    kept_snap = _ModelSnapshot(
+                        model=cur_snap.model,
+                        feature_names=cur_snap.feature_names,
+                        top_10_features=cur_snap.top_10_features,
+                        top_3_features=cur_snap.top_3_features,
+                        feature_schema=cur_snap.feature_schema,
+                        active_model_id=cur_snap.active_model_id,
+                        active_model_path=cur_snap.active_model_path,
+                        active_model_sha256=cur_snap.active_model_sha256,
+                        feature_names_sha256=cur_snap.feature_names_sha256,
+                        activated_at=cur_snap.activated_at,
+                        previous_model_path=cur_snap.previous_model_path,
+                        previous_model_sha256=cur_snap.previous_model_sha256,
+                        load_status=cur_snap.load_status,
+                        fallback_status="KEPT_CURRENT_VALID_MODEL_ON_RELOAD_FAILURE",
+                        load_error=f"Hot-reload rejected ({ver['error']}); kept valid active model ({cur_snap.active_model_sha256[:12]})"
+                    )
+                    self._apply_snapshot(kept_snap)
+                    logger.error(
+                        f"⚠️ [핫리로드 거부 - 기존 정상 모델 유지] candidate={target_path.name} | reason={ver['error']} | kept_sha256={cur_snap.active_model_sha256[:16]}"
+                    )
+                    return False
+
+            # 현재 유효한 모델이 없는 상태였다면 기본 로드 시도
+            self._try_load_default_model()
+            return self.model is not None
+
+    def get_active_model_info(self, is_daemon_running: bool = False) -> Dict[str, Any]:
+        """현재 메모리에 로드된 실전 모델의 식별자, 스키마, SHA256 및 STEP 7 표준 상태 필드 반환"""
+        snap = self.get_model_snapshot()
+        is_ready = snap.model is not None and len(snap.feature_names) == 72
+        is_fallback = snap.load_status == "FALLBACK_TO_CHAMPION"
+        if not is_ready:
+            op_verdict = "BLOCKED"
+        elif is_fallback or snap.feature_schema in ("v4_champion", "A_champion"):
+            op_verdict = "ROLLED_BACK"
+        elif is_daemon_running:
+            op_verdict = "ACTIVE_B_NORMALIZED"
+        else:
+            op_verdict = "READY_FOR_LIVE_START"
+
         return {
-            "active_model_id": getattr(self, "active_model_id", "UNKNOWN"),
-            "feature_schema": getattr(self, "feature_schema", "UNKNOWN"),
-            "model_path": getattr(self, "active_model_path", ""),
-            "model_sha256": sha_val,
-            "sha256": sha_val,
-            "num_features": len(getattr(self, "feature_names", [])),
-            "load_status": status_val,
-            "is_fallback": status_val == "FALLBACK_TO_CHAMPION",
-            "load_error": getattr(self, "model_load_error", ""),
-            "is_ready": getattr(self, "model", None) is not None and len(getattr(self, "feature_names", [])) == 72,
+            "active_model_id": snap.active_model_id,
+            "feature_schema": snap.feature_schema,
+            "model_path": snap.active_model_path,
+            "model_sha256": snap.active_model_sha256,
+            "sha256": snap.active_model_sha256,
+            "feature_names_sha256": snap.feature_names_sha256,
+            "num_features": len(snap.feature_names),
+            "load_status": snap.load_status,
+            "fallback_status": snap.fallback_status,
+            "activated_at": snap.activated_at,
+            "previous_model_path": snap.previous_model_path,
+            "previous_model_sha256": snap.previous_model_sha256,
+            "is_fallback": is_fallback,
+            "load_error": snap.load_error,
+            "last_reload_error": getattr(self, "last_reload_error", ""),
+            "is_ready": is_ready,
+            "operational_verdict": op_verdict,
+            # STEP 7 표준 진단 키
+            "ACTIVE_MODEL_ID": snap.active_model_id,
+            "ACTIVE_MODEL_SCHEMA": snap.feature_schema,
+            "ACTIVE_MODEL_SHA256": snap.active_model_sha256,
+            "ACTIVE_MODEL_PATH": snap.active_model_path,
+            "ACTIVE_MODEL_FEATURE_COUNT": len(snap.feature_names),
+            "MODEL_LOAD_STATUS": snap.load_status,
+            "MODEL_ACTIVATION_TIME": snap.activated_at,
+            "MODEL_FALLBACK_STATUS": snap.fallback_status,
         }
+
+    def format_active_model_log(self, is_daemon_running: bool = False) -> str:
+        """STEP 7 필수 8대 진단 필드를 포함한 표준 로그 문자열 생성"""
+        info = self.get_active_model_info(is_daemon_running=is_daemon_running)
+        return (
+            f"ACTIVE_MODEL_ID={info['ACTIVE_MODEL_ID']} | "
+            f"ACTIVE_MODEL_SCHEMA={info['ACTIVE_MODEL_SCHEMA']} | "
+            f"ACTIVE_MODEL_SHA256={info['ACTIVE_MODEL_SHA256']} | "
+            f"ACTIVE_MODEL_PATH={info['ACTIVE_MODEL_PATH']} | "
+            f"ACTIVE_MODEL_FEATURE_COUNT={info['ACTIVE_MODEL_FEATURE_COUNT']} | "
+            f"MODEL_LOAD_STATUS={info['MODEL_LOAD_STATUS']} | "
+            f"MODEL_ACTIVATION_TIME={info['MODEL_ACTIVATION_TIME']} | "
+            f"MODEL_FALLBACK_STATUS={info['MODEL_FALLBACK_STATUS']} | "
+            f"OPERATIONAL_VERDICT={info['operational_verdict']}"
+        )
 
     def extract_features(self, df: pd.DataFrame, live_prices: dict = None) -> pd.DataFrame:
         """15분봉 시세 데이터로부터 종합 피처 풀 자동 생성 (대소문자 정규화 및 데이터 부족 방어)"""
@@ -1144,22 +1555,61 @@ class MLFeatureEngine:
             logging.getLogger('Lumos').error(f"❌ [LGBM 학습 실패] {e}")
             raise
 
-        self.model = model
-        self.feature_names = feature_cols
-        self.feature_schema = target_schema
-        self._bound_to_default_manifest = False
-
         # 중요도 순 정렬
         sorted_feats = sorted(zip(feature_cols, importances), key=lambda x: x[1], reverse=True)
-        self.top_10_features = [f[0] for f in sorted_feats[:10]]
-        self.top_3_features = [f[0] for f in sorted_feats[:3]]
+        top_10 = [f[0] for f in sorted_feats[:10]]
+        top_3 = [f[0] for f in sorted_feats[:3]]
+        feat_sha = self.compute_feature_names_sha256(feature_cols)
+
+        if not hasattr(self, "_reload_lock") or self._reload_lock is None:
+            self._reload_lock = threading.RLock()
+        with self._reload_lock:
+            self._bound_to_default_manifest = False
+            snap = _ModelSnapshot(
+                model=model,
+                feature_names=tuple(feature_cols),
+                top_10_features=tuple(top_10),
+                top_3_features=tuple(top_3),
+                feature_schema=str(target_schema),
+                active_model_id=f"in_memory_{target_schema}",
+                active_model_path="<in_memory>",
+                active_model_sha256=feat_sha,
+                feature_names_sha256=feat_sha,
+                activated_at=datetime.now().isoformat(),
+                previous_model_path=str(getattr(self, "previous_model_path", "")),
+                previous_model_sha256=str(getattr(self, "previous_model_sha256", "")),
+                load_status="TRAINED_IN_MEMORY",
+                fallback_status="PRIMARY_ACTIVE",
+                load_error="",
+            )
+            self._apply_snapshot(snap)
 
         return model, self.top_10_features, self.top_3_features
 
-    def add_confidence_columns(self, feat_df: pd.DataFrame) -> pd.DataFrame:
-        """전체 데이터프레임에 대해 3-Class 확신도 및 신호 컬럼 생성"""
+    def _get_thread_local(self) -> threading.local:
+        tl = getattr(self, "_thread_local", None)
+        if tl is None:
+            tl = threading.local()
+            self._thread_local = tl
+        return tl
+
+    def get_last_inference_snapshot(self) -> Optional[_ModelSnapshot]:
+        """현재 스레드에서 가장 최근 추론에 사용된 불변 모델 스냅샷 반환"""
+        return getattr(self._get_thread_local(), "last_inference_snapshot", None)
+
+    def add_confidence_columns(
+        self,
+        feat_df: pd.DataFrame,
+        snapshot: Optional[_ModelSnapshot] = None,
+    ) -> pd.DataFrame:
+        """전체 데이터프레임에 대해 3-Class 확신도 및 신호 컬럼 생성 (단일 스냅샷 격리 보장)"""
         feat_df = feat_df.copy()
-        if self.model is None or not self.feature_names:
+        snap = snapshot if snapshot is not None else self.get_model_snapshot()
+        self._get_thread_local().last_inference_snapshot = snap
+        model_obj = snap.model
+        feat_names = list(snap.feature_names)
+
+        if model_obj is None or not feat_names:
             feat_df['Confidence'] = 0.50
             feat_df['Signal'] = 0
             feat_df['Direction'] = "NONE"
@@ -1168,13 +1618,13 @@ class MLFeatureEngine:
             feat_df['Prob_Neutral'] = 0.34
             return feat_df
 
-        for col in self.feature_names:
+        for col in feat_names:
             if col not in feat_df.columns:
                 feat_df[col] = 0.0
 
-        clean_X = feat_df[self.feature_names].replace([np.inf, -np.inf], np.nan).fillna(0.0)
+        clean_X = feat_df[feat_names].replace([np.inf, -np.inf], np.nan).fillna(0.0)
         try:
-            probs = self.model.predict_proba(clean_X)  # shape: (N, 3) -> [P(Short), P(Neutral), P(Long)]
+            probs = model_obj.predict_proba(clean_X)  # shape: (N, 3) -> [P(Short), P(Neutral), P(Long)]
             prob_short = probs[:, 0]
             prob_neutral = probs[:, 1]
             prob_long = probs[:, 2]
@@ -1225,12 +1675,23 @@ class MLFeatureEngine:
 
         return feat_df
 
-    def predict_signal(self, df_candle_15m: pd.DataFrame) -> Tuple[int, float, str]:
+    def predict_signal(
+        self,
+        df_candle_15m: pd.DataFrame,
+        snapshot: Optional[_ModelSnapshot] = None,
+    ) -> Tuple[int, float, str]:
         """
         MoE 오케스트레이터 표준 인터페이스:
         - 반환값: (signal_code: 1 | -1 | 0, confidence: float 0.0~1.0, reason: str)
+        - 단일 추론 요청 동안 동일한 불변 _ModelSnapshot 사용 보장
         """
-        self.ensure_latest_manifest_model()
+        if snapshot is None:
+            self.ensure_latest_manifest_model()
+            snap = self.get_model_snapshot()
+        else:
+            snap = snapshot
+        self._get_thread_local().last_inference_snapshot = snap
+
         if df_candle_15m is None or df_candle_15m.empty or len(df_candle_15m) < 15:
             return 0, 0.50, "데이터 부족"
 
@@ -1238,7 +1699,7 @@ class MLFeatureEngine:
         if df_feat.empty:
             return 0, 0.50, "피처 추출 불가"
 
-        df_feat = self.add_confidence_columns(df_feat)
+        df_feat = self.add_confidence_columns(df_feat, snapshot=snap)
         last_row = df_feat.iloc[-1]
 
         sig = int(last_row.get("Signal", 0))
@@ -1253,8 +1714,18 @@ class MLFeatureEngine:
 
         return 0, conf, "GBDT 관망/중립 상태"
 
-    def predict_signal_full(self, df_candle_15m: pd.DataFrame) -> Tuple[int, float, str, Dict[str, float]]:
-        self.ensure_latest_manifest_model()
+    def predict_signal_full(
+        self,
+        df_candle_15m: pd.DataFrame,
+        snapshot: Optional[_ModelSnapshot] = None,
+    ) -> Tuple[int, float, str, Dict[str, float]]:
+        if snapshot is None:
+            self.ensure_latest_manifest_model()
+            snap = self.get_model_snapshot()
+        else:
+            snap = snapshot
+        self._get_thread_local().last_inference_snapshot = snap
+
         if hasattr(self.predict_signal, "_mock_name") or hasattr(self.predict_signal, "assert_called"):
             sig, conf, reason = self.predict_signal(df_candle_15m)
             rem = max(0.0, 1.0 - float(conf))
@@ -1271,7 +1742,7 @@ class MLFeatureEngine:
         df_feat = self.extract_features(df_candle_15m)
         if df_feat.empty:
             return 0, 0.50, "피처 추출 불가", {"LONG": 0.33, "SHORT": 0.33, "NONE": 0.34}
-        df_feat = self.add_confidence_columns(df_feat)
+        df_feat = self.add_confidence_columns(df_feat, snapshot=snap)
         last_row = df_feat.iloc[-1]
         sig = int(last_row.get("Signal", 0))
         conf = float(last_row.get("Confidence", 0.50))
@@ -1290,4 +1761,5 @@ class MLFeatureEngine:
             "NONE": p_none
         }
         return sig, conf, reason, probs
+
 

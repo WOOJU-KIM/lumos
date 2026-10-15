@@ -256,15 +256,22 @@ class MoEMetaOrchestrator:
             logger.info(f"CROSS_ASSET EXCEPTION: {e}")
             pass
 
-        # 3. [GBDT 3-Class 파형 스나이퍼 모델 신호 및 확신도 계산]
+        # 3. [GBDT 3-Class 파형 스나이퍼 모델 신호 및 확신도 계산 - 단일 불변 스냅샷 격리]
         dir_gbdt = "NONE"
         conf_gbdt = 0.50
         gbdt_probs = {"LONG": 0.33, "SHORT": 0.33, "NONE": 0.34}
+        gbdt_snap = None
         try:
-            if hasattr(self, "gbdt_engine") and hasattr(self.gbdt_engine, "ensure_latest_manifest_model"):
-                self.gbdt_engine.ensure_latest_manifest_model()
+            if hasattr(self, "gbdt_engine"):
+                if hasattr(self.gbdt_engine, "ensure_latest_manifest_model"):
+                    self.gbdt_engine.ensure_latest_manifest_model()
+                if hasattr(self.gbdt_engine, "get_model_snapshot"):
+                    gbdt_snap = self.gbdt_engine.get_model_snapshot()
             live_long_15m = _get_live_df(config.TRADE_SYMBOLS[0], current_time_str) if "live_prices" in locals() else df_candle_15m
-            gbdt_sig, gbdt_conf, _, gbdt_probs = self.gbdt_engine.predict_signal_full(live_long_15m)
+            if gbdt_snap is not None:
+                gbdt_sig, gbdt_conf, _, gbdt_probs = self.gbdt_engine.predict_signal_full(live_long_15m, snapshot=gbdt_snap)
+            else:
+                gbdt_sig, gbdt_conf, _, gbdt_probs = self.gbdt_engine.predict_signal_full(live_long_15m)
             conf_gbdt = gbdt_conf
             if gbdt_sig == 1:
                 dir_gbdt = "LONG"
@@ -393,10 +400,68 @@ class MoEMetaOrchestrator:
             "all_gating_confidences": all_confidences,
             "gbdt_probs": gbdt_probs,
             "features": feat_dict,
+            "active_model_id": gbdt_snap.active_model_id if gbdt_snap is not None else getattr(self.gbdt_engine, "active_model_id", ""),
+            "active_model_sha256": gbdt_snap.active_model_sha256 if gbdt_snap is not None else getattr(self.gbdt_engine, "active_model_sha256", ""),
+            "active_model_schema": gbdt_snap.feature_schema if gbdt_snap is not None else getattr(self.gbdt_engine, "feature_schema", ""),
             "timestamp": current_time_str or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
 
         return decision_meta
+
+
+import threading
+import time
+from contextlib import contextmanager
+
+_MANIFEST_ACTIVATION_LOCK = threading.RLock()
+
+
+@contextmanager
+def _acquire_manifest_activation_lock(target_dir: Path, timeout_sec: float = 30.0):
+    """프로세스 내 RLock + 파일 시스템 원자적 락 파일(.manifest_activation.lock) 이중 보호"""
+    lock_file = target_dir / ".manifest_activation.lock"
+    with _MANIFEST_ACTIVATION_LOCK:
+        deadline = time.monotonic() + timeout_sec
+        fd = None
+        while True:
+            try:
+                fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.write(fd, f"{os.getpid()}:{threading.get_ident()}:{time.time_ns()}".encode("utf-8"))
+                break
+            except FileExistsError:
+                # 오래된 죽은 프로세스 락 파일 정리 (60초 초과)
+                try:
+                    if lock_file.exists() and (time.time() - lock_file.stat().st_mtime) > 60.0:
+                        lock_file.unlink()
+                        continue
+                except Exception:
+                    pass
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(f"Timed out waiting for manifest activation lock: {lock_file}")
+                time.sleep(0.01)
+        try:
+            yield
+        finally:
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except Exception:
+                    pass
+            try:
+                if lock_file.exists():
+                    lock_file.unlink()
+            except Exception:
+                pass
+
+
+def _write_json_atomic_temp(tmp_path: Path, payload: Dict[str, Any]) -> None:
+    """임시 JSON 파일을 디스크에 기록하고 flush + fsync 수행"""
+    raw_bytes = json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8")
+    with open(tmp_path, "wb") as f_out:
+        f_out.write(raw_bytes)
+        f_out.flush()
+        os.fsync(f_out.fileno())
+
 
 def train_and_save_moe_orchestrator(
     confidence_threshold: float = GBDT_CONFIDENCE_THRESHOLD,
@@ -404,20 +469,34 @@ def train_and_save_moe_orchestrator(
     schema: str = "B_normalized",
     df_15m: Optional[pd.DataFrame] = None,
     models_dir_override: Optional[Path] = None,
-    live_experience_df: Optional[pd.DataFrame] = None
+    live_experience_df: Optional[pd.DataFrame] = None,
+    _job_started_at_ns: Optional[int] = None,
 ) -> MoEMetaOrchestrator:
+    """
+    [STEP 2 원자적 모델 활성화 아키텍처]
+    1. 신규 학습 모델을 고유 임시 파일(.tmp)에 저장 후 flush + fsync
+    2. 7대 무결성 검증 + 10년 학습 윈도우 규정 준수 검증
+    3. 불변 버전 파일(models/versions/model_normalized_72_<timestamp>_<sha256prefix>.pkl)로 확정 (기존 PKL 덮어쓰기 0건)
+    4. 활성화 락 획득 후 동시 재학습 구버전 덮어쓰기(stale job) 차단 검증
+    5. 오직 active_model_manifest.json 단 1개만 os.replace(tmp_manifest_path, manifest_path)로 원자적 전환
+    """
     import hashlib
     from core.system_logger import system_logger
+
+    job_started_at_ns = int(_job_started_at_ns if _job_started_at_ns is not None else time.time_ns())
 
     if schema in MLFeatureEngine.LIVE_FORBIDDEN_SCHEMAS or schema != "B_normalized":
         raise ValueError(f"Live retraining strictly requires schema='B_normalized' (got '{schema}')")
 
     target_dir = Path(models_dir_override) if models_dir_override is not None else MODELS_DIR
     target_dir.mkdir(parents=True, exist_ok=True)
+    versions_dir = target_dir / "versions"
+    versions_dir.mkdir(parents=True, exist_ok=True)
+
     manifest_path = target_dir / "active_model_manifest.json"
-    target_path = target_dir / "model_normalized_72.pkl"
-    tmp_model_path = target_dir / f".model_normalized_72.pkl.tmp.{os.getpid()}"
-    tmp_manifest_path = target_dir / f".active_model_manifest.json.tmp.{os.getpid()}"
+    unique_tag = f"{os.getpid()}.{threading.get_ident()}.{job_started_at_ns}"
+    tmp_model_path = versions_dir / f".model_normalized_72.pkl.tmp.{unique_tag}"
+    tmp_manifest_path = target_dir / f".active_model_manifest.json.tmp.{unique_tag}"
 
     logger.info(f"🚀 [훈련 개시] Lumos 듀얼 챔피언 MoE 스나이퍼 학습 중... (스키마: {schema}, 임계값 {confidence_threshold*100:.0f}%)")
     orchestrator = MoEMetaOrchestrator(
@@ -446,11 +525,16 @@ def train_and_save_moe_orchestrator(
     if trained_model is None or orchestrator.gbdt_engine.model is None:
         raise RuntimeError("Retraining failed to produce a valid LightGBM model; preserving existing active model.")
 
+    canonical_features = list(MLFeatureEngine.CANONICAL_B_NORMALIZED_72_FEATURES)
+    canonical_features_sha256 = MLFeatureEngine.compute_feature_names_sha256(canonical_features)
+
     try:
-        # 1. 임시 파일로 신규 모델 저장
+        # 1. 임시 파일로 신규 모델 저장 + 디스크 flush/fsync
         orchestrator.gbdt_engine.active_model_id = "B_Normalized_72"
-        orchestrator.gbdt_engine.active_model_path = str(target_path)
-        joblib.dump(orchestrator, tmp_model_path)
+        with open(tmp_model_path, "wb") as f_out:
+            joblib.dump(orchestrator, f_out)
+            f_out.flush()
+            os.fsync(f_out.fileno())
 
         window_meta = getattr(orchestrator.gbdt_engine, "last_training_window_meta", {})
         system_logger.log(
@@ -463,6 +547,9 @@ def train_and_save_moe_orchestrator(
         ver = MLFeatureEngine.verify_model_artifact(
             tmp_model_path,
             expected_schema="B_normalized",
+            expected_num_features=72,
+            expected_feature_names=canonical_features,
+            expected_feature_names_sha256=canonical_features_sha256,
             enforce_live_policy=True
         )
         if not ver["ok"]:
@@ -473,78 +560,143 @@ def train_and_save_moe_orchestrator(
         if not window_meta.get("is_valid_window", False) or float(window_meta.get("span_days", 0.0)) > max_lookback_days + 1e-6:
             raise RuntimeError(f"Trained B_normalized candidate failed 10-year window compliance check: {window_meta}")
 
-        # 7. manifest 업데이트 및 검증 (임시 파일)
-        champ_path = target_dir / "model_champion.pkl"
-        if not champ_path.exists():
-            champ_path = MODELS_DIR / "model_champion.pkl"
-        champ_sha = hashlib.sha256(champ_path.read_bytes()).hexdigest() if champ_path.exists() else ""
+        actual_sha256 = ver["actual_sha256"]
+        sha_prefix = actual_sha256[:12]
+        ts_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+        versioned_filename = f"model_normalized_72_{ts_str}_{sha_prefix}.pkl"
+        versioned_model_path = versions_dir / versioned_filename
+        if versioned_model_path.exists():
+            # 기존 불변 버전 파일 절대 덮어쓰기 금지: 동일 초 내 생성 시 고유 타임스탬프 접미사 부여
+            versioned_filename = f"model_normalized_72_{ts_str}_{job_started_at_ns % 1000000:06d}_{sha_prefix}.pkl"
+            versioned_model_path = versions_dir / versioned_filename
 
-        try:
-            rel_active_path = target_path.relative_to(BASE_DIR).as_posix()
-        except ValueError:
-            rel_active_path = str(target_path)
+        # 7. 불변 버전 파일로 확정 (기존 활성 모델 PKL 덮어쓰기 없음)
+        os.replace(tmp_model_path, versioned_model_path)
 
-        try:
-            rel_fallback_path = champ_path.relative_to(BASE_DIR).as_posix()
-        except ValueError:
-            rel_fallback_path = str(champ_path)
+        # 버전 파일 확정 후 재검증
+        ver_final = MLFeatureEngine.verify_model_artifact(
+            versioned_model_path,
+            expected_sha256=actual_sha256,
+            expected_schema="B_normalized",
+            expected_num_features=72,
+            expected_feature_names=canonical_features,
+            expected_feature_names_sha256=canonical_features_sha256,
+            enforce_live_policy=True
+        )
+        if not ver_final["ok"]:
+            raise RuntimeError(f"Versioned B_normalized artifact failed post-move verification: {ver_final['error']}")
 
-        manifest_data = {
-            "active_model_id": "B_Normalized_72",
-            "active_model_path": rel_active_path,
-            "expected_schema": "B_normalized",
-            "expected_num_features": 72,
-            "expected_sha256": ver["actual_sha256"],
-            "fallback_model_id": "v4_champion_fallback",
-            "fallback_model_path": rel_fallback_path,
-            "fallback_expected_schema": "v4_champion",
-            "fallback_expected_num_features": 72,
-            "fallback_expected_sha256": champ_sha,
-            "forbidden_schemas": sorted(list(MLFeatureEngine.LIVE_FORBIDDEN_SCHEMAS)),
-            "training_window_meta": {
-                "config_rolling_training_weeks": window_meta.get("config_rolling_training_weeks"),
-                "config_training_lookback_days": window_meta.get("config_training_lookback_days"),
-                "train_start_dt": window_meta.get("train_start_dt"),
-                "train_end_dt": window_meta.get("train_end_dt"),
-                "train_rows": window_meta.get("train_rows"),
-                "span_days": window_meta.get("span_days"),
-                "excluded_older_than_10y_rows": window_meta.get("excluded_older_than_10y_rows"),
-                "excluded_warmup_nan_rows": window_meta.get("excluded_warmup_nan_rows"),
-                "excluded_unconfirmed_tail_rows": window_meta.get("excluded_unconfirmed_tail_rows")
-            },
-            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        }
-        tmp_manifest_path.write_text(json.dumps(manifest_data, indent=2, ensure_ascii=False), encoding="utf-8")
-        parsed_manifest = json.loads(tmp_manifest_path.read_text(encoding="utf-8"))
-        if (
-            parsed_manifest.get("active_model_id") != "B_Normalized_72"
-            or parsed_manifest.get("expected_schema") != "B_normalized"
-            or int(parsed_manifest.get("expected_num_features", 0)) != 72
-            or parsed_manifest.get("expected_sha256") != ver["actual_sha256"]
-        ):
-            raise RuntimeError("Candidate manifest failed validation before atomic swap.")
+        # 8. 활성화 락 획득 후 manifest 단일 원자적 교체 수행
+        with _acquire_manifest_activation_lock(target_dir):
+            prev_model_path = "models/model_normalized_72.pkl"
+            prev_model_sha256 = ""
+            if manifest_path.exists():
+                try:
+                    existing_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    existing_job_ns = int(existing_manifest.get("job_started_at_ns", 0) or 0)
+                    if existing_job_ns > job_started_at_ns:
+                        system_logger.log(
+                            "WARNING",
+                            "ModelActivation",
+                            f"STALE_RETRAIN_IGNORED | candidate_job_ns={job_started_at_ns} | active_job_ns={existing_job_ns} | candidate_path={versioned_model_path}"
+                        )
+                        raise RuntimeError(
+                            f"STALE_RETRAIN_IGNORED: Newer model already activated (active_job_ns={existing_job_ns} > candidate_job_ns={job_started_at_ns})"
+                        )
+                    prev_model_path = str(
+                        existing_manifest.get("model_path")
+                        or existing_manifest.get("active_model_path")
+                        or prev_model_path
+                    )
+                    prev_model_sha256 = str(existing_manifest.get("expected_sha256") or "")
+                except RuntimeError:
+                    raise
+                except Exception:
+                    pass
 
-        # 8. 검증 통과 시 원자적(atomic) 교체 수행
-        prev_model_bytes = target_path.read_bytes() if target_path.exists() else None
-        os.replace(tmp_model_path, target_path)
-        try:
+            champ_path = target_dir / "model_champion.pkl"
+            if not champ_path.exists():
+                champ_path = MODELS_DIR / "model_champion.pkl"
+            champ_sha = hashlib.sha256(champ_path.read_bytes()).hexdigest() if champ_path.exists() else ""
+
+            try:
+                rel_active_path = versioned_model_path.relative_to(BASE_DIR).as_posix()
+            except ValueError:
+                rel_active_path = str(versioned_model_path)
+
+            try:
+                rel_fallback_path = champ_path.relative_to(BASE_DIR).as_posix()
+            except ValueError:
+                rel_fallback_path = str(champ_path)
+
+            activated_at_iso = datetime.now().astimezone().isoformat()
+            manifest_data = {
+                "active_model_id": "B_Normalized_72",
+                "model_path": rel_active_path,
+                "active_model_path": rel_active_path,
+                "expected_sha256": actual_sha256,
+                "expected_schema": "B_normalized",
+                "num_features": 72,
+                "expected_num_features": 72,
+                "feature_names": canonical_features,
+                "feature_names_sha256": canonical_features_sha256,
+                "activated_at": activated_at_iso,
+                "previous_model_path": prev_model_path,
+                "previous_model_sha256": prev_model_sha256,
+                "fallback_model_id": "v4_champion_fallback",
+                "fallback_model_path": rel_fallback_path,
+                "fallback_expected_schema": "v4_champion",
+                "fallback_expected_num_features": 72,
+                "fallback_expected_sha256": champ_sha,
+                "forbidden_schemas": sorted(list(MLFeatureEngine.LIVE_FORBIDDEN_SCHEMAS)),
+                "job_started_at_ns": job_started_at_ns,
+                "training_window_meta": {
+                    "config_rolling_training_weeks": window_meta.get("config_rolling_training_weeks"),
+                    "config_training_lookback_days": window_meta.get("config_training_lookback_days"),
+                    "train_start_dt": window_meta.get("train_start_dt"),
+                    "train_end_dt": window_meta.get("train_end_dt"),
+                    "train_rows": window_meta.get("train_rows"),
+                    "span_days": window_meta.get("span_days"),
+                    "excluded_older_than_10y_rows": window_meta.get("excluded_older_than_10y_rows"),
+                    "excluded_warmup_nan_rows": window_meta.get("excluded_warmup_nan_rows"),
+                    "excluded_unconfirmed_tail_rows": window_meta.get("excluded_unconfirmed_tail_rows")
+                },
+                "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }
+
+            _write_json_atomic_temp(tmp_manifest_path, manifest_data)
+            parsed_manifest = json.loads(tmp_manifest_path.read_text(encoding="utf-8"))
+            if (
+                parsed_manifest.get("active_model_id") != "B_Normalized_72"
+                or parsed_manifest.get("model_path") != rel_active_path
+                or parsed_manifest.get("expected_schema") != "B_normalized"
+                or int(parsed_manifest.get("num_features", 0)) != 72
+                or parsed_manifest.get("expected_sha256") != actual_sha256
+                or parsed_manifest.get("feature_names_sha256") != canonical_features_sha256
+            ):
+                raise RuntimeError("Candidate manifest failed validation before atomic swap.")
+
+            # 단일 원자적 교체: 오직 manifest_path 1개만 os.replace 수행
             os.replace(tmp_manifest_path, manifest_path)
-        except Exception:
-            if prev_model_bytes is not None:
-                target_path.write_bytes(prev_model_bytes)
-            raise
 
-        orchestrator.gbdt_engine.active_model_sha256 = ver["actual_sha256"]
-        orchestrator.gbdt_engine._loaded_manifest_sha256 = ver["actual_sha256"]
+        orchestrator.gbdt_engine.active_model_id = "B_Normalized_72"
+        orchestrator.gbdt_engine.active_model_path = str(versioned_model_path)
+        orchestrator.gbdt_engine.active_model_sha256 = actual_sha256
+        orchestrator.gbdt_engine.active_model_activated_at = activated_at_iso
+        orchestrator.gbdt_engine.active_model_load_status = "LOADED_PRIMARY"
+        orchestrator.gbdt_engine._loaded_manifest_sha256 = actual_sha256
         orchestrator.gbdt_engine._manifest_path = manifest_path
+        orchestrator.gbdt_engine._bound_to_default_manifest = True
+        orchestrator.gbdt_engine._sync_snapshot_from_attributes()
+
         system_logger.log(
             "INFO",
             "ModelActivation",
-            f"MODEL_ACTIVATION_SUCCEEDED | model_id=B_Normalized_72 | path={target_path} | sha256={ver['actual_sha256']}"
+            f"MODEL_ACTIVATION_SUCCEEDED | model_id=B_Normalized_72 | path={versioned_model_path} | sha256={actual_sha256} | previous_path={prev_model_path}"
         )
-        logger.info(f"✅ [B_Normalized_72 실전 모델 저장 및 원자적 활성화 완료] ➔ {target_path} (SHA256={ver['actual_sha256'][:16]}...)")
+        logger.info(f"✅ [B_Normalized_72 불변 버전 저장 및 단일 매니페스트 원자적 활성화 완료] ➔ {versioned_model_path} (SHA256={actual_sha256[:16]}...)")
     finally:
-        # 9. 실패 또는 완료 후 임시 파일 정리 (기존 모델 100% 보존 보장)
+        # 9. 실패 또는 완료 후 임시 파일 정리 (기존 활성 모델 및 버전 PKL 100% 보존 보장)
         for p in (tmp_model_path, tmp_manifest_path):
             try:
                 if p.exists():
@@ -554,6 +706,113 @@ def train_and_save_moe_orchestrator(
 
     return orchestrator
 
+
+def rollback_active_model_manifest(
+    target: str = "previous",
+    models_dir_override: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """
+    [Scenario H 롤백 헬퍼]
+    - target="previous": active_model_manifest.json의 previous_model_path / previous_model_sha256로 단일 os.replace 롤백
+    - target="champion": 기존 Champion(models/model_champion.pkl, v4_champion, 72피처)으로 단일 os.replace 롤백
+    """
+    from core.system_logger import system_logger
+
+    target_dir = Path(models_dir_override) if models_dir_override is not None else MODELS_DIR
+    manifest_path = target_dir / "active_model_manifest.json"
+    if not manifest_path.exists():
+        raise FileNotFoundError(f"Manifest not found: {manifest_path}")
+
+    with _acquire_manifest_activation_lock(target_dir):
+        current_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        cur_path_str = str(current_manifest.get("model_path") or current_manifest.get("active_model_path") or "")
+        cur_sha = str(current_manifest.get("expected_sha256") or "")
+
+        if target == "previous":
+            target_path_str = str(current_manifest.get("previous_model_path") or "")
+            target_sha = str(current_manifest.get("previous_model_sha256") or "")
+            if not target_path_str:
+                raise RuntimeError("No previous_model_path recorded in active_model_manifest.json")
+            resolved_path = Path(target_path_str)
+            if not resolved_path.is_absolute():
+                cand_in_target = target_dir / resolved_path.name
+                cand_versions_in_target = target_dir / "versions" / resolved_path.name
+                resolved_path = (BASE_DIR / resolved_path) if (BASE_DIR / resolved_path).exists() else (
+                    cand_in_target if cand_in_target.exists() else (
+                        cand_versions_in_target if cand_versions_in_target.exists() else (target_dir.parent / resolved_path)
+                    )
+                )
+            ver = MLFeatureEngine.verify_model_artifact(
+                resolved_path,
+                expected_sha256=target_sha if target_sha else None,
+                enforce_live_policy=True,
+            )
+            if not ver["ok"]:
+                raise RuntimeError(f"Rollback target ('previous') failed verification: {ver['error']}")
+            target_schema = ver["detected_schema"]
+            target_id = "B_Normalized_72" if target_schema == "B_normalized" else "v4_champion"
+            feat_names = list(ver["extracted"]["feature_names"])
+        elif target == "champion":
+            champ_path = target_dir / "model_champion.pkl"
+            if not champ_path.exists():
+                champ_path = MODELS_DIR / "model_champion.pkl"
+            ver = MLFeatureEngine.verify_model_artifact(
+                champ_path,
+                expected_schema="v4_champion",
+                expected_num_features=72,
+                enforce_live_policy=True,
+            )
+            if not ver["ok"]:
+                raise RuntimeError(f"Rollback target ('champion') failed verification: {ver['error']}")
+            try:
+                target_path_str = champ_path.relative_to(BASE_DIR).as_posix()
+            except ValueError:
+                target_path_str = str(champ_path)
+            target_sha = ver["actual_sha256"]
+            target_schema = "v4_champion"
+            target_id = "v4_champion"
+            feat_names = list(ver["extracted"]["feature_names"])
+        else:
+            raise ValueError(f"Unsupported rollback target: {target}")
+
+        activated_at_iso = datetime.now().astimezone().isoformat()
+        updated_manifest = dict(current_manifest)
+        updated_manifest.update({
+            "active_model_id": target_id,
+            "model_path": target_path_str,
+            "active_model_path": target_path_str,
+            "expected_sha256": ver["actual_sha256"],
+            "expected_schema": target_schema,
+            "num_features": len(feat_names),
+            "expected_num_features": len(feat_names),
+            "feature_names": feat_names,
+            "feature_names_sha256": ver["feature_names_sha256"],
+            "activated_at": activated_at_iso,
+            "previous_model_path": cur_path_str,
+            "previous_model_sha256": cur_sha,
+            "job_started_at_ns": time.time_ns(),
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        })
+
+        tmp_manifest = target_dir / f".active_model_manifest.rollback.tmp.{os.getpid()}.{time.time_ns()}"
+        try:
+            _write_json_atomic_temp(tmp_manifest, updated_manifest)
+            os.replace(tmp_manifest, manifest_path)
+        finally:
+            if tmp_manifest.exists():
+                try:
+                    tmp_manifest.unlink()
+                except Exception:
+                    pass
+
+        system_logger.log(
+            "WARNING",
+            "ModelRollback",
+            f"MODEL_ROLLBACK_EXECUTED | target={target} | active_model_id={target_id} | path={target_path_str} | sha256={ver['actual_sha256']}"
+        )
+        return updated_manifest
+
+
 if __name__ == "__main__":
     moe = train_and_save_moe_orchestrator()
     lake = MarketDataLake()
@@ -561,4 +820,5 @@ if __name__ == "__main__":
     sample_eval = moe.evaluate_dual_filter_signal(tqqq)
     logger.info("Lumos V3 Hybrid MoE Sample Decision:")
     logger.info(json.dumps(sample_eval, indent=2, ensure_ascii=False))
+
 

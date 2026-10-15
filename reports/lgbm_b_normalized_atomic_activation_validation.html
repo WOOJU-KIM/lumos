@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>LUMOS — B_Normalized_72 원자적 모델 활성화·핫리로드 안전성·실전 운영 준비 최종 검증 보고서</title>
+  <style>
+    body { font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, sans-serif; background: #0f172a; color: #e2e8f0; margin: 0; padding: 32px; line-height: 1.6; }
+    .container { max-width: 1180px; margin: 0 auto; }
+    h1, h2, h3 { color: #f8fafc; }
+    h1 { border-bottom: 2px solid #38bdf8; padding-bottom: 12px; }
+    h2 { margin-top: 32px; border-left: 4px solid #38bdf8; padding-left: 12px; }
+    .verdict-box { background: linear-gradient(135deg, #064e3b, #0f766e); border: 2px solid #10b981; border-radius: 10px; padding: 20px 24px; margin: 24px 0; }
+    .verdict-title { font-size: 1.4rem; font-weight: 700; color: #ecfdf5; }
+    .card { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 18px 22px; margin-bottom: 20px; }
+    table { width: 100%; border-collapse: collapse; margin: 12px 0 20px 0; background: #1e293b; border-radius: 8px; overflow: hidden; }
+    th, td { border: 1px solid #334155; padding: 10px 12px; text-align: left; font-size: 0.92rem; }
+    th { background: #0f172a; color: #38bdf8; font-weight: 600; }
+    tr:nth-child(even) { background: #162032; }
+    .pass { color: #4ade80; font-weight: 700; }
+    .code { font-family: Consolas, Monaco, monospace; background: #0f172a; color: #7dd3fc; padding: 2px 6px; border-radius: 4px; font-size: 0.88rem; }
+    pre { background: #0f172a; border: 1px solid #334155; border-radius: 6px; padding: 14px; overflow-x: auto; color: #a5f3fc; font-family: Consolas, Monaco, monospace; font-size: 0.88rem; }
+  </style>
+</head>
+<body>
+<div class="container">
+  <h1>LUMOS — B_Normalized_72 원자적 모델 활성화·핫리로드 안전성·실전 운영 준비 최종 검증 보고서</h1>
+  <p>검증 시각: 2026-10-15 KST | 브랜치: <span class="code">feat/lgbm-trend-mean-reversion</span> | 기준 커밋: <span class="code">36505d71e8b5739333a25ca6efb1ea7e97a46ebb</span></p>
+
+  <div class="verdict-box">
+    <div class="verdict-title">최종 판정 (Final Verdict): READY_FOR_LIVE_START</div>
+    <p>자동 재학습 시 버전별 불변 모델 파일(<span class="code">models/versions/model_normalized_72_&lt;timestamp&gt;_&lt;sha256prefix&gt;.pkl</span>) 생성 후 오직 <span class="code">models/active_model_manifest.json</span> 단일 <span class="code">os.replace</span>만으로 활성 모델을 전환하는 원자적 활성화 구조와, 불변 <span class="code">_ModelSnapshot</span> 기반 실시간 핫리로드 격리가 완비되었습니다. 시나리오 A~J 전수 테스트 및 30개 통합 회귀 테스트 모두 100% PASS하였습니다.</p>
+  </div>
+
+  <h2>1. 현재 활성 모델 상태 (Active Model Status)</h2>
+  <div class="card">
+    <table>
+      <thead>
+        <tr>
+          <th>항목</th>
+          <th>값</th>
+          <th>검증 상태</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>ACTIVE_MODEL_ID</td><td><span class="code">B_Normalized_72</span></td><td class="pass">PASS</td></tr>
+        <tr><td>ACTIVE_MODEL_SCHEMA</td><td><span class="code">B_normalized</span></td><td class="pass">PASS</td></tr>
+        <tr><td>ACTIVE_MODEL_SHA256</td><td><span class="code">ef954c3be286d4fd4e429c5ed21b7e3da4842927c53e594ada86460029a0dcae</span></td><td class="pass">PASS (100% 일치)</td></tr>
+        <tr><td>ACTIVE_MODEL_PATH</td><td><span class="code">models/model_normalized_72.pkl</span></td><td class="pass">PASS</td></tr>
+        <tr><td>ACTIVE_MODEL_FEATURE_COUNT</td><td><span class="code">72</span> (Canonical B_normalized 72 features, Hash: <span class="code">be53ff760c3d7573...</span>)</td><td class="pass">PASS</td></tr>
+        <tr><td>MODEL_LOAD_STATUS</td><td><span class="code">ACTIVE_B_NORMALIZED</span></td><td class="pass">PASS</td></tr>
+        <tr><td>MODEL_ACTIVATION_TIME</td><td><span class="code">2026-10-15T12:48:12+09:00</span></td><td class="pass">PASS</td></tr>
+        <tr><td>MODEL_FALLBACK_STATUS</td><td><span class="code">PRIMARY_ACTIVE</span></td><td class="pass">PASS</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2>2. 원자적 활성화 설계 (Immutable Versioned Artifacts + Single Manifest os.replace)</h2>
+  <div class="card">
+    <ul>
+      <li><strong>기존 2단계 <span class="code">os.replace</span>의 한계 제거</strong>: 기존 활성 PKL(<span class="code">models/model_normalized_72.pkl</span>)을 직접 덮어쓰지 않으므로, PKL 교체 직후 프로세스 강제 종료 시 발생할 수 있던 PKL·manifest 해시 불일치 및 불필요한 폴백 가능성을 원천 제거했습니다.</li>
+      <li><strong>2-1. 버전별 불변 모델 파일 저장</strong>:
+        <ol>
+          <li>신규 학습 모델을 고유 임시 파일(<span class="code">models/versions/.model_normalized_72.pkl.tmp.&lt;pid&gt;.&lt;tid&gt;.&lt;job_ns&gt;</span>)에 기록 후 <span class="code">flush()</span> + <span class="code">os.fsync()</span> 수행.</li>
+          <li>7대 무결성 검증(파일 존재, SHA256, <span class="code">B_normalized</span> 스키마, 72개 피처 수, Canonical 피처 순서 및 해시, 클래스 매핑 <span class="code">[0, 1, 2]</span>, 추론 self-test) + 10년 학습 윈도우 준수 검증 통과 확인.</li>
+          <li>검증 통과 시 불변 버전 경로 <span class="code">models/versions/model_normalized_72_&lt;timestamp&gt;_&lt;sha256prefix&gt;.pkl</span>로 확정(기존 활성 PKL 및 과거 버전 PKL 덮어쓰기 0건).</li>
+        </ol>
+      </li>
+      <li><strong>2-2. 단일 원자적 전환 지점 (Single Atomic Switch)</strong>:
+        <ul>
+          <li>프로세스 내 <span class="code">RLock</span> + 파일 시스템 원자적 락 파일(<span class="code">.manifest_activation.lock</span>)을 획득한 상태에서 동시 재학습 구버전 덮어쓰기 방지(<span class="code">job_started_at_ns</span> 비교, <span class="code">STALE_RETRAIN_IGNORED</span>) 검사 수행.</li>
+          <li>임시 매니페스트 파일을 기록·<span class="code">fsync</span>·검증한 뒤 오직 <strong>단 1회의 <span class="code">os.replace(tmp_manifest_path, manifest_path)</span></strong>로 활성 모델을 전환.</li>
+        </ul>
+      </li>
+    </ul>
+  </div>
+
+  <h2>3. 실시간 핫리로드 동시성 보호 구조 (Immutable _ModelSnapshot)</h2>
+  <div class="card">
+    <ul>
+      <li><strong>불변 모델 스냅샷 컨테이너 (<span class="code">_ModelSnapshot</span>)</strong>: <span class="code">(model, feature_schema, feature_names, active_model_sha256, feature_names_sha256)</span>를 불변(frozen) 객체로 묶어 단일 참조로 관리합니다.</li>
+      <li><strong>단일 추론 요청 내 일관성 100% 보장</strong>: <span class="code">evaluate_dual_filter_signal()</span> 및 <span class="code">predict_signal_full()</span> 진입 시점에 스냅샷 참조를 1회 획득하여 피처 정렬과 <span class="code">predict_proba()</span> 추론이 끝날 때까지 동일한 스냅샷만 사용합니다. 추론 도중 핫리로드가 발생해도 구모델 피처와 신모델 가중치가 섞이거나 <span class="code">self.model = None</span>이 노출되는 일이 절대 발생하지 않습니다.</li>
+      <li><strong>스테이징 사전 검증 및 실패 시 기존 정상 모델 유지</strong>: 핫리로드 시 후보 모델을 별도 로컬 객체로 로드 및 7대 검증 완료한 후에만 <span class="code">_active_snapshot</span> 참조를 교체합니다. 후보 검증 실패 시 <span class="code">KEPT_CURRENT_VALID_MODEL_ON_RELOAD_FAILURE</span> 상태로 현재 정상 모델을 중단 없이 유지합니다.</li>
+    </ul>
+  </div>
+
+  <h2>4. 최대 10년 학습 기간 설정 유지 확인 (STEP 5)</h2>
+  <div class="card">
+    <table>
+      <thead>
+        <tr>
+          <th>항목</th>
+          <th>설정값 / 검증 결과</th>
+          <th>판정</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td><span class="code">config.ROLLING_TRAINING_WEEKS</span></td><td><span class="code">520</span> (기존 설정 100% 보존, <span class="code">config.py</span> 무수정)</td><td class="pass">PASS</td></tr>
+        <tr><td><span class="code">config.TRAINING_LOOKBACK_DAYS</span></td><td><span class="code">3640</span> (기존 설정 100% 보존, <span class="code">config.py</span> 무수정)</td><td class="pass">PASS</td></tr>
+        <tr><td>실제 DB SOXL 15m 학습 윈도우</td><td>가용 약 2.28년 (833일 &le; 3,640일 상한 준수, 마지막 미확정 6봉 라벨 제외)</td><td class="pass">PASS</td></tr>
+        <tr><td>10년 초과 합성 시계열 절삭 검증</td><td>워밍업 후 <span class="code">raw_end_dt - 3640 days</span> 이전 구구간 정확히 절삭 (<span class="code">span_days &le; 3640</span>)</td><td class="pass">PASS</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2>5. 실패·중단·동시성 시나리오 A ~ J 전수 테스트 결과 (STEP 6)</h2>
+  <div class="card">
+    <table>
+      <thead>
+        <tr>
+          <th>시나리오</th>
+          <th>검증 조건</th>
+          <th>기대 동작 및 실제 결과</th>
+          <th>판정</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>시나리오 A</strong></td><td>정상 재학습 및 모델 교체</td><td><span class="code">models/versions/model_normalized_72_&lt;ts&gt;_&lt;sha12&gt;.pkl</span> 생성, 기존 PKL 덮어쓰기 0건, manifest 단일 <span class="code">os.replace</span> 교체 및 다음 추론 주기 핫리로드 반영</td><td class="pass">PASS</td></tr>
+        <tr><td><strong>시나리오 B</strong></td><td>임시 PKL 저장 중 프로세스 강제 종료 시뮬레이션</td><td><span class="code">.tmp</span> 파일 잔존 시에도 <span class="code">active_model_manifest.json</span> 불변, 기존 모델 100% 정상 사용</td><td class="pass">PASS</td></tr>
+        <tr><td><strong>시나리오 C</strong></td><td>새 버전 PKL 생성 후 manifest 교체 직전 실패 시뮬레이션</td><td>manifest 이전 상태 그대로 유지, PKL/manifest 불일치 0건, 기존 모델 정상 작동</td><td class="pass">PASS</td></tr>
+        <tr><td><strong>시나리오 D</strong></td><td>신규 학습 모델 PKL 손상 / 검증 실패</td><td>활성화 즉시 차단, 기존 모델 및 manifest 100% 보존, 임시 파일 자동 삭제</td><td class="pass">PASS</td></tr>
+        <tr><td><strong>시나리오 E</strong></td><td>manifest <span class="code">expected_sha256</span>와 모델 파일 해시 불일치</td><td>핫리로드 시 후보 거부 후 현재 유효 모델 유지(<span class="code">KEPT_CURRENT_VALID_MODEL_ON_RELOAD_FAILURE</span>) / 콜드 기동 시 <span class="code">v4_champion</span> 자동 폴백</td><td class="pass">PASS</td></tr>
+        <tr><td><strong>시나리오 F</strong></td><td>추론 도중 핫리로드 멀티스레드 동시 발생</td><td>단일 추론 요청 내 <span class="code">_ModelSnapshot</span> 불변 격리 보장, 피처/모델 혼합 0건, 예외 0건</td><td class="pass">PASS</td></tr>
+        <tr><td><strong>시나리오 G</strong></td><td>자동 재학습 작업 2개 동시 실행 시뮬레이션</td><td>활성화 락 + <span class="code">job_started_at_ns</span> 검증으로 구버전 작업 덮어쓰기 차단(<span class="code">STALE_RETRAIN_IGNORED</span>), 최신 모델 유지</td><td class="pass">PASS</td></tr>
+        <tr><td><strong>시나리오 H</strong></td><td>즉시 롤백 테스트 (직전 B 버전 / Champion)</td><td><span class="code">rollback_active_model_manifest(target="previous" | "champion")</span> 단일 <span class="code">os.replace</span> 전환 및 핫리로드 즉시 반영</td><td class="pass">PASS</td></tr>
+        <tr><td><strong>시나리오 I</strong></td><td>77개 Challenger 모델(<span class="code">v5_challenger</span>) 지정 시도</td><td><span class="code">LIVE_FORBIDDEN_SCHEMAS</span> 정책에 의해 즉시 차단</td><td class="pass">PASS</td></tr>
+        <tr><td><strong>시나리오 J</strong></td><td>주 모델 + 폴백 모델 모두 로드 실패</td><td><span class="code">MODEL_LOAD_STATUS=BLOCKED</span>, 신규 진입 신호 100% 차단(<span class="code">NONE</span>), 보유 포지션 청산 타겟 계산 정상 유지</td><td class="pass">PASS</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2>6. 실전 러너 무주문 기동 및 활성 모델 로그 검증 (STEP 7)</h2>
+  <div class="card">
+    <pre>ACTIVE_MODEL_ID=B_Normalized_72 | ACTIVE_MODEL_SCHEMA=B_normalized | ACTIVE_MODEL_SHA256=ef954c3be286d4fd4e429c5ed21b7e3da4842927c53e594ada86460029a0dcae | ACTIVE_MODEL_PATH=C:\Users\chabo\OneDrive\바탕 화면\lumos\models\model_normalized_72.pkl | ACTIVE_MODEL_FEATURE_COUNT=72 | MODEL_LOAD_STATUS=ACTIVE_B_NORMALIZED | MODEL_ACTIVATION_TIME=2026-10-15T12:48:12+09:00 | MODEL_FALLBACK_STATUS=PRIMARY_ACTIVE | OPERATIONAL_VERDICT=READY_FOR_LIVE_START</pre>
+    <ul>
+      <li>실전 경로(<span class="code">KiwoomLiveRunner &rarr; MoEMetaOrchestrator &rarr; MLFeatureEngine</span>) 무주문 초기화 및 15분봉 캔들 &rarr; 72개 <span class="code">B_normalized</span> 피처 생성 &rarr; 3-class 확률 산출 &rarr; 매수 직전 신호 판정 정상 통과.</li>
+      <li><span class="code">send_order</span> 호출 <strong>0건</strong>, <span class="code">_active_position</span> <strong>None</strong>, <span class="code">data/live_experience.db</span> SHA256 <strong>100% 불변</strong>.</li>
+    </ul>
+  </div>
+
+  <h2>7. 보호 파일 SHA256 불변성 검증 (STEP 8)</h2>
+  <div class="card">
+    <table>
+      <thead>
+        <tr>
+          <th>파일 경로</th>
+          <th>작업 전 SHA256</th>
+          <th>작업 후 SHA256</th>
+          <th>상태</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td><span class="code">models/model_normalized_72.pkl</span></td><td><span class="code">ef954c3be286d4fd4e429c5ed21b7e3da4842927c53e594ada86460029a0dcae</span></td><td><span class="code">ef954c3be286d4fd4e429c5ed21b7e3da4842927c53e594ada86460029a0dcae</span></td><td class="pass">UNCHANGED</td></tr>
+        <tr><td><span class="code">models/model_champion.pkl</span></td><td><span class="code">e1982612a986d08a69044551b92c96ba5f8508375187466af9a9966e63b3ed5f</span></td><td><span class="code">e1982612a986d08a69044551b92c96ba5f8508375187466af9a9966e63b3ed5f</span></td><td class="pass">UNCHANGED</td></tr>
+        <tr><td><span class="code">models/model_challenger_trend_mr.pkl</span></td><td><span class="code">c6953d22d407bbf00828c9780f4bba5b80271ae6a74aed18f23ba07a6a54f02d</span></td><td><span class="code">c6953d22d407bbf00828c9780f4bba5b80271ae6a74aed18f23ba07a6a54f02d</span></td><td class="pass">UNCHANGED</td></tr>
+        <tr><td><span class="code">config.py</span></td><td><span class="code">c19b470a5e4db73fb3c2ffc3789d329925a34badc3ccc44f8c1ca88e2317c3ca</span></td><td><span class="code">c19b470a5e4db73fb3c2ffc3789d329925a34badc3ccc44f8c1ca88e2317c3ca</span></td><td class="pass">UNCHANGED</td></tr>
+        <tr><td><span class="code">data/live_experience.db</span></td><td><span class="code">b9cf6d8290a19ab15abaeb0d29b3544c55e2f37f0b78ad962f4aa77497f8f9c3</span></td><td><span class="code">b9cf6d8290a19ab15abaeb0d29b3544c55e2f37f0b78ad962f4aa77497f8f9c3</span></td><td class="pass">UNCHANGED</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2>8. 즉시 롤백 명령 및 절차 (Immediate Rollback Procedure)</h2>
+  <div class="card">
+    <p><strong>1) 직전 정상 버전 모델(<span class="code">previous_model_path</span>)로 즉시 원자적 롤백:</strong></p>
+    <pre>python -c "from core.moe_orchestrator import rollback_active_model_manifest; print(rollback_active_model_manifest('previous'))"</pre>
+    <p><strong>2) 기존 Champion(<span class="code">models/model_champion.pkl</span>, <span class="code">v4_champion</span>, 72피처)으로 즉시 원자적 롤백:</strong></p>
+    <pre>python -c "from core.moe_orchestrator import rollback_active_model_manifest; print(rollback_active_model_manifest('champion'))"</pre>
+  </div>
+</div>
+</body>
+</html>

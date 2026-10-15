@@ -501,14 +501,19 @@ class TestLGBMTrendMeanReversion(unittest.TestCase):
             shutil.copy2(PROJECT_ROOT / "models" / "model_normalized_72.pkl", tmp_dir / "model_normalized_72.pkl")
             shutil.copy2(PROJECT_ROOT / "models" / "active_model_manifest.json", tmp_dir / "active_model_manifest.json")
 
+            orig_base_pkl = tmp_dir / "model_normalized_72.pkl"
+            orig_base_sha = hashlib.sha256(orig_base_pkl.read_bytes()).hexdigest()
+
             manifest_file = tmp_dir / "active_model_manifest.json"
             m_data = json.loads(manifest_file.read_text(encoding="utf-8"))
-            m_data["active_model_path"] = str(tmp_dir / "model_normalized_72.pkl")
+            m_data["model_path"] = str(orig_base_pkl)
+            m_data["active_model_path"] = str(orig_base_pkl)
             m_data["fallback_model_path"] = str(tmp_dir / "model_champion.pkl")
             manifest_file.write_text(json.dumps(m_data, indent=2), encoding="utf-8")
 
             running_moe = MoEMetaOrchestrator(manifest_path=manifest_file)
             old_sha = running_moe.get_active_model_info()["sha256"]
+            self.assertEqual(old_sha, orig_base_sha)
 
             with patch.object(system_logger, "log") as mock_syslog:
                 retrained_moe = train_and_save_moe_orchestrator(
@@ -517,23 +522,35 @@ class TestLGBMTrendMeanReversion(unittest.TestCase):
                     models_dir_override=tmp_dir,
                 )
 
-            new_pkl = tmp_dir / "model_normalized_72.pkl"
+            # 기존 model_normalized_72.pkl은 절대 덮어쓰지 않고 불변 유지됨을 검증
+            self.assertEqual(hashlib.sha256(orig_base_pkl.read_bytes()).hexdigest(), orig_base_sha)
+
+            # versions/ 디렉토리에 불변 버전 파일 생성 확인
+            version_files = list((tmp_dir / "versions").glob("model_normalized_72_*.pkl"))
+            self.assertEqual(len(version_files), 1)
+            new_pkl = version_files[0]
             new_sha = hashlib.sha256(new_pkl.read_bytes()).hexdigest()
             self.assertNotEqual(old_sha, new_sha)
             self.assertEqual(retrained_moe.get_active_model_info()["sha256"], new_sha)
+
+            # manifest의 previous_model_path / previous_model_sha256 기록 확인
+            updated_manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+            self.assertEqual(updated_manifest["expected_sha256"], new_sha)
+            self.assertEqual(updated_manifest["previous_model_sha256"], orig_base_sha)
+            self.assertEqual(len(updated_manifest["feature_names"]), 72)
 
             logged_messages = [str(call.args[2]) for call in mock_syslog.call_args_list if len(call.args) >= 3]
             self.assertTrue(any("RETRAIN_COMPLETED" in msg for msg in logged_messages))
             self.assertTrue(any("MODEL_ACTIVATION_SUCCEEDED" in msg for msg in logged_messages))
 
-            tmp_leftovers = list(tmp_dir.glob("*.tmp.*"))
+            tmp_leftovers = list(tmp_dir.glob("*.tmp.*")) + list((tmp_dir / "versions").glob("*.tmp.*"))
             self.assertEqual(tmp_leftovers, [])
 
             running_moe.evaluate_dual_filter_signal(self.sample_df.tail(80))
             self.assertEqual(running_moe.get_active_model_info()["sha256"], new_sha)
 
     def test_15_retraining_failure_preserves_existing_model_100_percent(self):
-        """[STEP 3 & 6-E] 재학습 실패/검증 실패 시 기존 model_normalized_72.pkl과 manifest가 100% 보존되는지 검증"""
+        """[STEP 3 & 6-D] 재학습 실패/검증 실패 시 기존 model_normalized_72.pkl과 manifest가 100% 보존되는지 검증"""
         import hashlib
         import shutil
         import tempfile
@@ -579,9 +596,11 @@ class TestLGBMTrendMeanReversion(unittest.TestCase):
             self.assertEqual(hashlib.sha256(pkl_path.read_bytes()).hexdigest(), orig_pkl_sha)
             self.assertEqual(hashlib.sha256(manifest_path.read_bytes()).hexdigest(), orig_manifest_sha)
             self.assertEqual(list(tmp_dir.glob("*.tmp.*")), [])
+            if (tmp_dir / "versions").exists():
+                self.assertEqual(list((tmp_dir / "versions").glob("*.tmp.*")), [])
 
     def test_16_fallback_and_rollback_scenarios_a_to_f(self):
-        """[STEP 6] 시나리오 A~F 폴백·차단·즉시 롤백 전수 검증"""
+        """[STEP 6] 콜드 기동 시 폴백·차단 검증"""
         import json
         import shutil
         import tempfile
@@ -600,35 +619,36 @@ class TestLGBMTrendMeanReversion(unittest.TestCase):
 
             def _write_manifest(**overrides):
                 m = dict(orig_manifest)
+                m["model_path"] = str(b_pkl)
                 m["active_model_path"] = str(b_pkl)
                 m["fallback_model_path"] = str(c_pkl)
                 m.update(overrides)
                 manifest_file.write_text(json.dumps(m, indent=2), encoding="utf-8")
 
-            # 시나리오 A: model_normalized_72.pkl 파일 손상 -> Champion 자동 폴백
+            # 1) model_normalized_72.pkl 파일 손상 -> Champion 자동 폴백
             b_pkl.write_bytes(b"corrupted_pickle_bytes")
             _write_manifest()
             eng_a = MLFeatureEngine(manifest_path=manifest_file)
             self.assertEqual(eng_a.get_active_model_info()["load_status"], "FALLBACK_TO_CHAMPION")
             self.assertEqual(eng_a.get_active_model_info()["feature_schema"], "v4_champion")
 
-            # 복구 후 시나리오 B: SHA256 불일치 -> Champion 자동 폴백
+            # 2) 복구 후 SHA256 불일치 -> Champion 자동 폴백
             shutil.copy2(PROJECT_ROOT / "models" / "model_normalized_72.pkl", b_pkl)
             _write_manifest(expected_sha256="a" * 64)
             eng_b = MLFeatureEngine(manifest_path=manifest_file)
             self.assertEqual(eng_b.get_active_model_info()["load_status"], "FALLBACK_TO_CHAMPION")
 
-            # 시나리오 C: 피처 수(77개) 불일치 -> Champion 자동 폴백
-            _write_manifest(expected_num_features=77)
+            # 3) 피처 수(77개) 불일치 -> Champion 자동 폴백
+            _write_manifest(num_features=77, expected_num_features=77)
             eng_c = MLFeatureEngine(manifest_path=manifest_file)
             self.assertEqual(eng_c.get_active_model_info()["load_status"], "FALLBACK_TO_CHAMPION")
 
-            # 시나리오 D: 금지된 v5_challenger 모델 지정 -> 차단 후 Champion 자동 폴백
-            _write_manifest(active_model_path=str(e_pkl), expected_schema="v5_challenger", expected_num_features=77, expected_sha256="")
+            # 4) 금지된 v5_challenger 모델 지정 -> 차단 후 Champion 자동 폴백
+            _write_manifest(model_path=str(e_pkl), active_model_path=str(e_pkl), expected_schema="v5_challenger", num_features=77, expected_num_features=77, expected_sha256="")
             eng_d = MLFeatureEngine(manifest_path=manifest_file)
             self.assertEqual(eng_d.get_active_model_info()["load_status"], "FALLBACK_TO_CHAMPION")
 
-            # 시나리오 F: 주 모델 + 폴백 모델 모두 실패 -> self.model=None, 신규 진입 차단(0, 0.50)
+            # 5) 주 모델 + 폴백 모델 모두 실패 -> self.model=None, 신규 진입 차단(0, 0.50)
             _write_manifest(expected_sha256="a" * 64, fallback_expected_sha256="b" * 64)
             eng_f = MLFeatureEngine(manifest_path=manifest_file)
             self.assertEqual(eng_f.get_active_model_info()["load_status"], "BLOCKED")
@@ -637,17 +657,18 @@ class TestLGBMTrendMeanReversion(unittest.TestCase):
             self.assertEqual((sig_f, conf_f), (0, 0.50))
 
     def test_17_orderless_live_runner_startup_and_pre_order_verification(self):
-        """[STEP 4 & 5] KiwoomLiveRunner 무주문 기동 및 매수 직전 신호 판정·포트폴리오 불변 검증"""
+        """[STEP 4 & 7] KiwoomLiveRunner 무주문 기동, 8대 필수 모델 식별 로그 및 매수 직전 신호 판정·포트폴리오 불변 검증"""
         import hashlib
         from core.live_runner import KiwoomLiveRunner
 
         live_db_path = PROJECT_ROOT / "data" / "live_experience.db"
         db_sha_before = hashlib.sha256(live_db_path.read_bytes()).hexdigest()
+        expected_b_sha = "ef954c3be286d4fd4e429c5ed21b7e3da4842927c53e594ada86460029a0dcae"
 
         with patch("core.live_runner.KiwoomBroker") as MockBroker, \
              patch("core.live_runner.DispatcherAgent"), \
              patch("core.live_runner.TelegramController"), \
-             patch("core.live_runner.system_logger"):
+             patch("core.live_runner.system_logger") as mock_syslog:
             broker_inst = MockBroker.return_value
             broker_inst.get_account_balance.return_value = {
                 "ok": True,
@@ -656,14 +677,34 @@ class TestLGBMTrendMeanReversion(unittest.TestCase):
                 "holdings": [],
             }
             broker_inst.get_unfilled_orders.return_value = {"ok": True, "orders": []}
-            broker_inst.send_order.side_effect = AssertionError("send_order MUST NOT be called during STEP 5 orderless check!")
+            broker_inst.send_order.side_effect = AssertionError("send_order MUST NOT be called during STEP 7 orderless check!")
 
             runner = KiwoomLiveRunner(is_simulation=True)
             model_info = runner.moe_orchestrator.get_active_model_info()
-            self.assertEqual(model_info["active_model_id"], "B_Normalized_72")
-            self.assertEqual(model_info["feature_schema"], "B_normalized")
-            self.assertEqual(model_info["num_features"], 72)
-            self.assertEqual(model_info["load_status"], "ACTIVE_B_NORMALIZED")
+            log_line = runner.moe_orchestrator.gbdt_engine.format_active_model_log()
+
+            # STEP 7 필수 8대 진단 항목 검증
+            required_8_keys = [
+                "ACTIVE_MODEL_ID",
+                "ACTIVE_MODEL_SCHEMA",
+                "ACTIVE_MODEL_SHA256",
+                "ACTIVE_MODEL_PATH",
+                "ACTIVE_MODEL_FEATURE_COUNT",
+                "MODEL_LOAD_STATUS",
+                "MODEL_ACTIVATION_TIME",
+                "MODEL_FALLBACK_STATUS",
+            ]
+            for rk in required_8_keys:
+                self.assertIn(rk, model_info)
+                self.assertIn(f"{rk}=", log_line)
+
+            self.assertEqual(model_info["ACTIVE_MODEL_ID"], "B_Normalized_72")
+            self.assertEqual(model_info["ACTIVE_MODEL_SCHEMA"], "B_normalized")
+            self.assertEqual(model_info["ACTIVE_MODEL_SHA256"], expected_b_sha)
+            self.assertEqual(model_info["ACTIVE_MODEL_FEATURE_COUNT"], 72)
+            self.assertEqual(model_info["MODEL_LOAD_STATUS"], "ACTIVE_B_NORMALIZED")
+            self.assertEqual(model_info["MODEL_FALLBACK_STATUS"], "PRIMARY_ACTIVE")
+            self.assertTrue(bool(model_info["MODEL_ACTIVATION_TIME"]))
             self.assertFalse(model_info["is_fallback"])
             self.assertTrue(model_info["is_ready"])
 
@@ -675,6 +716,8 @@ class TestLGBMTrendMeanReversion(unittest.TestCase):
             for p_val in decision["gbdt_probs"].values():
                 self.assertTrue(0.0 <= float(p_val) <= 1.0)
             self.assertEqual(len(runner.moe_orchestrator.gbdt_engine.feature_names), 72)
+            self.assertEqual(decision["active_model_sha256"], expected_b_sha)
+            self.assertEqual(decision["active_model_schema"], "B_normalized")
 
             # 주문 호출 0건, 포지션/DB 상태 100% 불변 확인
             self.assertEqual(broker_inst.send_order.call_count, 0)
@@ -682,6 +725,264 @@ class TestLGBMTrendMeanReversion(unittest.TestCase):
             db_sha_after = hashlib.sha256(live_db_path.read_bytes()).hexdigest()
             self.assertEqual(db_sha_before, db_sha_after)
 
+    def test_18_atomic_activation_and_concurrency_scenarios_a_to_j(self):
+        """[STEP 6] 시나리오 A ~ J 원자적 활성화·중단 복원력·멀티스레드 핫리로드·동시 재학습 경합·즉시 롤백 전수 검증"""
+        import hashlib
+        import json
+        import os
+        import shutil
+        import tempfile
+        import threading
+        from core.moe_orchestrator import (
+            MoEMetaOrchestrator,
+            rollback_active_model_manifest,
+            train_and_save_moe_orchestrator,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir_str:
+            tmp_dir = Path(tmp_dir_str)
+            versions_dir = tmp_dir / "versions"
+            versions_dir.mkdir(parents=True, exist_ok=True)
+            b_pkl = tmp_dir / "model_normalized_72.pkl"
+            c_pkl = tmp_dir / "model_champion.pkl"
+            e_pkl = tmp_dir / "model_challenger_trend_mr.pkl"
+            manifest_file = tmp_dir / "active_model_manifest.json"
+
+            shutil.copy2(PROJECT_ROOT / "models" / "model_normalized_72.pkl", b_pkl)
+            shutil.copy2(PROJECT_ROOT / "models" / "model_champion.pkl", c_pkl)
+            shutil.copy2(PROJECT_ROOT / "models" / "model_challenger_trend_mr.pkl", e_pkl)
+
+            orig_b_sha = hashlib.sha256(b_pkl.read_bytes()).hexdigest()
+            orig_c_sha = hashlib.sha256(c_pkl.read_bytes()).hexdigest()
+            base_manifest = json.loads((PROJECT_ROOT / "models" / "active_model_manifest.json").read_text(encoding="utf-8"))
+            base_manifest["model_path"] = str(b_pkl)
+            base_manifest["active_model_path"] = str(b_pkl)
+            base_manifest["fallback_model_path"] = str(c_pkl)
+            base_manifest["job_started_at_ns"] = 100
+            manifest_file.write_text(json.dumps(base_manifest, indent=2), encoding="utf-8")
+
+            running_moe = MoEMetaOrchestrator(manifest_path=manifest_file)
+            self.assertEqual(running_moe.get_active_model_info()["sha256"], orig_b_sha)
+
+            # ------------------------------------------------------------------
+            # 시나리오 B: 임시 PKL 저장 중 프로세스 강제 종료(.tmp 잔존) 시뮬레이션
+            # ------------------------------------------------------------------
+            orphan_tmp = versions_dir / ".model_normalized_72.pkl.tmp.99999.killed"
+            orphan_tmp.write_bytes(b"partial_unflushed_pickle_stream_after_sigkill")
+            manifest_sha_before_b = hashlib.sha256(manifest_file.read_bytes()).hexdigest()
+            running_moe.evaluate_dual_filter_signal(self.sample_df.tail(60))
+            self.assertEqual(running_moe.get_active_model_info()["sha256"], orig_b_sha)
+            self.assertEqual(hashlib.sha256(manifest_file.read_bytes()).hexdigest(), manifest_sha_before_b)
+            cold_moe_b = MoEMetaOrchestrator(manifest_path=manifest_file)
+            self.assertEqual(cold_moe_b.get_active_model_info()["sha256"], orig_b_sha)
+
+            # ------------------------------------------------------------------
+            # 시나리오 C: 새 버전 PKL 확정 후 manifest os.replace 직전 실패 시뮬레이션
+            # ------------------------------------------------------------------
+            real_replace = os.replace
+
+            def _fail_on_manifest_replace(src, dst):
+                if str(dst).endswith("active_model_manifest.json"):
+                    raise OSError("Simulated power loss / permission error right before manifest os.replace")
+                return real_replace(src, dst)
+
+            with patch("core.moe_orchestrator.os.replace", side_effect=_fail_on_manifest_replace):
+                with self.assertRaises(OSError):
+                    train_and_save_moe_orchestrator(
+                        schema="B_normalized",
+                        df_15m=self.sample_df,
+                        models_dir_override=tmp_dir,
+                        _job_started_at_ns=150,
+                    )
+
+            # manifest는 이전 상태 100% 그대로 유지, 활성 모델도 orig_b_sha 그대로 유지 (불일치 0건)
+            self.assertEqual(hashlib.sha256(manifest_file.read_bytes()).hexdigest(), manifest_sha_before_b)
+            running_moe.evaluate_dual_filter_signal(self.sample_df.tail(60))
+            self.assertEqual(running_moe.get_active_model_info()["sha256"], orig_b_sha)
+            # 버전 파일 정리(다음 테스트를 위해 실패 시 생성된 미활성 버전 파일 삭제)
+            for vf in versions_dir.glob("model_normalized_72_*.pkl"):
+                vf.unlink()
+
+            # ------------------------------------------------------------------
+            # 시나리오 A: 정상 재학습 및 단일 manifest os.replace 원자적 교체
+            # ------------------------------------------------------------------
+            replace_targets = []
+
+            def _spy_replace(src, dst):
+                replace_targets.append((Path(src).name, Path(dst).name))
+                return real_replace(src, dst)
+
+            with patch("core.moe_orchestrator.os.replace", side_effect=_spy_replace):
+                v1_moe = train_and_save_moe_orchestrator(
+                    schema="B_normalized",
+                    df_15m=self.sample_df,
+                    models_dir_override=tmp_dir,
+                    _job_started_at_ns=200,
+                )
+
+            v1_sha = v1_moe.get_active_model_info()["sha256"]
+            self.assertNotEqual(v1_sha, orig_b_sha)
+            # 기존 model_normalized_72.pkl 덮어쓰기 0건 검증
+            self.assertEqual(hashlib.sha256(b_pkl.read_bytes()).hexdigest(), orig_b_sha)
+            self.assertFalse(any(dst_name == "model_normalized_72.pkl" for _, dst_name in replace_targets))
+            self.assertEqual(sum(1 for _, dst_name in replace_targets if dst_name == "active_model_manifest.json"), 1)
+
+            # 다음 추론 주기에서 핫리로드 반영 확인
+            dec_a = running_moe.evaluate_dual_filter_signal(self.sample_df.tail(60))
+            self.assertEqual(running_moe.get_active_model_info()["sha256"], v1_sha)
+            self.assertEqual(dec_a["active_model_sha256"], v1_sha)
+
+            # ------------------------------------------------------------------
+            # 시나리오 E (핫리로드 중 manifest expected_sha256 불일치):
+            # 스테이징 검증 실패 시 기존 유효 모델(v1_sha)을 그대로 유지하는지 검증
+            # ------------------------------------------------------------------
+            m_corrupt_sha = json.loads(manifest_file.read_text(encoding="utf-8"))
+            m_corrupt_sha["expected_sha256"] = "f" * 64
+            manifest_file.write_text(json.dumps(m_corrupt_sha, indent=2), encoding="utf-8")
+
+            reloaded = running_moe.gbdt_engine.ensure_latest_manifest_model()
+            self.assertFalse(reloaded)
+            info_e = running_moe.get_active_model_info()
+            self.assertEqual(info_e["sha256"], v1_sha)
+            self.assertEqual(info_e["MODEL_FALLBACK_STATUS"], "KEPT_CURRENT_VALID_MODEL_ON_RELOAD_FAILURE")
+
+            # manifest 정상 복구
+            m_corrupt_sha["expected_sha256"] = v1_sha
+            manifest_file.write_text(json.dumps(m_corrupt_sha, indent=2), encoding="utf-8")
+            running_moe.gbdt_engine.ensure_latest_manifest_model()
+
+            # ------------------------------------------------------------------
+            # 시나리오 G: 자동 재학습 작업 2개 동시/교차 실행 시 구버전 덮어쓰기 방지
+            # ------------------------------------------------------------------
+            # 최신 작업(job_ns=400)이 먼저 완료되어 활성화된 상태에서,
+            # 더 일찍 시작했던 구버전 작업(job_ns=300)이 뒤늦게 완료되어 활성화를 시도하면 차단되어야 함
+            v2_moe = train_and_save_moe_orchestrator(
+                schema="B_normalized",
+                df_15m=self.sample_df.iloc[:-15],
+                models_dir_override=tmp_dir,
+                _job_started_at_ns=400,
+            )
+            v2_sha = v2_moe.get_active_model_info()["sha256"]
+            self.assertNotEqual(v2_sha, v1_sha)
+
+            with self.assertRaises(RuntimeError) as ctx_g:
+                train_and_save_moe_orchestrator(
+                    schema="B_normalized",
+                    df_15m=self.sample_df,
+                    models_dir_override=tmp_dir,
+                    _job_started_at_ns=300,  # 최신 활성 모델(400)보다 오래된 작업
+                )
+            self.assertIn("STALE_RETRAIN_IGNORED", str(ctx_g.exception))
+            # manifest는 최신 모델(v2_sha)을 그대로 가리켜야 함
+            manifest_after_g = json.loads(manifest_file.read_text(encoding="utf-8"))
+            self.assertEqual(manifest_after_g["expected_sha256"], v2_sha)
+
+            # ------------------------------------------------------------------
+            # 시나리오 H: 즉시 롤백 (1: 직전 정상 B 버전 롤백, 2: Champion 롤백)
+            # ------------------------------------------------------------------
+            rb_prev = rollback_active_model_manifest(target="previous", models_dir_override=tmp_dir)
+            self.assertEqual(rb_prev["expected_sha256"], v1_sha)
+            running_moe.evaluate_dual_filter_signal(self.sample_df.tail(60))
+            self.assertEqual(running_moe.get_active_model_info()["sha256"], v1_sha)
+            self.assertEqual(running_moe.get_active_model_info()["ACTIVE_MODEL_SCHEMA"], "B_normalized")
+
+            rb_champ = rollback_active_model_manifest(target="champion", models_dir_override=tmp_dir)
+            self.assertEqual(rb_champ["expected_sha256"], orig_c_sha)
+            self.assertEqual(rb_champ["expected_schema"], "v4_champion")
+            running_moe.evaluate_dual_filter_signal(self.sample_df.tail(60))
+            self.assertEqual(running_moe.get_active_model_info()["sha256"], orig_c_sha)
+            self.assertEqual(running_moe.get_active_model_info()["ACTIVE_MODEL_SCHEMA"], "v4_champion")
+
+            # 다시 직전 B 모델(v1_sha)로 복원
+            rollback_active_model_manifest(target="previous", models_dir_override=tmp_dir)
+            running_moe.evaluate_dual_filter_signal(self.sample_df.tail(60))
+            self.assertEqual(running_moe.get_active_model_info()["sha256"], v1_sha)
+
+            # ------------------------------------------------------------------
+            # 시나리오 F: 추론 도중 핫리로드 멀티스레드 동시 경합 테스트
+            # ------------------------------------------------------------------
+            errors: list = []
+            observed_snapshots: list = []
+            stop_event = threading.Event()
+            valid_pairs = {
+                (v1_sha, "B_normalized", 72),
+                (orig_c_sha, "v4_champion", 72),
+            }
+
+            def _inference_worker():
+                while not stop_event.is_set():
+                    try:
+                        sig, conf, _, probs = running_moe.gbdt_engine.predict_signal_full(self.sample_df.tail(60))
+                        snap = running_moe.gbdt_engine.get_last_inference_snapshot()
+                        if snap is None or snap.model is None:
+                            errors.append("Snapshot or model was None during concurrent inference!")
+                            break
+                        pair = (snap.active_model_sha256, snap.feature_schema, len(snap.feature_names))
+                        if pair not in valid_pairs:
+                            errors.append(f"Mixed or invalid snapshot state observed: {pair}")
+                            break
+                        if not (0.0 <= conf <= 1.0) or sig not in (-1, 0, 1):
+                            errors.append(f"Invalid prediction output: sig={sig}, conf={conf}")
+                            break
+                        observed_snapshots.append(pair)
+                    except Exception as ex:
+                        errors.append(f"Exception in inference worker: {ex}")
+                        break
+
+            workers = [threading.Thread(target=_inference_worker) for _ in range(3)]
+            for w in workers:
+                w.start()
+
+            try:
+                for idx in range(6):
+                    target_mode = "champion" if (idx % 2 == 0) else "previous"
+                    rollback_active_model_manifest(target=target_mode, models_dir_override=tmp_dir)
+                    running_moe.gbdt_engine.ensure_latest_manifest_model()
+            finally:
+                stop_event.set()
+                for w in workers:
+                    w.join(timeout=5.0)
+
+            self.assertEqual(errors, [])
+            self.assertGreater(len(observed_snapshots), 0)
+
+            # ------------------------------------------------------------------
+            # 시나리오 I: 77개 Challenger 모델 지정 시도 -> 즉시 차단
+            # ------------------------------------------------------------------
+            m_chal = json.loads(manifest_file.read_text(encoding="utf-8"))
+            m_chal["model_path"] = str(e_pkl)
+            m_chal["active_model_path"] = str(e_pkl)
+            m_chal["expected_schema"] = "v5_challenger"
+            m_chal["num_features"] = 77
+            m_chal["expected_num_features"] = 77
+            m_chal["expected_sha256"] = hashlib.sha256(e_pkl.read_bytes()).hexdigest()
+            manifest_file.write_text(json.dumps(m_chal, indent=2), encoding="utf-8")
+
+            # 핫리로드 시 Challenger 거부하고 현재 유효 모델 유지
+            self.assertFalse(running_moe.gbdt_engine.ensure_latest_manifest_model())
+            self.assertNotEqual(running_moe.get_active_model_info()["ACTIVE_MODEL_SCHEMA"], "v5_challenger")
+
+            # ------------------------------------------------------------------
+            # 시나리오 J: 주 모델 + 폴백 모델 모두 실패 시 신규 진입 차단 및 청산 타겟 계산 정상 유지
+            # ------------------------------------------------------------------
+            m_fail_all = json.loads(manifest_file.read_text(encoding="utf-8"))
+            m_fail_all["expected_sha256"] = "0" * 64
+            m_fail_all["fallback_expected_sha256"] = "1" * 64
+            manifest_file.write_text(json.dumps(m_fail_all, indent=2), encoding="utf-8")
+
+            blocked_moe = MoEMetaOrchestrator(manifest_path=manifest_file)
+            b_info = blocked_moe.get_active_model_info()
+            self.assertEqual(b_info["MODEL_LOAD_STATUS"], "BLOCKED")
+            self.assertIsNone(blocked_moe.gbdt_engine.model)
+            dec_j = blocked_moe.evaluate_dual_filter_signal(self.sample_df.tail(60))
+            self.assertEqual(dec_j["direction"], "NONE")
+            self.assertFalse(dec_j["is_approved"])
+            # 보유 포지션 청산용 동적 익절/손절 타겟 계산은 정상 동작 확인
+            targets = blocked_moe.calculate_dynamic_targets(self.sample_df.tail(30), cur_px=50.0)
+            self.assertGreater(targets["dynamic_tp_px"], 50.0)
+            self.assertLess(targets["dynamic_sl_px"], 50.0)
+
 
 if __name__ == "__main__":
     unittest.main()
+
