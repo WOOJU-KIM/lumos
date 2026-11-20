@@ -1,0 +1,12 @@
+{
+  "FULL_COND_PAYOFF_F1.0": {
+    "calibration_trades": 0,
+    "positive_ev_candidates_before_entry_filter": 0,
+    "max_expected_net_return": -0.00023807850091094734
+  },
+  "FULL_HIST_PAYOFF_F1.0": {
+    "calibration_trades": 2,
+    "positive_ev_candidates_before_entry_filter": 3,
+    "max_expected_net_return": 0.0004967393807609301
+  }
+}

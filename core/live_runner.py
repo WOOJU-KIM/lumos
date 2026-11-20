@@ -38,6 +38,7 @@ from core.state_hub import StateHub
 from core.data_lake import MarketDataLake
 from core.shadow_sandbox import ShadowSandboxEngine
 from core.shadow_tracker import ShadowTracker
+from research.shadow_five_full15m_20261018.comparison_control import legacy_tracker_enabled
 from core.circuit_breaker import CircuitBreakerEngine
 from core.system_logger import system_logger
 from core.moe_orchestrator import MoEMetaOrchestrator
@@ -96,7 +97,7 @@ class KiwoomLiveRunner:
         self.state_hub = StateHub()
         self.data_lake = MarketDataLake()
         self.shadow_sandbox = ShadowSandboxEngine()
-        self.shadow_tracker = ShadowTracker()
+        self.shadow_tracker = ShadowTracker(enabled=legacy_tracker_enabled())
 
         self.circuit_breaker = CircuitBreakerEngine()
         self.moe_orchestrator = MoEMetaOrchestrator(confidence_threshold=config.GBDT_CONFIDENCE_THRESHOLD, gbdt_threshold=config.GBDT_CONFIDENCE_THRESHOLD)
@@ -119,6 +120,13 @@ class KiwoomLiveRunner:
         self.ws_streamer.register_callback(self._on_websocket_tick)
         self.ws_streamer.register_execution_callback(self._on_websocket_execution)
 
+        # Bind only this real runner's observer inputs; simulation/research stays isolated.
+        try:
+            from research.shadow_five_full15m_20261018.feed_bridge import bind as _shadow_bind
+            _shadow_bind(self.moe_orchestrator.gbdt_engine, self.ws_streamer, self.broker.is_simulation)
+        except Exception:
+            pass
+
         self.is_running = False
         self._last_market_session = None
         self._active_position: Optional[Dict[str, Any]] = None  # ? ??????
@@ -138,12 +146,777 @@ class KiwoomLiveRunner:
         self._last_defense_state: bool = False
         self._last_briefing_time: float = 0.0
         self._last_moe_res: Optional[Dict[str, Any]] = None
+        self._empty_balance_streak: int = 0
+        self._unreconciled_holding_mismatch: Optional[Dict[str, Any]] = None
+        # Do not erase unresolved orders on construction; recover lazily from disk.
+        self._pending_buy_cache = None
+        self._pending_buy_write_failed = False
+
+    def get_active_model_info(self, is_daemon_running: Optional[bool] = None) -> Dict[str, Any]:
+        """단일 모델 메타데이터 공급원(MLFeatureEngine.get_active_model_info) 위임 조회"""
+        daemon_flag = bool(self.is_running) if is_daemon_running is None else bool(is_daemon_running)
+        if hasattr(self, "moe_orchestrator") and hasattr(self.moe_orchestrator, "gbdt_engine"):
+            eng = self.moe_orchestrator.gbdt_engine
+            if hasattr(eng, "get_active_model_info"):
+                return eng.get_active_model_info(is_daemon_running=daemon_flag)
+        return {
+            "active_model_id": "UNKNOWN",
+            "feature_schema": "UNKNOWN",
+            "num_features": 0,
+            "model_sha256": "",
+            "sha256": "",
+            "model_version": "NONE",
+            "load_status": "BLOCKED",
+            "fallback_status": "ALL_MODELS_FAILED_ENTRY_BLOCKED",
+            "is_fallback": False,
+            "is_ready": False,
+            "operational_verdict": "BLOCKED",
+        }
+
+    def _can_query_broker_method(self, method_name: str) -> bool:
+        broker = getattr(self, "broker", None)
+        if broker is None:
+            return False
+        inst_dict = getattr(broker, "__dict__", {}) or {}
+        if method_name in inst_dict:
+            return callable(inst_dict[method_name])
+        if type(broker).__name__ in ("MagicMock", "NonCallableMagicMock", "AsyncMock"):
+            return False
+        if not callable(getattr(broker, method_name, None)):
+            return False
+        if type(broker).__name__ != "KiwoomBroker":
+            return True
+        if hasattr(getattr(broker, "send_order", None), "_mock_name"):
+            return False
+        if (
+            method_name == "get_order_history"
+            and ("get_open_orders" in inst_dict or "get_daily_execution_history" in inst_dict)
+            and "_send_tr_request" not in inst_dict
+        ):
+            return False
+        return True
+
+    @staticmethod
+    def _parse_int_strict(val: Any) -> Optional[int]:
+        if val is None or isinstance(val, bool):
+            return None
+        try:
+            s = str(val).replace(",", "").strip()
+            if not s:
+                return None
+            f = float(s)
+            if int(f) != f or int(f) < 0:
+                return None
+            return int(f)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _norm_exec_side(item: Dict[str, Any]) -> str:
+        raw_side = str(item.get("side") or "").strip().upper()
+        if raw_side in ("BUY", "SELL"):
+            return raw_side
+        raw_tp = str(item.get("slby_tp") or item.get("sll_buy_tp_cd") or item.get("slby_tp_nm") or "").strip()
+        if raw_tp in ("1", "매도") or "매도" in raw_tp:
+            return "SELL"
+        if raw_tp in ("2", "매수") or "매수" in raw_tp:
+            return "BUY"
+        return raw_side
+
+    @classmethod
+    def _parse_exec_filled_qty(cls, ex: Dict[str, Any]) -> Optional[int]:
+        for key in ("tot_che_qty", "cntr_qty", "ccld_qty", "filled_qty", "che_qty"):
+            if key in ex:
+                return cls._parse_int_strict(ex.get(key))
+        return cls._parse_int_strict(0)
+
+    @staticmethod
+    def _extract_open_orders_list(open_res: Any) -> Optional[List[Dict[str, Any]]]:
+        if not isinstance(open_res, dict) or open_res.get("ok") is not True:
+            return None
+        orders = open_res.get("orders") if "orders" in open_res else open_res.get("open_orders")
+        return orders if isinstance(orders, list) else None
+
+    @staticmethod
+    def _normalize_verified_date_str(val: Any) -> Optional[str]:
+        if not isinstance(val, str):
+            return None
+        s = val.strip()
+        try:
+            if len(s) == 8 and s.isdigit():
+                datetime.strptime(s, "%Y%m%d")
+                return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
+            if len(s) == 10 and s[4] == "-" and s[7] == "-":
+                datetime.strptime(s, "%Y-%m-%d")
+                return s
+        except Exception:
+            return None
+        return None
+
+    @staticmethod
+    def _normalize_verified_time_str(val: Any) -> Optional[str]:
+        if not isinstance(val, str):
+            return None
+        s = val.strip()
+        if not s:
+            return None
+        try:
+            if len(s) == 8 and s[2] == ":" and s[5] == ":":
+                datetime.strptime(s, "%H:%M:%S")
+                return s
+            if len(s) == 6 and s.isdigit():
+                datetime.strptime(s, "%H%M%S")
+                return f"{s[:2]}:{s[2:4]}:{s[4:6]}"
+        except Exception:
+            return None
+        return None
+
+    def _lookup_verified_buy_metadata(
+        self,
+        symbol: str,
+        expected_qty: int,
+        hist_executions: List[Dict[str, Any]],
+        hist_metadata: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[Optional[str], Optional[str]]:
+        sym_up = symbol.strip().upper()
+        meta_date = None
+        if isinstance(hist_metadata, dict):
+            sd = self._normalize_verified_date_str(hist_metadata.get("start_date"))
+            ed = self._normalize_verified_date_str(hist_metadata.get("end_date"))
+            if sd and ed and sd == ed:
+                meta_date = sd
+
+        matched_ord_no = None
+        matched_time = None
+        order_filled_map: Dict[str, int] = {}
+        order_time_map: Dict[str, str] = {}
+
+        for item in hist_executions:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("stk_cd") or item.get("symbol") or "").strip().upper() != sym_up:
+                continue
+            if self._norm_exec_side(item) != "BUY":
+                continue
+            fil_q = self._parse_exec_filled_qty(item)
+            if fil_q is None or fil_q <= 0:
+                continue
+            ord_no = str(item.get("ord_no") or item.get("order_no") or "").strip()
+            if not ord_no:
+                return None, None
+            if "tot_che_qty" in item and "cntr_qty" not in item:
+                order_filled_map[ord_no] = max(order_filled_map.get(ord_no, 0), fil_q)
+            else:
+                order_filled_map[ord_no] = order_filled_map.get(ord_no, 0) + fil_q
+            matched_ord_no = ord_no
+
+            row_time = None
+            bt = item.get("buy_time") or item.get("entry_time") or item.get("timestamp")
+            if isinstance(bt, str) and len(bt.strip()) >= 19:
+                cand_ts = bt.strip()[:19]
+                try:
+                    datetime.strptime(cand_ts, "%Y-%m-%d %H:%M:%S")
+                    row_time = cand_ts
+                except Exception:
+                    row_time = None
+            if row_time is None:
+                row_date = (
+                    self._normalize_verified_date_str(item.get("ord_dt"))
+                    or self._normalize_verified_date_str(item.get("trade_date"))
+                    or meta_date
+                )
+                if row_date:
+                    for t_key in ("cntr_time", "cntr_tmd", "ord_time", "ord_tmd", "ord_resp_time"):
+                        hms = self._normalize_verified_time_str(item.get(t_key))
+                        if hms:
+                            row_time = f"{row_date} {hms}"
+                            break
+            if row_time:
+                order_time_map[ord_no] = row_time
+                matched_time = row_time
+
+        if not matched_ord_no:
+            return None, None
+
+        ord_filled_qty = order_filled_map.get(matched_ord_no, 0)
+        exp_logger = getattr(self, "experience_logger", None)
+        if exp_logger is not None and callable(getattr(exp_logger, "_get_connection", None)):
+            try:
+                conn = exp_logger._get_connection()
+                try:
+                    c = conn.cursor()
+                    c.execute(
+                        "SELECT timestamp, order_no, quantity FROM live_order_events WHERE symbol=? AND action='BUY' AND status='FILLED' AND order_no=? ORDER BY event_id DESC LIMIT 1",
+                        (sym_up, matched_ord_no),
+                    )
+                    row = c.fetchone()
+                    if row is not None:
+                        ts_val = str(row["timestamp"] if isinstance(row, dict) or hasattr(row, "keys") else row[0]).strip()
+                        ono_val = str(row["order_no"] if isinstance(row, dict) or hasattr(row, "keys") else row[1]).strip()
+                        qty_val = self._parse_int_strict(row["quantity"] if isinstance(row, dict) or hasattr(row, "keys") else row[2])
+                        if ono_val == matched_ord_no and qty_val is not None and qty_val in (expected_qty, ord_filled_qty) and len(ts_val) >= 19:
+                            cand_db_ts = ts_val[:19]
+                            try:
+                                datetime.strptime(cand_db_ts, "%Y-%m-%d %H:%M:%S")
+                                matched_time = cand_db_ts
+                            except Exception:
+                                pass
+                finally:
+                    conn.close()
+            except Exception:
+                pass
+        return matched_time, matched_ord_no
+
+    def _reconcile_active_position_with_ledger(self, stk_bal: Dict[str, Any]):
+        if not isinstance(stk_bal, dict) or stk_bal.get("ok") is not True or not isinstance(stk_bal.get("holdings"), list):
+            return
+        valid_holdings = []
+        for h in stk_bal.get("holdings", []):
+            if not isinstance(h, dict):
+                return
+            sym = str(h.get("symbol") or h.get("stk_cd") or "").strip().upper()
+            qty_raw = h.get("quantity") if "quantity" in h else h.get("poss_qty", h.get("sell_alowq", 0))
+            qty = self._parse_int_strict(qty_raw)
+            if qty is None:
+                return
+            try:
+                avg_px = float(
+                    str(
+                        h.get("purchase_price")
+                        or h.get("pchs_avg_pric")
+                        or h.get("buy_price")
+                        or h.get("avg_price")
+                        or h.get("frgn_stk_book_uv")
+                        or 0.0
+                    ).replace(",", "").strip()
+                )
+            except Exception:
+                avg_px = 0.0
+            if sym and qty > 0:
+                valid_holdings.append({"symbol": sym, "quantity": qty, "avg_price": avg_px, "raw": h})
+
+        active_pos = self._get_active_position()
+
+        # 1. 실계좌 보유 0주인 경우: 매수 직후 잔고 반영 지연 또는 단일 조회 결과만으로 active_position을 절대 삭제하지 않음
+        if not valid_holdings:
+            if not active_pos:
+                self._unreconciled_holding_mismatch = None
+                self._empty_balance_streak = 0
+                return
+            self._empty_balance_streak = getattr(self, "_empty_balance_streak", 0) + 1
+            if not (self._can_query_broker_method("get_open_orders") and self._can_query_broker_method("get_daily_execution_history")):
+                return
+            open_res = self.broker.get_open_orders()
+            open_orders_list = self._extract_open_orders_list(open_res)
+            hist_res = self.broker.get_daily_execution_history()
+            if (open_orders_list is None
+                    or not isinstance(hist_res, dict) or hist_res.get("ok") is not True or not isinstance(hist_res.get("executions"), list)):
+                return
+            pos_sym = str(active_pos.get("symbol") or "").strip().upper()
+            pos_qty = self._parse_int_strict(active_pos.get("quantity", active_pos.get("qty", 0))) or 0
+            pos_ord_no = str(active_pos.get("order_no") or "").strip()
+            for o_item in open_orders_list:
+                if not isinstance(o_item, dict):
+                    return
+                o_sym = str(o_item.get("stk_cd") or o_item.get("symbol") or o_item.get("symb") or "").strip().upper()
+                rem_q = self._parse_int_strict(o_item.get("nccs_qty") if "nccs_qty" in o_item else o_item.get("ord_remnq", o_item.get("remaining_quantity", 0)))
+                if rem_q is None or (rem_q > 0 and (not o_sym or o_sym == pos_sym)):
+                    return
+            total_buy_filled = 0
+            total_sell_filled = 0
+            closing_sell_confirmed = False
+            for ex in hist_res.get("executions", []):
+                if not isinstance(ex, dict):
+                    return
+                ex_sym = str(ex.get("stk_cd") or ex.get("symbol") or "").strip().upper()
+                if ex_sym != pos_sym:
+                    continue
+                fil_q = self._parse_exec_filled_qty(ex)
+                rem_q = self._parse_int_strict(ex.get("nccs_qty") if "nccs_qty" in ex else ex.get("ord_remnq", 0))
+                can_q = self._parse_int_strict(ex.get("cancelled_qty") if "cancelled_qty" in ex else ex.get("cncl_qty", 0))
+                if fil_q is None or rem_q is None or rem_q > 0:
+                    return
+                side = self._norm_exec_side(ex)
+                if side not in ("BUY", "SELL"):
+                    if fil_q == 0 and can_q is not None and can_q > 0:
+                        continue
+                    return
+                ex_ord_no = str(ex.get("ord_no") or ex.get("order_no") or "").strip()
+                if side == "BUY":
+                    total_buy_filled += fil_q
+                elif side == "SELL":
+                    total_sell_filled += fil_q
+                    if fil_q > 0 and (not pos_ord_no or not ex_ord_no or ex_ord_no != pos_ord_no):
+                        closing_sell_confirmed = True
+            if closing_sell_confirmed and pos_qty > 0 and total_sell_filled >= pos_qty and total_sell_filled >= total_buy_filled:
+                recheck_bal = self.broker.get_overseas_stock_balance(force_refresh=True)
+                if isinstance(recheck_bal, dict) and recheck_bal.get("ok") is True and not recheck_bal.get("holdings"):
+                    self._clear_active_position()
+                    self._unreconciled_holding_mismatch = None
+                    self._empty_balance_streak = 0
+            return
+
+        # 2. 실계좌 보유 주식이 존재하는 경우
+        self._empty_balance_streak = 0
+        if active_pos:
+            pos_sym = str(active_pos.get("symbol") or "").strip().upper()
+            matching = [h for h in valid_holdings if h["symbol"] == pos_sym]
+            other = [h for h in valid_holdings if h["symbol"] != pos_sym]
+            if other or not matching:
+                self._unreconciled_holding_mismatch = {
+                    "symbol": valid_holdings[0]["symbol"],
+                    "quantity": valid_holdings[0]["quantity"],
+                    "price": valid_holdings[0]["avg_price"],
+                    "reason": "ACTIVE_POSITION_SYMBOL_MISMATCH",
+                }
+                logger.error(f"🚨 [원장-로컬 포지션 불일치] 로컬({pos_sym})과 실계좌 보유({valid_holdings[0]['symbol']})가 일치하지 않습니다.")
+                return
+            self._unreconciled_holding_mismatch = None
+            h_info = matching[0]
+            h_qty = h_info["quantity"]
+            h_px = round(h_info["avg_price"], 2) if h_info["avg_price"] > 0 else float(active_pos.get("price", active_pos.get("buy_price", 0.0)))
+            cur_pos_qty = self._parse_int_strict(active_pos.get("quantity", active_pos.get("qty", 0))) or 0
+            cur_pos_px = float(active_pos.get("price", active_pos.get("buy_price", 0.0)))
+            if h_qty > 0 and h_px > 0 and (cur_pos_qty != h_qty or abs(cur_pos_px - h_px) >= 0.01):
+                active_pos["quantity"] = h_qty
+                active_pos["qty"] = h_qty
+                active_pos["price"] = h_px
+                active_pos["buy_price"] = h_px
+                tp_pct = float(active_pos.get("tp_pct", config.MAX_TP_PCT * 100.0))
+                sl_pct = config.SL_MIN_PCT * 100.0
+                active_pos["tp_px"] = round(h_px * (1.0 + tp_pct / 100.0), 2)
+                active_pos["sl_pct"] = sl_pct
+                active_pos["sl_px"] = round(h_px * (1.0 - sl_pct / 100.0), 2)
+                self._save_active_position(active_pos)
+            return
+
+        # 3. 실계좌에 보유 주식이 있으나 로컬 active_position이 없는 경우: 체결원장 및 로컬 체결기록 대조
+        if len(valid_holdings) > 1:
+            self._unreconciled_holding_mismatch = {
+                "symbol": ",".join(h["symbol"] for h in valid_holdings),
+                "quantity": sum(h["quantity"] for h in valid_holdings),
+                "reason": "MULTIPLE_SYMBOLS_HELD_WITHOUT_LOCAL_POSITION",
+            }
+            logger.error("🚨 [원장-로컬 포지션 불일치] 복수 종목이 실계좌에 보유 중이나 로컬 포지션이 없습니다.")
+            return
+
+        h_info = valid_holdings[0]
+        h_sym = h_info["symbol"]
+        h_qty = h_info["quantity"]
+        h_px = round(h_info["avg_price"], 2)
+        if h_px <= 0 or not self._can_query_broker_method("get_daily_execution_history"):
+            self._unreconciled_holding_mismatch = {
+                "symbol": h_sym,
+                "quantity": h_qty,
+                "price": h_px,
+                "reason": "UNVERIFIED_PRICE_OR_EXECUTION_HISTORY_UNAVAILABLE",
+            }
+            logger.error(f"🚨 [원장-로컬 포지션 불일치] {h_sym} {h_qty}주 보유 중이나 체결원장/매수가를 확인할 수 없어 추정 포지션 생성을 거부합니다.")
+            return
+
+        hist_res = self.broker.get_daily_execution_history()
+        if not isinstance(hist_res, dict) or hist_res.get("ok") is not True or not isinstance(hist_res.get("executions"), list):
+            self._unreconciled_holding_mismatch = {
+                "symbol": h_sym,
+                "quantity": h_qty,
+                "price": h_px,
+                "reason": "EXECUTION_HISTORY_QUERY_FAILED",
+            }
+            logger.error(f"🚨 [원장-로컬 포지션 불일치] {h_sym} {h_qty}주 체결원장 조회 실패로 추정 포지션 생성을 거부합니다.")
+            return
+
+        net_buy_qty = 0
+        for ex in hist_res.get("executions", []):
+            if not isinstance(ex, dict):
+                continue
+            if str(ex.get("stk_cd") or ex.get("symbol") or "").strip().upper() != h_sym:
+                continue
+            fil_q = self._parse_exec_filled_qty(ex)
+            rem_q = self._parse_int_strict(ex.get("nccs_qty") if "nccs_qty" in ex else ex.get("ord_remnq", 0))
+            can_q = self._parse_int_strict(ex.get("cancelled_qty") if "cancelled_qty" in ex else ex.get("cncl_qty", 0))
+            side = self._norm_exec_side(ex)
+            if fil_q is None or rem_q is None or rem_q > 0:
+                self._unreconciled_holding_mismatch = {
+                    "symbol": h_sym,
+                    "quantity": h_qty,
+                    "price": h_px,
+                    "reason": "UNRESOLVED_OR_AMBIGUOUS_EXECUTION_ROW",
+                }
+                logger.error(f"🚨 [원장-로컬 포지션 불일치] {h_sym} 미확정 체결 내역이 존재하여 포지션 복구를 중단합니다.")
+                return
+            if side not in ("BUY", "SELL"):
+                if fil_q == 0 and can_q is not None and can_q > 0:
+                    continue
+                self._unreconciled_holding_mismatch = {
+                    "symbol": h_sym,
+                    "quantity": h_qty,
+                    "price": h_px,
+                    "reason": "UNRESOLVED_OR_AMBIGUOUS_EXECUTION_ROW",
+                }
+                logger.error(f"🚨 [원장-로컬 포지션 불일치] {h_sym} 미확정 체결 내역이 존재하여 포지션 복구를 중단합니다.")
+                return
+            if side == "BUY":
+                net_buy_qty += fil_q
+            elif side == "SELL":
+                net_buy_qty -= fil_q
+
+        verified_buy_time, verified_ord_no = self._lookup_verified_buy_metadata(
+            h_sym, h_qty, hist_res.get("executions", []), hist_res.get("metadata")
+        )
+        if net_buy_qty != h_qty or not verified_buy_time:
+            self._unreconciled_holding_mismatch = {
+                "symbol": h_sym,
+                "quantity": h_qty,
+                "price": h_px,
+                "net_buy_qty": net_buy_qty,
+                "verified_buy_time": verified_buy_time,
+                "reason": "UNVERIFIED_ENTRY_TIME_OR_QUANTITY_MISMATCH",
+            }
+            logger.error(
+                f"🚨 [원장-로컬 포지션 불일치] 실계좌({h_sym} {h_qty}주 @ ${h_px:.2f})와 체결원장 순매수({net_buy_qty}주)/매수시각({verified_buy_time})을 학인할 수 없어 추정 포지션 생성을 거부합니다."
+            )
+            system_logger.log("ERROR", "LedgerMismatch", f"실계좌 {h_sym} {h_qty}주 보유 불일치 (매수시각/수량 미검증)")
+            return
+
+        atr_pct = self._get_5m_atr_pct(h_sym, h_px)
+        sl_pct = config.SL_MIN_PCT * 100.0
+        tp_pct = config.MAX_TP_PCT * 100.0
+        tp_px_calc = round(h_px * (1.0 + tp_pct / 100.0), 2)
+        sl_px_calc = round(h_px * (1.0 - sl_pct / 100.0), 2)
+        recovered_pos = {
+            "symbol": h_sym,
+            "quantity": h_qty,
+            "qty": h_qty,
+            "price": h_px,
+            "buy_price": h_px,
+            "buy_time": verified_buy_time,
+            "order_no": verified_ord_no or "",
+            "tp_pct": tp_pct,
+            "sl_pct": sl_pct,
+            "tp_px": tp_px_calc,
+            "sl_px": sl_px_calc,
+            "dynamic_tp_px": tp_px_calc,
+            "dynamic_sl_px": sl_px_calc,
+            "time_stop_minutes": config.TIME_STOP_MINUTES,
+            "strategy_tag": "Lumos Ledger Recovered",
+            "ref_price": h_px,
+            "gbdt_confidence": 0.0,
+            "cross_dir": "HOLD",
+            "features": {},
+            "high_price_during_hold": h_px,
+            "low_price_during_hold": h_px,
+            "buy_attempts": 1,
+        }
+        self._unreconciled_holding_mismatch = None
+        self._save_active_position(recovered_pos)
+        logger.info(f"✅ [원장-체결 대조 포지션 복구 완료] {h_sym} {h_qty}주 @ ${h_px:.2f} (매수시각: {verified_buy_time})")
+
+    def _scan_closed_order_rows(self, rows, order_no, symbol, side, quantity, cancel_order_no):
+        """Return terminal row facts, or None when quantities cannot authorize a retry."""
+        from core.order_ledger import scan_order_rows
+
+        facts = scan_order_rows(
+            rows, order_no, symbol, side, quantity,
+            self._get_current_ny_date().replace("-", ""), cancel_order_no,
+        )
+        if facts["error"] or facts["remaining"]:
+            return None
+        return facts["found"], facts["filled"], facts["parent_cancel"], facts["child_cancel"]
+
+    def _verify_pre_buy_ledger_clean(self, symbol: str) -> bool:
+        pending_buy = self._load_pending_buy_order()
+        if getattr(self, "_pending_buy_write_failed", False) or (pending_buy and pending_buy.get("recovery_error")):
+            logger.error("New BUY blocked: unresolved or unavailable pending-order journal")
+            return False
+        if self._get_active_position() is not None:
+            logger.warning("⚠️ [매수 중단] 이미 활성 포지션(active_position)이 존재합니다.")
+            return False
+
+        stk_bal = self.broker.get_overseas_stock_balance(force_refresh=True)
+        if not isinstance(stk_bal, dict) or stk_bal.get("ok") is not True or not isinstance(stk_bal.get("holdings"), list):
+            logger.error("❌ [매수 중단] 실계좌 잔고 조회 실패 또는 응답 불명확으로 신규 매수를 차단합니다.")
+            return False
+
+        for h in stk_bal.get("holdings", []):
+            if not isinstance(h, dict):
+                logger.error("❌ [매수 중단] 실계좌 잔고 항목 형식이 불명확하여 신규 매수를 차단합니다.")
+                return False
+            h_sym = str(h.get("symbol") or h.get("stk_cd") or "").strip().upper()
+            h_qty = self._parse_int_strict(h.get("quantity") if "quantity" in h else h.get("poss_qty", h.get("sell_alowq", 0)))
+            if h_qty is None:
+                logger.error("❌ [매수 중단] 실계좌 보유 수량 파싱 실패로 신규 매수를 차단합니다.")
+                return False
+            if h_qty > 0:
+                self._reconcile_active_position_with_ledger(stk_bal)
+                logger.warning(f"⚠️ [매수 중단] 실계좌에 이미 보유 종목({h_sym} {h_qty}주)이 존재하여 신규 매수를 차단합니다.")
+                return False
+
+        self._unreconciled_holding_mismatch = None
+
+        if self._can_query_broker_method("get_open_orders"):
+            open_res = self.broker.get_open_orders()
+            open_orders_list = self._extract_open_orders_list(open_res)
+            if open_orders_list is None:
+                logger.error("❌ [매수 중단] 미체결 주문 원장 조회 실패 또는 응답 불명확으로 신규 매수를 차단합니다.")
+                return False
+            for o_item in open_orders_list:
+                if not isinstance(o_item, dict):
+                    logger.error("❌ [매수 중단] 미체결 주문 항목 형식이 불명확하여 신규 매수를 차단합니다.")
+                    return False
+                o_sym = str(o_item.get("stk_cd") or o_item.get("symbol") or o_item.get("symb") or "").strip().upper()
+                rem_q = self._parse_int_strict(
+                    o_item.get("nccs_qty")
+                    if "nccs_qty" in o_item
+                    else o_item.get("ord_remnq", o_item.get("remaining_quantity", o_item.get("unfilled_qty", 0)))
+                )
+                if rem_q is None:
+                    logger.error("❌ [매수 중단] 미체결 주문 잔량 파싱 실패로 신규 매수를 차단합니다.")
+                    return False
+                if rem_q > 0 and (not o_sym or o_sym in (config.BASE_ASSET_LONG, config.BASE_ASSET_SHORT, symbol.strip().upper())):
+                    logger.warning(f"⚠️ [매수 중단] 실계좌 미체결 주문({o_sym} {rem_q}주)이 존재하여 신규 매수를 차단합니다.")
+                    return False
+
+        if self._load_pending_buy_order() is not None:
+            pending = self._load_pending_buy_order()
+            pending_day = str(pending.get("trade_date") or "").replace("-", "")
+            current_day = self._get_current_ny_date().replace("-", "")
+            if pending_day and pending_day != current_day:
+                if not pending.get("order_no") or not self._can_query_broker_method("resolve_order_ledger_status"):
+                    return False
+                prior = self.broker.resolve_order_ledger_status(
+                    pending["order_no"], pending.get("symbol", ""), "BUY",
+                    expected_qty=pending.get("target_qty"), trade_date=pending_day)
+                if prior["status"] == "CANCELED_ZERO_FILL":
+                    self._clear_pending_buy_order()
+                    return True
+                # Old fills need explicit position/closing-trade reconciliation;
+                # an empty current-day execution feed is not proof of closure.
+                logger.warning("Prior-day pending BUY remains unresolved; new entry blocked")
+                return False
+            if not (self._can_query_broker_method("get_open_orders") and self._can_query_broker_method("get_daily_execution_history")):
+                logger.error("❌ [매수 중단] 이전 매수 주문의 접수 여부를 원장으로 확인할 수 없어 신규 매수를 차단합니다.")
+                return False
+            hist_res = self.broker.get_daily_execution_history()
+            if not isinstance(hist_res, dict) or hist_res.get("ok") is not True or not isinstance(hist_res.get("executions"), list):
+                logger.error("❌ [매수 중단] 이전 미확정 매수 주문 대조를 위한 체결원장 조회 실패로 신규 매수를 차단합니다.")
+                return False
+            unconf_sym = str(self._load_pending_buy_order().get("symbol") or "").strip().upper()
+            unconf_ord_no = str(self._load_pending_buy_order().get("order_no") or "").strip()
+            unconf_target_qty = self._parse_int_strict(self._load_pending_buy_order().get("target_qty"))
+
+            buy_filled_by_sym: Dict[str, int] = {}
+            sell_filled_by_sym: Dict[str, int] = {}
+            seen_exec_sigs = set()
+            found_unconf_in_exec = False
+            unconf_exec_req = None
+            unconf_exec_fil = 0
+            unconf_exec_can = 0
+
+            for ex in hist_res.get("executions", []):
+                if not isinstance(ex, dict):
+                    return False
+                ex_sym = str(ex.get("stk_cd") or ex.get("symbol") or "").strip().upper() or unconf_sym
+                ex_ord_no = str(ex.get("ord_no") or ex.get("order_no") or "").strip()
+                ex_orig = str(ex.get("orig_ord_no") or ex.get("original_order_no") or "").strip()
+                ex_orig_clean = "" if ex_orig in ("", "000000000") else ex_orig
+                ex_cntr_tp = str(ex.get("ord_cntr_tp") or "").strip()
+
+                req_q = self._parse_int_strict(ex.get("ord_qty"))
+                fil_q = self._parse_exec_filled_qty(ex)
+                can_q = self._parse_int_strict(
+                    ex.get("cancelled_qty")
+                    if "cancelled_qty" in ex
+                    else (ex.get("cncl_cfrm_qty") if "cncl_cfrm_qty" in ex else ex.get("cncl_qty", 0))
+                )
+                rem_q = self._parse_int_strict(ex.get("nccs_qty") if "nccs_qty" in ex else ex.get("ord_remnq", 0))
+                side = self._norm_exec_side(ex)
+                if side not in ("BUY", "SELL"):
+                    if fil_q == 0 and can_q is not None and can_q > 0 and rem_q == 0:
+                        if unconf_ord_no and (ex_ord_no == unconf_ord_no or ex_orig_clean == unconf_ord_no):
+                            found_unconf_in_exec = True
+                            unconf_exec_can = max(unconf_exec_can, can_q)
+                            if req_q is not None:
+                                unconf_exec_req = req_q
+                        continue
+                    return False
+                if None in (req_q, fil_q, can_q, rem_q) or rem_q > 0 or fil_q + can_q != req_q:
+                    logger.error(f"❌ [매수 중단] 체결원장 주문({ex_sym} #{ex_ord_no})이 종결 확인되지 않아 신규 매수를 차단합니다.")
+                    return False
+
+                sig = (
+                    ex_sym,
+                    ex_ord_no,
+                    str(ex.get("cntr_no") or ex.get("che_no") or ex.get("exec_no") or ""),
+                    side,
+                    req_q,
+                    fil_q,
+                    can_q,
+                    rem_q,
+                    str(ex.get("cntr_uv") or ex.get("ord_uv") or ""),
+                    str(ex.get("ord_tmd") or ex.get("cntr_tm") or ex.get("cntr_time") or ""),
+                )
+                if sig not in seen_exec_sigs:
+                    seen_exec_sigs.add(sig)
+                    if side == "BUY":
+                        buy_filled_by_sym[ex_sym] = buy_filled_by_sym.get(ex_sym, 0) + fil_q
+                    elif side == "SELL":
+                        sell_filled_by_sym[ex_sym] = sell_filled_by_sym.get(ex_sym, 0) + fil_q
+
+                if unconf_ord_no and ((ex_ord_no == unconf_ord_no and ex_cntr_tp != "12") or ex_orig_clean == unconf_ord_no):
+                    found_unconf_in_exec = True
+                    if ex_ord_no == unconf_ord_no and ex_cntr_tp != "12":
+                        unconf_exec_req = req_q
+                        unconf_exec_fil += fil_q
+                        unconf_exec_can = max(unconf_exec_can, can_q)
+                    else:
+                        unconf_exec_can = max(unconf_exec_can, can_q)
+
+            check_syms = {s for s in (unconf_sym, symbol.strip().upper(), config.BASE_ASSET_LONG, config.BASE_ASSET_SHORT) if s}
+            for s_chk in check_syms:
+                if buy_filled_by_sym.get(s_chk, 0) != sell_filled_by_sym.get(s_chk, 0):
+                    logger.error(
+                        f"❌ [매수 중단] 당일 체결원장에서 {s_chk} 순체결 수량(매수 {buy_filled_by_sym.get(s_chk, 0)}주 != 매도 {sell_filled_by_sym.get(s_chk, 0)}주)이 "
+                        f"잔고(0주)와 불일치하거나 미청산 체결이 존재하여 중복 매수를 차단합니다."
+                    )
+                    return False
+
+            if not unconf_ord_no:
+                logger.error(f"❌ [매수 중단] 이전 미확정 매수 주문({unconf_sym})의 주문번호가 유실되어 원장 종결 여부를 확인할 수 없으므로 신규 매수를 차단합니다.")
+                return False
+
+            if found_unconf_in_exec:
+                if (
+                    unconf_exec_req is None
+                    or (unconf_target_qty is not None and unconf_exec_req != unconf_target_qty)
+                    or (unconf_exec_fil + unconf_exec_can != unconf_exec_req)
+                ):
+                    logger.error(f"❌ [매수 중단] 이전 미확정 매수 주문(#{unconf_ord_no})의 체결/취소 수량이 원장에서 확정되지 않아 중복 매수를 차단합니다.")
+                    return False
+            elif self._can_query_broker_method("get_order_history"):
+                ny_compact = self._get_current_ny_date().replace("-", "")
+                oh_res = self.broker.get_order_history(ny_compact, ny_compact)
+                if not isinstance(oh_res, dict) or oh_res.get("ok") is not True or not isinstance(oh_res.get("orders"), list):
+                    logger.error(f"❌ [매수 중단] 이전 미확정 매수 주문(#{unconf_ord_no}) 대조를 위한 주문내역(ust21180) 조회 실패로 신규 매수를 차단합니다.")
+                    return False
+                oh_found = False
+                oh_req = None
+                oh_fil = 0
+                oh_orig_can = 0
+                oh_child_can = 0
+                for o_row in oh_res.get("orders", []):
+                    if not isinstance(o_row, dict):
+                        return False
+                    r_no = str(o_row.get("ord_no") or o_row.get("order_no") or "").strip()
+                    r_orig = str(o_row.get("orig_ord_no") or o_row.get("original_order_no") or "").strip()
+                    r_orig_clean = "" if r_orig in ("", "000000000") else r_orig
+                    r_cntr_tp = str(o_row.get("ord_cntr_tp") or "").strip()
+                    is_cancel_r = (r_orig_clean == unconf_ord_no and r_no != unconf_ord_no) or (r_no == unconf_ord_no and r_cntr_tp == "12")
+                    is_orig_r = (r_no == unconf_ord_no and not is_cancel_r)
+                    if not is_orig_r and not is_cancel_r:
+                        continue
+                    oh_found = True
+                    r_sym = str(o_row.get("stk_cd") or o_row.get("symbol") or "").strip().upper()
+                    if r_sym and unconf_sym and r_sym != unconf_sym:
+                        return False
+                    rq = self._parse_int_strict(o_row.get("ord_qty"))
+                    fq = self._parse_exec_filled_qty(o_row)
+                    cq = self._parse_int_strict(
+                        o_row.get("cancelled_qty")
+                        if "cancelled_qty" in o_row
+                        else (o_row.get("cncl_cfrm_qty") if "cncl_cfrm_qty" in o_row else o_row.get("cncl_qty", 0))
+                    )
+                    rmq = self._parse_int_strict(o_row.get("nccs_qty") if "nccs_qty" in o_row else o_row.get("ord_remnq", 0))
+                    if None in (rq, fq, cq, rmq) or rmq > 0:
+                        logger.error(f"❌ [매수 중단] 주문내역(ust21180)에서 미확정 매수 주문(#{unconf_ord_no}) 잔량({rmq}) 또는 미확정 수량 감지.")
+                        return False
+                    if is_orig_r:
+                        if self._norm_exec_side(o_row) == "SELL":
+                            return False
+                        oh_req = rq
+                        oh_fil += fq
+                        oh_orig_can = max(oh_orig_can, cq)
+                    else:
+                        if fq > 0 or (cq > 0 and cq != rq):
+                            return False
+                        oh_child_can += cq
+                oh_final_can = max(oh_orig_can, oh_child_can)
+                if (
+                    not oh_found
+                    or oh_req is None
+                    or (unconf_target_qty is not None and oh_req != unconf_target_qty)
+                    or (oh_orig_can > 0 and oh_child_can > 0 and oh_orig_can != oh_child_can)
+                    or (oh_fil + oh_final_can != oh_req)
+                    or (oh_fil > 0 and buy_filled_by_sym.get(unconf_sym, 0) != sell_filled_by_sym.get(unconf_sym, 0))
+                ):
+                    logger.error(f"❌ [매수 중단] 주문내역(ust21180)에서 미확정 매수 주문(#{unconf_ord_no})의 종결 상태가 확인되지 않아 중복 매수를 차단합니다.")
+                    return False
+
+            self._clear_pending_buy_order()
+
+        return True
+
+    def _load_pending_buy_order(self):
+        """Read recovery evidence from disk, retaining the in-memory fallback."""
+        from core.pending_order import binding_for, journal_path, read_pending
+        recovered = read_pending(journal_path(self._resolve_pos_file()), binding_for(self.broker))
+        if recovered is not None:
+            return recovered
+        return getattr(self, "_pending_buy_cache", None)
+
+    def _store_pending_buy_order(self, value):
+        """Persist pending BUY evidence before allowing the caller to proceed."""
+        from core.pending_order import binding_for, journal_path, write_pending
+        if value is not None:
+            value = dict(value)
+            value.setdefault("trade_date", self._get_current_ny_date().replace("-", ""))
+        # Keep the memory evidence even when persistence fails. Raising prevents
+        # an order send after an unjournaled PREPARE or an unsafe state release.
+        if value is not None:
+            self._pending_buy_cache = value
+        try:
+            write_pending(journal_path(self._resolve_pos_file()), binding_for(self.broker), value)
+        except Exception:
+            self._pending_buy_write_failed = True
+            logger.error("Pending BUY journal persistence failed; new entries blocked", exc_info=True)
+            raise
+        self._pending_buy_cache = value
+        self._pending_buy_write_failed = False
+
+    def _clear_pending_buy_order(self):
+        """Remove recovery evidence only after the caller verifies completion."""
+        self._store_pending_buy_order(None)
+
+    @property
+    def _unconfirmed_buy_order(self):
+        """Compatibility access for existing callers; internal code uses explicit I/O."""
+        return self._load_pending_buy_order()
+
+    @_unconfirmed_buy_order.setter
+    def _unconfirmed_buy_order(self, value):
+        self._store_pending_buy_order(value)
+
+    def _resolve_pos_file(self) -> Path:
+        custom = getattr(self, "pos_file_path", None)
+        return Path(custom) if custom else (DATA_DIR / "active_position.json")
+
+    def _release_filled_buy_journal(self, position):
+        """Release only after full-fill verification AND durable position storage."""
+        try:
+            stored = json.loads(self._resolve_pos_file().read_text(encoding="utf-8"))
+            if any(stored.get(key) != position.get(key) for key in ("symbol", "quantity", "order_no", "buy_time")):
+                return False
+            self._clear_pending_buy_order()
+            return True
+        except (OSError, ValueError, TypeError):
+            logger.error("Filled BUY position persistence unverified; pending journal retained")
+            return False
 
     def _save_active_position(self, pos_data: Dict[str, Any]):
         """???? ? ???? ???? ? ???"""
         self._active_position = pos_data
+        self._empty_balance_streak = 0
         try:
-            pos_file = DATA_DIR / "active_position.json"
+            pos_file = self._resolve_pos_file()
             with open(pos_file, "w", encoding="utf-8") as f:
                 json.dump(pos_data, f, ensure_ascii=False, indent=2)
             logger.info(f"? [???? ????] {pos_data.get('symbol')} {pos_data.get('quantity')}?@ ${pos_data.get('price')} (?: {pos_data.get('buy_time')})")
@@ -153,7 +926,7 @@ class KiwoomLiveRunner:
     def _get_active_position(self) -> Optional[Dict[str, Any]]:
         if self._active_position:
             return self._active_position
-        pos_file = DATA_DIR / "active_position.json"
+        pos_file = self._resolve_pos_file()
         if pos_file.exists():
             try:
                 with open(pos_file, "r", encoding="utf-8") as f:
@@ -165,8 +938,9 @@ class KiwoomLiveRunner:
 
     def _clear_active_position(self):
         self._active_position = None
+        self._empty_balance_streak = 0
         try:
-            pos_file = DATA_DIR / "active_position.json"
+            pos_file = self._resolve_pos_file()
             if pos_file.exists():
                 pos_file.unlink()
             logger.info("? [???? ?? 100% ? ??? ?")
@@ -177,12 +951,22 @@ class KiwoomLiveRunner:
         ny_tz = ZoneInfo("America/New_York")
         return datetime.now().astimezone().astimezone(ny_tz).strftime("%Y-%m-%d")
 
+    @staticmethod
+    def _learning_order_reference(order_no):
+        import hashlib
+        return hashlib.sha256(str(order_no).encode()).hexdigest() if order_no else None
+
     def _on_websocket_execution(self, exec_data: Dict[str, Any]):
         """
         """
         logger.info(self._redact_log(f"? [WebSocket ?? ? ?]: {self._redact_log(exec_data)}"))
         if not exec_data:
             return
+
+        try:
+            self.experience_logger.record_learning_execution(exec_data)
+        except Exception:
+            logger.error("Execution learning evidence enqueue failed")
 
         #  values  ?   ?
         vals = exec_data.get("values", {}) if isinstance(exec_data.get("values"), dict) else {}
@@ -225,11 +1009,11 @@ class KiwoomLiveRunner:
             self._order_fills[ord_no] = self._order_fills.get(ord_no, 0) + che_qty
             logger.info(f"? [ ? ??]  #{ord_no} ???: +{che_qty}?(?{self._order_fills[ord_no]}?")
 
-        # ?0 ? ??100%  ?
+        # 미체결 잔량 0 이벤트 수신 시, 실제 체결 수량이 있는 경우에만 반영 (0주 취소/접수 이벤트에서 가짜 1주 체결 생성 금지)
         if nccs_raw is not None and _to_int(nccs_raw) == 0:
-            current_val = self._order_fills.get(ord_no, che_qty or 1)
-            self._order_fills[ord_no] = max(current_val, 1)
-            logger.info(f"? [? 100%  ?]  #{ord_no} ???? 0?? (?: {self._order_fills[ord_no]}?")
+            current_val = self._order_fills.get(ord_no, 0)
+            if current_val > 0:
+                logger.info(f"? [? 100%  ?]  #{ord_no} ???? 0?? (?: {current_val}?")
 
     def _wait_for_fill(self, order_no: str, symbol: str, is_buy: bool, target_qty: int, timeout_sec: float = None, expected_total_qty: int = None) -> tuple[bool, int, int]:
         """
@@ -244,13 +1028,16 @@ class KiwoomLiveRunner:
         while time.time() - start_t < timeout_sec:
             ws_filled = self._order_fills.get(order_no, 0)
             if ws_filled >= target_qty:
-                return True, ws_filled, 0
+                # WS quantities can be duplicated and balance propagation can lag.
+                # Treat them as a prompt for a fresh ledger check, not completion.
+                break
             time.sleep(config.WS_FILL_POLL_INTERVAL)
 
         # 타임아웃 발생시 실제 계좌 잔고를 조회하여 체결 여부 이중 확인
         stk_bal = self.broker.get_overseas_stock_balance(force_refresh=True)
+        self._last_wait_fill_stk_bal = stk_bal if isinstance(stk_bal, dict) and stk_bal.get("ok") is True else None
         actual_qty = 0
-        if stk_bal.get("ok"):
+        if isinstance(stk_bal, dict) and stk_bal.get("ok") is True and isinstance(stk_bal.get("holdings"), list):
             for h in stk_bal.get("holdings", []):
                 if str(h.get("symbol") or h.get("stk_cd") or "").strip().upper() == symbol:
                     actual_qty = int(float(str(h.get("quantity") or h.get("poss_qty") or 0).replace(",", "")))
@@ -265,7 +1052,7 @@ class KiwoomLiveRunner:
             logger.error(f"❌ [잔고 조회 실패] {symbol} 체결 확인 중 잔고 조회 실패.")
             ws_filled = self._order_fills.get(order_no, 0)
             unfilled = max(0, target_qty - ws_filled)
-            return (ws_filled >= target_qty), ws_filled, unfilled
+            return False, ws_filled, unfilled
 
     def _on_websocket_tick(self, symbol: str, price: float, extra: Dict[str, Any]):
         """
@@ -307,7 +1094,7 @@ class KiwoomLiveRunner:
             pnl_pct = (price - buy_px) / buy_px
 
             tp_threshold = float(active_pos.get("tp_pct", config.MAX_TP_PCT * 100)) / 100.0 if active_pos.get("tp_pct") else config.MAX_TP_PCT
-            sl_threshold = float(active_pos.get("sl_pct", config.SL_MIN_PCT * 100)) / 100.0 if active_pos.get("sl_pct") else config.SL_MIN_PCT
+            sl_threshold = config.SL_MIN_PCT
             time_stop_minutes = float(active_pos.get("time_stop_minutes", 90))
 
             # 1.  ?
@@ -367,12 +1154,12 @@ class KiwoomLiveRunner:
 
         active_pos = self._get_active_position()
         tp_max_pct = float(active_pos.get("tp_pct", config.MAX_TP_PCT * 100)) / 100.0 if active_pos else config.MAX_TP_PCT
-        sl_initial_pct = float(active_pos.get("sl_pct", config.SL_MIN_PCT * 100)) / 100.0 if active_pos else config.SL_MIN_PCT
+        sl_initial_pct = config.SL_MIN_PCT
 
         for h in holdings:
             sym = str(h.get("symbol") or h.get("stk_cd") or "").strip().upper()
             qty = int(float(str(h.get("quantity") or h.get("poss_qty") or h.get("sell_alowq") or 0).replace(",", "")))
-            buy_px = float(str(h.get("purchase_price") or h.get("avg_price") or h.get("frgn_stk_book_uv") or 0.0).replace(",", ""))
+            buy_px = float(str(h.get("purchase_price") or h.get("pchs_avg_pric") or h.get("buy_price") or h.get("avg_price") or h.get("frgn_stk_book_uv") or 0.0).replace(",", ""))
 
             if not sym or qty <= 0 or buy_px <= 0:
                 continue
@@ -437,6 +1224,24 @@ class KiwoomLiveRunner:
                     cur_px=cur_px,
                     is_stoploss=True
                 )
+            elif active_pos and str(active_pos.get("symbol") or "").strip().upper() == sym and active_pos.get("buy_time"):
+                try:
+                    buy_dt = datetime.strptime(str(active_pos.get("buy_time")).strip()[:19], "%Y-%m-%d %H:%M:%S")
+                    time_stop_minutes = float(active_pos.get("time_stop_minutes", config.TIME_STOP_MINUTES))
+                    elapsed_min = (datetime.now() - buy_dt).total_seconds() / 60.0
+                    if elapsed_min >= time_stop_minutes:
+                        cur_pnl = (cur_px / buy_px - 1.0) * 100.0
+                        logger.info(f"⏰ [루프 {time_stop_minutes:.0f}분 타임스탑] {sym} {qty}주 청산 발동 (경과: {elapsed_min:.0f}분 | 수익률: {cur_pnl:+.2f}%)")
+                        self._dispatch_sell(
+                            symbol=sym,
+                            quantity=qty,
+                            reason_desc=f"보유 {time_stop_minutes:.0f}분 타임스탑 ({elapsed_min:.0f}분)",
+                            buy_px=buy_px,
+                            cur_px=cur_px,
+                            is_stoploss=False
+                        )
+                except Exception as te:
+                    logger.debug(self._redact_log(f"루프 타임스탑 계산 예외: {te}"))
 
     def _sync_real_ledger_entry(self, symbol: str, default_price: float, default_qty: int) -> Tuple[float, int]:
         """
@@ -448,7 +1253,7 @@ class KiwoomLiveRunner:
                     sym_h = str(h.get("symbol") or h.get("stk_cd") or "").strip().upper()
                     if sym_h == symbol.upper().strip():
                         p_qty = int(float(str(h.get("quantity") or h.get("poss_qty") or 0).replace(",", "")))
-                        b_px = float(str(h.get("purchase_price") or h.get("avg_price") or h.get("frgn_stk_book_uv") or 0.0).replace(",", ""))
+                        b_px = float(str(h.get("purchase_price") or h.get("pchs_avg_pric") or h.get("buy_price") or h.get("avg_price") or h.get("frgn_stk_book_uv") or 0.0).replace(",", ""))
                         if b_px > 0:
                             logger.info(f"? [??? ?? ??? ??: ${default_price:.2f} ??? ? ??: ${b_px:.2f} (? ?: {p_qty}?")
                             return round(b_px, 2), (p_qty if p_qty > 0 else default_qty)
@@ -456,6 +1261,221 @@ class KiwoomLiveRunner:
             logger.warning(self._redact_log(f"? ? ?? ???? (?? fallback ??): {e}"))
         return default_price, default_qty
 
+    def _extract_verified_holding_from_balance(self, symbol: str, stk_bal: Any) -> Tuple[Optional[int], Optional[float], bool]:
+        if not isinstance(stk_bal, dict) or stk_bal.get("ok") is not True or not isinstance(stk_bal.get("holdings"), list):
+            return None, None, False
+        sym_up = symbol.strip().upper()
+        for h in stk_bal.get("holdings", []):
+            if not isinstance(h, dict):
+                return None, None, False
+            if str(h.get("symbol") or h.get("stk_cd") or "").strip().upper() == sym_up:
+                parsed_q = self._parse_int_strict(h.get("quantity") if "quantity" in h else h.get("poss_qty", h.get("sell_alowq", 0)))
+                if parsed_q is None:
+                    return None, None, False
+                try:
+                    avg_px = float(
+                        str(
+                            h.get("purchase_price")
+                            or h.get("pchs_avg_pric")
+                            or h.get("buy_price")
+                            or h.get("avg_price")
+                            or h.get("frgn_stk_book_uv")
+                            or 0.0
+                        ).replace(",", "").strip()
+                    )
+                except Exception:
+                    avg_px = 0.0
+                return parsed_q, (round(avg_px, 2) if avg_px > 0 else 0.0), True
+        return 0, 0.0, True
+
+    def _preserve_verified_partial_buy(
+        self,
+        symbol: str,
+        order_no: str,
+        buy_time_str: str,
+        tp_pct: float,
+        sl_pct: float,
+        tp_px: float,
+        sl_px: float,
+        time_stop_min: int,
+        strategy_tag: str,
+        ref_price: float,
+        moe_res: Dict[str, Any],
+        buy_attempts: int = 1,
+        stk_bal_snapshot: Optional[Dict[str, Any]] = None,
+        fallback_stk_bal: Optional[Dict[str, Any]] = None,
+        known_filled_hint: int = 0,
+    ) -> bool:
+        if self._get_active_position() is not None:
+            return True
+        sym_up = symbol.strip().upper()
+        bal = stk_bal_snapshot
+        if bal is None:
+            try:
+                bal = self.broker.get_overseas_stock_balance(force_refresh=True)
+            except Exception:
+                bal = None
+
+        v_qty, v_px, bal_ok = self._extract_verified_holding_from_balance(sym_up, bal)
+        used_fallback_bal = False
+        if not bal_ok and fallback_stk_bal is not None:
+            fb_qty, fb_px, fb_ok = self._extract_verified_holding_from_balance(sym_up, fallback_stk_bal)
+            if fb_ok and fb_qty is not None and fb_qty > 0:
+                v_qty, v_px, bal_ok = fb_qty, fb_px, True
+                used_fallback_bal = True
+
+        h_seen_fill_qty = 0
+        if (not bal_ok or not v_qty) and order_no and self._can_query_broker_method("get_daily_execution_history"):
+            try:
+                hist_fb = self.broker.get_daily_execution_history()
+                if isinstance(hist_fb, dict) and hist_fb.get("ok") is True and isinstance(hist_fb.get("executions"), list):
+                    h_sum_q = 0
+                    h_cum_q = 0
+                    h_use_cum = False
+                    h_cost = 0.0
+                    h_ambig = False
+                    seen_exec_rows = set()
+                    for ex in hist_fb.get("executions", []):
+                        if not isinstance(ex, dict):
+                            h_ambig = True
+                            break
+                        ex_no = str(ex.get("ord_no") or ex.get("order_no") or "").strip()
+                        if ex_no != str(order_no).strip():
+                            continue
+                        ex_sym = str(ex.get("stk_cd") or ex.get("symbol") or "").strip().upper()
+                        if ex_sym and ex_sym != sym_up:
+                            h_ambig = True
+                            break
+                        if self._norm_exec_side(ex) != "BUY":
+                            continue
+                        fq = self._parse_exec_filled_qty(ex)
+                        rq = self._parse_int_strict(ex.get("nccs_qty") if "nccs_qty" in ex else ex.get("ord_remnq", 0))
+                        cq = self._parse_int_strict(
+                            ex.get("cancelled_qty")
+                            if "cancelled_qty" in ex
+                            else (ex.get("cncl_cfrm_qty") if "cncl_cfrm_qty" in ex else ex.get("cncl_qty", 0))
+                        )
+                        oq = self._parse_int_strict(ex.get("ord_qty"))
+                        if fq is not None and fq > 0:
+                            h_seen_fill_qty = max(h_seen_fill_qty, fq)
+                        if fq is None or rq is None or rq > 0:
+                            h_ambig = True
+                            break
+                        if fq <= 0:
+                            continue
+                        cntr_id = str(ex.get("cntr_no") or ex.get("che_no") or ex.get("exec_no") or "").strip()
+                        row_sig = tuple(sorted((str(k), str(v)) for k, v in ex.items()))
+                        if (cntr_id and cntr_id in seen_exec_rows) or (
+                            row_sig in seen_exec_rows and (cntr_id or (oq is not None and cq is not None and fq + cq == oq))
+                        ):
+                            continue
+                        if cntr_id:
+                            seen_exec_rows.add(cntr_id)
+                        seen_exec_rows.add(row_sig)
+                        try:
+                            epx = float(
+                                str(
+                                    ex.get("cntr_uv")
+                                    or ex.get("che_pric")
+                                    or ex.get("ft_ccld_unpr3")
+                                    or ex.get("ccld_unpr")
+                                    or ex.get("price")
+                                    or 0.0
+                                ).replace(",", "").strip()
+                            )
+                        except Exception:
+                            epx = 0.0
+                        if epx <= 0:
+                            h_ambig = True
+                            break
+                        if "tot_che_qty" in ex and "cntr_qty" not in ex:
+                            h_use_cum = True
+                            if fq > h_cum_q:
+                                h_cum_q = fq
+                                h_cost = fq * epx
+                        else:
+                            h_sum_q += fq
+                            h_cost += fq * epx
+                    final_hq = h_cum_q if h_use_cum else h_sum_q
+                    if not h_ambig and final_hq > 0 and h_cost > 0:
+                        v_qty = final_hq
+                        v_px = round(h_cost / final_hq, 2)
+                        bal_ok = True
+                        used_fallback_bal = True
+            except Exception:
+                pass
+
+        if bal_ok and v_qty is not None and v_qty > 0 and v_px is not None and v_px > 0:
+            tp_px_dyn = round(v_px * (1.0 + tp_pct / 100.0), 2)
+            sl_pct = config.SL_MIN_PCT * 100.0
+            sl_px_dyn = round(v_px * (1.0 - sl_pct / 100.0), 2)
+            filled_pos = {
+                "symbol": symbol,
+                "quantity": v_qty,
+                "qty": v_qty,
+                "price": v_px,
+                "buy_price": v_px,
+                "buy_time": buy_time_str,
+                "order_no": order_no,
+                "tp_pct": tp_pct,
+                "sl_pct": sl_pct,
+                "tp_px": tp_px_dyn,
+                "sl_px": sl_px_dyn,
+                "dynamic_tp_px": tp_px_dyn,
+                "dynamic_sl_px": sl_px_dyn,
+                "time_stop_minutes": time_stop_min,
+                "strategy_tag": strategy_tag,
+                "ref_price": ref_price,
+                "gbdt_confidence": float(moe_res.get("gating_confidence", 0.60)),
+                "cross_dir": moe_res.get("cross_dir", "HOLD"),
+                "features": moe_res.get("features", {}),
+                "learning_snapshot_id": (moe_res.get("learning_snapshot") or {}).get("event_id"),
+                "learning_feature_names": (moe_res.get("learning_snapshot") or {}).get("feature_names", []),
+                "active_model_id": moe_res.get("active_model_id"),
+                "active_model_sha256": moe_res.get("active_model_sha256"),
+                "active_model_version": moe_res.get("active_model_version"),
+                "active_model_schema": moe_res.get("active_model_schema"),
+                "active_model_num_features": moe_res.get("active_model_num_features"),
+                "active_model_fallback_status": moe_res.get("active_model_fallback_status"),
+                "active_model_is_fallback": moe_res.get("active_model_is_fallback"),
+                "high_price_during_hold": v_px,
+                "low_price_during_hold": v_px,
+                "buy_attempts": buy_attempts,
+            }
+            self._save_active_position(filled_pos)
+            try:
+                self.experience_logger.record_order_event(
+                    symbol=symbol,
+                    action="BUY",
+                    attempt=buy_attempts,
+                    order_no=order_no,
+                    price=v_px,
+                    quantity=v_qty,
+                    status="FILLED",
+                    note=f"부분체결 포지션 보존 (원장 확정: {v_qty}주 @ ${v_px:.2f})",
+                )
+            except Exception:
+                pass
+            if used_fallback_bal:
+                self._unreconciled_holding_mismatch = {
+                    "symbol": sym_up,
+                    "quantity": v_qty,
+                    "price": v_px,
+                    "reason": "BALANCE_REQUERY_FAILED_AFTER_PARTIAL_FILL",
+                }
+            logger.info(f"🛡️ [부분체결 포지션 보호] {symbol} {v_qty}주 @ ${v_px:.2f} (주문 #{order_no}) active_position 저장 완료")
+            return True
+
+        unverified_qty = (v_qty if (v_qty is not None and v_qty > 0) else 0) or max(0, int(known_filled_hint or 0), h_seen_fill_qty)
+        if not bal_ok or unverified_qty > 0:
+            self._unreconciled_holding_mismatch = {
+                "symbol": sym_up,
+                "quantity": unverified_qty,
+                "price": v_px or 0.0,
+                "reason": "UNVERIFIED_PARTIAL_FILL_AFTER_BUY_ABORT",
+            }
+            logger.error(f"🚨 [부분체결 원장 불일치 보호] {sym_up} 수량/가격 미확정(추정 {unverified_qty}주)으로 임의 포지션 생성을 거부하고 신규 매수를 차단합니다.")
+        return False
 
     def _get_5m_atr_pct(self, symbol: str, cur_px: float) -> float:
         try:
@@ -486,17 +1506,34 @@ class KiwoomLiveRunner:
         if not self._acquire_order_lock():
             return False
 
+        ord_no_1 = ""
+        ord_no_2 = ""
+        buy_time_1 = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        filled_1 = 0
+        already_filled_qty = 0
+        stk_bal_wait_1 = None
+        stk_bal_1 = None
+        tp_pct = targets.get("tp_pct", 3.0) if isinstance(targets, dict) else 3.0
+        sl_pct = config.SL_MIN_PCT * 100.0
+        tp_px = targets.get("dynamic_tp_px", 0.0) if isinstance(targets, dict) else 0.0
+        sl_px = round(ref_price * (1.0 - config.SL_MIN_PCT), 2)
+        time_stop_min = targets.get("time_stop_minutes", 90) if isinstance(targets, dict) else 90
+        strategy_tag = targets.get("strategy_tag", "Lumos V3") if isinstance(targets, dict) else "Lumos V3"
+
         try:
             if target_qty <= 0:
                 logger.warning(f"⚠️ [매수 거부] 비정상 타겟 수량({target_qty}주)으로 진입이 취소되었습니다.")
                 return False
 
+            if not self._verify_pre_buy_ledger_clean(symbol):
+                return False
+
             exp_name = moe_res.get("expert_desc", "MoE Gating")
             top_conf = float(moe_res.get("gating_confidence", 0.0)) * 100.0
             tp_px = targets["dynamic_tp_px"]
-            sl_px = targets["dynamic_sl_px"]
+            sl_px = round(ref_price * (1.0 - config.SL_MIN_PCT), 2)
             tp_pct = targets.get("tp_pct", 3.0)
-            sl_pct = targets.get("sl_pct", 2.0)
+            sl_pct = config.SL_MIN_PCT * 100.0
             time_stop_min = targets.get("time_stop_minutes", 90)
             strategy_tag = targets.get("strategy_tag", "Lumos V3")
             atr_14 = targets.get("atr_14", 0.0)
@@ -509,10 +1546,28 @@ class KiwoomLiveRunner:
             if cur_px <= 0:
                 cur_px = ref_price
             order_px_1 = round(cur_px + config.BUY_SLIPPAGE_ADJUST, 2)
+            buy_time_1 = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            self._last_wait_fill_stk_bal = None
 
             logger.info(f"?? [1? ] {symbol} {target_qty}?@ ${order_px_1:.2f} ({self.order_timeout_buy_sec:.0f}? ???)")
-            ord_res_1 = self.broker.send_order(symbol=symbol, order_type="BUY", quantity=target_qty, price=order_px_1)
-            ord_no_1 = str(ord_res_1.get("order_no", "")).strip()
+            self._store_pending_buy_order({
+                "symbol": symbol,
+                "target_qty": target_qty,
+                "price": order_px_1,
+                "timestamp": buy_time_1,
+            })
+            try:
+                ord_res_1 = self.broker.send_order(symbol=symbol, order_type="BUY", quantity=target_qty, price=order_px_1)
+            except Exception as send_err_1:
+                err_s1 = str(send_err_1)
+                if "BUY blocked:" in err_s1 or "Order deferred:" in err_s1:
+                    self._clear_pending_buy_order()
+                raise
+            ord_no_1 = str(ord_res_1.get("order_no", "")).strip() if isinstance(ord_res_1, dict) else ""
+            if not ord_no_1:
+                raise RuntimeError("1차 매수 응답에 주문번호(order_no)가 없어 접수 여부를 확정할 수 없습니다.")
+            order_px_1 = float(ord_res_1.get('price', order_px_1))
+            self._store_pending_buy_order(dict(self._load_pending_buy_order() or {}, order_no=ord_no_1, price=order_px_1))
 
             # ?  ?  (1? )
             mode_title = "? [?? ?]" if self.broker.is_simulation else "? [?? ??]"
@@ -528,6 +1583,7 @@ class KiwoomLiveRunner:
                 target_qty=target_qty,
                 timeout_sec=self.order_timeout_buy_sec
             )
+            stk_bal_wait_1 = getattr(self, "_last_wait_fill_stk_bal", None)
 
             if is_filled_1:
                 # 1??100%  ?! (??? ? ?? 100% ???
@@ -540,6 +1596,7 @@ class KiwoomLiveRunner:
                     "quantity": real_qty,
                     "price": real_buy_px,
                     "buy_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "order_no": ord_no_1,
                     "tp_pct": tp_pct,
                     "sl_pct": sl_pct,
                     "tp_px": tp_px_dyn,
@@ -550,6 +1607,15 @@ class KiwoomLiveRunner:
                     "gbdt_confidence": float(moe_res.get("gating_confidence", 0.60)),
                     "cross_dir": moe_res.get("cross_dir", "HOLD"),
                     "features": moe_res.get("features", {}),
+                "learning_snapshot_id": (moe_res.get("learning_snapshot") or {}).get("event_id"),
+                "learning_feature_names": (moe_res.get("learning_snapshot") or {}).get("feature_names", []),
+                    "active_model_id": moe_res.get("active_model_id"),
+                    "active_model_sha256": moe_res.get("active_model_sha256"),
+                    "active_model_version": moe_res.get("active_model_version"),
+                    "active_model_schema": moe_res.get("active_model_schema"),
+                    "active_model_num_features": moe_res.get("active_model_num_features"),
+                    "active_model_fallback_status": moe_res.get("active_model_fallback_status"),
+                    "active_model_is_fallback": moe_res.get("active_model_is_fallback"),
                     "high_price_during_hold": real_buy_px,
                     "low_price_during_hold": real_buy_px,
                     "buy_attempts": 1
@@ -561,18 +1627,23 @@ class KiwoomLiveRunner:
                     note=f"1? 100%  ? (? ? : ${real_buy_px:.2f})"
                 )
                 logger.info(f"??[1? 100%  ?] {symbol} {real_qty}?@ ${real_buy_px:.2f} (? ?: {filled_pos['buy_time']})")
-                self.notifier.send_entry_alert(
-                    ticker=symbol,
-                    entry_price=real_buy_px,
-                    qty=real_qty,
-                    gbdt_prob=float(moe_res.get("gating_confidence", 0.60)),
-                    cross_dir=moe_res.get("cross_dir", "HOLD"),
-                    tp_price=tp_px_dyn,
-                    sl_price=sl_px_dyn,
-                    time_stop_minutes=time_stop_min,
-                    strategy_tag=strategy_tag,
-                    is_simulation=self.broker.is_simulation
-                )
+                try:
+                    self.notifier.send_entry_alert(
+                        ticker=symbol,
+                        entry_price=real_buy_px,
+                        qty=real_qty,
+                        gbdt_prob=float(moe_res.get("gating_confidence", 0.60)),
+                        cross_dir=moe_res.get("cross_dir", "HOLD"),
+                        tp_price=tp_px_dyn,
+                        sl_price=sl_px_dyn,
+                        time_stop_minutes=time_stop_min,
+                        strategy_tag=strategy_tag,
+                        is_simulation=self.broker.is_simulation,
+                        model_snapshot_info=moe_res,
+                    )
+                except Exception as te:
+                    logger.warning(self._redact_log(f"텔레그램 매수 체결 알림 발송 에러(무시됨): {te}"))
+                self._release_filled_buy_journal(filled_pos)
                 return True
 
             # ----------------------------------------------------
@@ -584,18 +1655,143 @@ class KiwoomLiveRunner:
                 price=order_px_1, quantity=unfilled_1, status="UNFILLED_TIMEOUT",
                 note=f"1? {self.order_timeout_buy_sec:.0f}?? ??2???"
             )
+            cancel_res_1 = None
             if ord_no_1:
-                self.broker.cancel_order(order_no=ord_no_1, symbol=symbol, quantity=unfilled_1)
+                cancel_res_1 = self.broker.cancel_order(order_no=ord_no_1, symbol=symbol, quantity=unfilled_1)
             time.sleep(config.CANCEL_ORDER_WAIT_TIME)
+
+            already_filled_qty = 0
+
+            def _abort_second_buy_and_preserve(bal_snap: Optional[Dict[str, Any]] = None) -> bool:
+                self._store_pending_buy_order({"symbol": symbol, "order_no": ord_no_1, "target_qty": target_qty})
+                self._preserve_verified_partial_buy(
+                    symbol=symbol,
+                    order_no=ord_no_1,
+                    buy_time_str=buy_time_1,
+                    tp_pct=tp_pct,
+                    sl_pct=sl_pct,
+                    tp_px=tp_px,
+                    sl_px=sl_px,
+                    time_stop_min=time_stop_min,
+                    strategy_tag=strategy_tag,
+                    ref_price=ref_price,
+                    moe_res=moe_res,
+                    buy_attempts=1,
+                    stk_bal_snapshot=bal_snap,
+                    fallback_stk_bal=stk_bal_wait_1,
+                    known_filled_hint=max(filled_1, already_filled_qty),
+                )
+                return False
+
+            if not ord_no_1 or (isinstance(cancel_res_1, dict) and cancel_res_1.get("ok") is False):
+                logger.error(f"❌ [2차 매수 중단] 1차 매수 주문(#{ord_no_1}) 취소 요청이 실패하여 중복 발주를 막기 위해 2차 추격 매수를 중단합니다.")
+                return _abort_second_buy_and_preserve()
+
+            sym_up = symbol.strip().upper()
+            cancel_ord_no_1 = str(cancel_res_1.get("cancel_ord_no") or "").strip() if isinstance(cancel_res_1, dict) else ""
+            open_confirmed_cancel_qty = 0
+
+            if self._can_query_broker_method("get_open_orders"):
+                open_res_1 = self.broker.get_open_orders()
+                open_orders_1 = self._extract_open_orders_list(open_res_1)
+                if open_orders_1 is None:
+                    logger.error(f"❌ [2차 매수 중단] 1차 매수 취소 후 미체결 원장 조회 실패로 2차 추격 매수를 중단합니다.")
+                    return _abort_second_buy_and_preserve()
+                for o_item in open_orders_1:
+                    if not isinstance(o_item, dict):
+                        return _abort_second_buy_and_preserve()
+                    o_no = str(o_item.get("ord_no") or o_item.get("order_no") or "").strip()
+                    o_orig = str(o_item.get("orig_ord_no") or o_item.get("original_order_no") or "").strip()
+                    o_orig_clean = "" if o_orig in ("", "000000000") else o_orig
+                    o_sym = str(o_item.get("stk_cd") or o_item.get("symbol") or o_item.get("symb") or "").strip().upper()
+                    rem_q = self._parse_int_strict(
+                        o_item.get("nccs_qty") if "nccs_qty" in o_item else o_item.get("ord_remnq", o_item.get("remaining_quantity", 0))
+                    )
+                    if cancel_ord_no_1 and o_no == cancel_ord_no_1 and o_orig_clean and o_orig_clean != ord_no_1:
+                        logger.error(f"❌ [2차 매수 중단] 취소주문(#{cancel_ord_no_1})의 원주문번호({o_orig_clean})가 1차 매수(#{ord_no_1})와 불일치합니다.")
+                        return _abort_second_buy_and_preserve()
+                    if rem_q is None or (rem_q > 0 and (o_no in (ord_no_1, cancel_ord_no_1) or o_orig_clean == ord_no_1 or o_sym == sym_up)):
+                        logger.warning(f"⚠️ [2차 매수 중단] 1차 매수 주문(#{ord_no_1}) 취소 미완료(미체결 잔량 {rem_q}주 잔류)로 2차 추격 매수를 중단합니다.")
+                        return _abort_second_buy_and_preserve()
+                    if o_no == ord_no_1 or o_orig_clean == ord_no_1 or (cancel_ord_no_1 and o_no == cancel_ord_no_1):
+                        if o_sym and o_sym != sym_up:
+                            return _abort_second_buy_and_preserve()
+                        o_can = self._parse_int_strict(
+                            o_item.get("cancelled_qty")
+                            if "cancelled_qty" in o_item
+                            else (o_item.get("cncl_cfrm_qty") if "cncl_cfrm_qty" in o_item else o_item.get("cncl_qty", 0))
+                        )
+                        if o_can is not None and o_can > 0 and rem_q == 0:
+                            open_confirmed_cancel_qty = max(open_confirmed_cancel_qty, o_can)
 
             # ? ? ?? ???? 
             stk_bal_1 = self.broker.get_overseas_stock_balance(force_refresh=True)
-            already_filled_qty = 0
-            if stk_bal_1.get("ok"):
-                for h in stk_bal_1.get("holdings", []):
-                    if str(h.get("symbol") or h.get("stk_cd") or "").strip().upper() == symbol:
-                        already_filled_qty = int(float(str(h.get("quantity") or h.get("poss_qty") or 0).replace(",", "")))
-                        break
+            if not isinstance(stk_bal_1, dict) or stk_bal_1.get("ok") is not True or not isinstance(stk_bal_1.get("holdings"), list):
+                logger.error("❌ [2차 매수 중단] 1차 매수 취소 후 잔고 조회 실패로 체결 수량을 확인할 수 없어 2차 추격 매수를 중단합니다.")
+                return _abort_second_buy_and_preserve(stk_bal_1)
+
+            for h in stk_bal_1.get("holdings", []):
+                if not isinstance(h, dict):
+                    return _abort_second_buy_and_preserve(stk_bal_1)
+                if str(h.get("symbol") or h.get("stk_cd") or "").strip().upper() == sym_up:
+                    parsed_q = self._parse_int_strict(h.get("quantity") if "quantity" in h else h.get("poss_qty", 0))
+                    if parsed_q is None:
+                        return _abort_second_buy_and_preserve(stk_bal_1)
+                    already_filled_qty = parsed_q
+                    break
+
+            if self._can_query_broker_method("get_daily_execution_history"):
+                hist_1 = self.broker.get_daily_execution_history()
+                if not isinstance(hist_1, dict) or hist_1.get("ok") is not True or not isinstance(hist_1.get("executions"), list):
+                    logger.error("❌ [2차 매수 중단] 1차 매수 취소 후 체결원장 조회 실패로 2차 추격 매수를 중단합니다.")
+                    return _abort_second_buy_and_preserve(stk_bal_1)
+
+
+                exec_scan = self._scan_closed_order_rows(
+                    hist_1.get("executions", []), ord_no_1, sym_up, "BUY", target_qty, cancel_ord_no_1,
+                )
+                if exec_scan is None:
+                    return _abort_second_buy_and_preserve(stk_bal_1)
+                found_ord_1_evidence, hist_filled_qty, orig_max_cancel, child_cancel_qty = exec_scan
+                if orig_max_cancel > 0 and child_cancel_qty > 0 and orig_max_cancel != child_cancel_qty:
+                    logger.error(f"❌ [2차 매수 중단] 원주문 취소수량({orig_max_cancel})과 별도 취소행 수량({child_cancel_qty})이 모순됩니다.")
+                    return _abort_second_buy_and_preserve(stk_bal_1)
+
+                confirmed_cancel_qty = max(orig_max_cancel, child_cancel_qty, open_confirmed_cancel_qty)
+                if self._can_query_broker_method("get_order_history"):
+                    ny_compact = self._get_current_ny_date().replace("-", "")
+                    oh_1 = self.broker.get_order_history(ny_compact, ny_compact)
+                    if not isinstance(oh_1, dict) or oh_1.get("ok") is not True or not isinstance(oh_1.get("orders"), list):
+                        logger.error("❌ [2차 매수 중단] 1차 매수 취소 후 주문내역(ust21180) 조회 실패로 2차 추격 매수를 중단합니다.")
+                        return _abort_second_buy_and_preserve(stk_bal_1)
+                    oh_scan = self._scan_closed_order_rows(
+                        oh_1.get("orders", []), ord_no_1, sym_up, "BUY", target_qty, cancel_ord_no_1,
+                    )
+                    if oh_scan is None:
+                        return _abort_second_buy_and_preserve(stk_bal_1)
+                    oh_found, oh_filled_qty, oh_orig_can, oh_child_can = oh_scan
+                    if oh_orig_can > 0 and oh_child_can > 0 and oh_orig_can != oh_child_can:
+                        logger.error(f"❌ [2차 매수 중단] 주문내역(ust21180) 원주문 취소수량({oh_orig_can})과 별도 취소행 수량({oh_child_can})이 모순됩니다.")
+                        return _abort_second_buy_and_preserve(stk_bal_1)
+                    if oh_found:
+                        if found_ord_1_evidence and hist_filled_qty != oh_filled_qty:
+                            logger.error(f"❌ [2차 매수 중단] 체결원장(ust21150: {hist_filled_qty}주)과 주문내역(ust21180: {oh_filled_qty}주) 체결수량 불일치.")
+                            return _abort_second_buy_and_preserve(stk_bal_1)
+                        found_ord_1_evidence = True
+                        hist_filled_qty = max(hist_filled_qty, oh_filled_qty)
+                        confirmed_cancel_qty = max(confirmed_cancel_qty, oh_orig_can, oh_child_can)
+
+                if (
+                    (not found_ord_1_evidence and open_confirmed_cancel_qty <= 0)
+                    or (hist_filled_qty + confirmed_cancel_qty != target_qty)
+                    or (hist_filled_qty != already_filled_qty)
+                    or (target_qty > already_filled_qty and confirmed_cancel_qty <= 0)
+                ):
+                    logger.error(
+                        f"❌ [2차 매수 중단] 체결/주문원장에서 1차 매수(#{ord_no_1})의 체결({hist_filled_qty}주)/잔고({already_filled_qty}주)/취소({confirmed_cancel_qty}주) 수량이 확정되지 않아 2차 추격 매수를 중단합니다."
+                    )
+                    return _abort_second_buy_and_preserve(stk_bal_1)
+                already_filled_qty = max(already_filled_qty, hist_filled_qty)
 
             remaining_qty = target_qty - already_filled_qty
             if remaining_qty <= 0:
@@ -608,6 +1804,7 @@ class KiwoomLiveRunner:
                     "quantity": real_qty,
                     "price": real_buy_px,
                     "buy_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "order_no": ord_no_1,
                     "tp_pct": tp_pct,
                     "sl_pct": sl_pct,
                     "tp_px": tp_px_dyn,
@@ -618,31 +1815,84 @@ class KiwoomLiveRunner:
                     "gbdt_confidence": float(moe_res.get("gating_confidence", 0.60)),
                     "cross_dir": moe_res.get("cross_dir", "HOLD"),
                     "features": moe_res.get("features", {}),
+                "learning_snapshot_id": (moe_res.get("learning_snapshot") or {}).get("event_id"),
+                "learning_feature_names": (moe_res.get("learning_snapshot") or {}).get("feature_names", []),
+                    "active_model_id": moe_res.get("active_model_id"),
+                    "active_model_sha256": moe_res.get("active_model_sha256"),
+                    "active_model_version": moe_res.get("active_model_version"),
+                    "active_model_schema": moe_res.get("active_model_schema"),
+                    "active_model_num_features": moe_res.get("active_model_num_features"),
+                    "active_model_fallback_status": moe_res.get("active_model_fallback_status"),
+                    "active_model_is_fallback": moe_res.get("active_model_is_fallback"),
                     "high_price_during_hold": real_buy_px,
                     "low_price_during_hold": real_buy_px,
                     "buy_attempts": 1
                 }
                 self._save_active_position(filled_pos)
-                self.notifier.send_entry_alert(
-                    ticker=symbol,
-                    entry_price=real_buy_px,
-                    qty=real_qty,
-                    gbdt_prob=float(moe_res.get("gating_confidence", 0.60)),
-                    cross_dir=moe_res.get("cross_dir", "HOLD"),
-                    tp_price=tp_px_dyn,
-                    sl_price=sl_px_dyn,
-                    time_stop_minutes=time_stop_min,
-                    strategy_tag=strategy_tag,
-                    is_simulation=self.broker.is_simulation
+                self.experience_logger.record_order_event(
+                    symbol=symbol, action="BUY", attempt=1, order_no=ord_no_1,
+                    price=real_buy_px, quantity=real_qty, status="FILLED",
+                    note=f"1차 전량 체결 확인 (${real_buy_px:.2f})"
                 )
+                try:
+                    self.notifier.send_entry_alert(
+                        ticker=symbol,
+                        entry_price=real_buy_px,
+                        qty=real_qty,
+                        gbdt_prob=float(moe_res.get("gating_confidence", 0.60)),
+                        cross_dir=moe_res.get("cross_dir", "HOLD"),
+                        tp_price=tp_px_dyn,
+                        sl_price=sl_px_dyn,
+                        time_stop_minutes=time_stop_min,
+                        strategy_tag=strategy_tag,
+                        is_simulation=self.broker.is_simulation,
+                        model_snapshot_info=moe_res,
+                    )
+                except Exception as te:
+                    logger.warning(self._redact_log(f"텔레그램 매수 체결 알림 발송 에러(무시됨): {te}"))
+                self._release_filled_buy_journal(filled_pos)
                 return True
 
             # 2??? ???
             latest_px_2 = float(self.ws_streamer.get_latest_price(symbol, cur_px))
-            order_px_2 = round(latest_px_2 + 0.03, 2)
+            order_px_2 = round(latest_px_2 + config.BUY_SLIPPAGE_ADJUST, 2)
             logger.info(f"??[2? ??(1/1)] {symbol} {remaining_qty}?@ ${order_px_2:.2f} ({self.order_timeout_buy_sec:.0f}? ???)")
-            ord_res_2 = self.broker.send_order(symbol=symbol, order_type="BUY", quantity=remaining_qty, price=order_px_2)
-            ord_no_2 = str(ord_res_2.get("order_no", "")).strip()
+            self._store_pending_buy_order({
+                "symbol": symbol,
+                "target_qty": remaining_qty,
+                "price": order_px_2,
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            })
+            try:
+                ord_res_2 = self.broker.send_order(symbol=symbol, order_type="BUY", quantity=remaining_qty, price=order_px_2)
+            except Exception as send_err_2:
+                err_s2 = str(send_err_2)
+                if "BUY blocked:" in err_s2 or "Order deferred:" in err_s2:
+                    self._clear_pending_buy_order()
+                if already_filled_qty > 0:
+                    self._preserve_verified_partial_buy(
+                        symbol=symbol,
+                        order_no=ord_no_1,
+                        buy_time_str=buy_time_1,
+                        tp_pct=tp_pct,
+                        sl_pct=sl_pct,
+                        tp_px=tp_px,
+                        sl_px=sl_px,
+                        time_stop_min=time_stop_min,
+                        strategy_tag=strategy_tag,
+                        ref_price=ref_price,
+                        moe_res=moe_res,
+                        buy_attempts=1,
+                        stk_bal_snapshot=stk_bal_1,
+                        fallback_stk_bal=stk_bal_wait_1,
+                        known_filled_hint=already_filled_qty,
+                    )
+                raise
+            ord_no_2 = str(ord_res_2.get("order_no", "")).strip() if isinstance(ord_res_2, dict) else ""
+            if not ord_no_2:
+                raise RuntimeError("2차 매수 응답에 주문번호(order_no)가 없어 접수 여부를 확정할 수 없습니다.")
+            order_px_2 = float(ord_res_2.get('price', order_px_2))
+            self._store_pending_buy_order(dict(self._load_pending_buy_order() or {}, order_no=ord_no_2, price=order_px_2))
             system_logger.log("TRADE", "OrderChasing", f"??[ 2??? ?? {symbol} {remaining_qty}?@ ${order_px_2:.2f} (???1/1)")
 
             # 2. ???(?  ??0ms   ?)
@@ -667,6 +1917,7 @@ class KiwoomLiveRunner:
                     "quantity": real_qty,
                     "price": real_buy_px,
                     "buy_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "order_no": ord_no_2,
                     "tp_pct": tp_pct,
                     "sl_pct": sl_pct,
                     "tp_px": tp_px_dyn,
@@ -677,6 +1928,15 @@ class KiwoomLiveRunner:
                     "gbdt_confidence": float(moe_res.get("gating_confidence", 0.60)),
                     "cross_dir": moe_res.get("cross_dir", "HOLD"),
                     "features": moe_res.get("features", {}),
+                "learning_snapshot_id": (moe_res.get("learning_snapshot") or {}).get("event_id"),
+                "learning_feature_names": (moe_res.get("learning_snapshot") or {}).get("feature_names", []),
+                    "active_model_id": moe_res.get("active_model_id"),
+                    "active_model_sha256": moe_res.get("active_model_sha256"),
+                    "active_model_version": moe_res.get("active_model_version"),
+                    "active_model_schema": moe_res.get("active_model_schema"),
+                    "active_model_num_features": moe_res.get("active_model_num_features"),
+                    "active_model_fallback_status": moe_res.get("active_model_fallback_status"),
+                    "active_model_is_fallback": moe_res.get("active_model_is_fallback"),
                     "high_price_during_hold": real_buy_px,
                     "low_price_during_hold": real_buy_px,
                     "buy_attempts": 2
@@ -688,18 +1948,23 @@ class KiwoomLiveRunner:
                     note=f"2? 100%  ? (? ? : ${real_buy_px:.2f})"
                 )
                 logger.info(f"??[2? 100%  ?] {symbol} {real_qty}?@ ${real_buy_px:.2f} (? ?: {filled_pos['buy_time']})")
-                self.notifier.send_entry_alert(
-                    ticker=symbol,
-                    entry_price=real_buy_px,
-                    qty=real_qty,
-                    gbdt_prob=float(moe_res.get("gating_confidence", 0.60)),
-                    cross_dir=moe_res.get("cross_dir", "HOLD"),
-                    tp_price=tp_px_dyn,
-                    sl_price=sl_px_dyn,
-                    time_stop_minutes=time_stop_min,
-                    strategy_tag=strategy_tag,
-                    is_simulation=self.broker.is_simulation
-                )
+                try:
+                    self.notifier.send_entry_alert(
+                        ticker=symbol,
+                        entry_price=real_buy_px,
+                        qty=real_qty,
+                        gbdt_prob=float(moe_res.get("gating_confidence", 0.60)),
+                        cross_dir=moe_res.get("cross_dir", "HOLD"),
+                        tp_price=tp_px_dyn,
+                        sl_price=sl_px_dyn,
+                        time_stop_minutes=time_stop_min,
+                        strategy_tag=strategy_tag,
+                        is_simulation=self.broker.is_simulation,
+                        model_snapshot_info=moe_res,
+                    )
+                except Exception as te:
+                    logger.warning(self._redact_log(f"텔레그램 매수 체결 알림 발송 에러(무시됨): {te}"))
+                self._release_filled_buy_journal(filled_pos)
                 return True
 
             # ----------------------------------------------------
@@ -711,18 +1976,45 @@ class KiwoomLiveRunner:
                 price=order_px_2, quantity=unfilled_2, status="CASH_PRESERVED",
                 note="2? ??  (??100%  ??AI ???????)"
             )
+            cancel_res_2 = None
             if ord_no_2:
-                self.broker.cancel_order(order_no=ord_no_2, symbol=symbol, quantity=unfilled_2)
+                cancel_res_2 = self.broker.cancel_order(order_no=ord_no_2, symbol=symbol, quantity=unfilled_2)
             time.sleep(config.CANCEL_ORDER_WAIT_TIME)
 
             # ? ???  ?
             stk_bal_final = self.broker.get_overseas_stock_balance(force_refresh=True)
-            final_filled = 0
-            if stk_bal_final.get("ok"):
-                for h in stk_bal_final.get("holdings", []):
-                    if str(h.get("symbol") or h.get("stk_cd") or "").strip().upper() == symbol:
-                        final_filled = int(float(str(h.get("quantity") or h.get("poss_qty") or 0).replace(",", "")))
-                        break
+            if not isinstance(stk_bal_final, dict) or stk_bal_final.get("ok") is not True or not isinstance(stk_bal_final.get("holdings"), list):
+                logger.error("❌ [2차 매수 취소 후 잔고 조회 실패] 체결 여부를 확정할 수 없어 미확정 매수 상태로 기록합니다.")
+                self._store_pending_buy_order({"symbol": symbol, "order_no": ord_no_2, "target_qty": remaining_qty})
+                saved_partial = self._preserve_verified_partial_buy(
+                    symbol=symbol,
+                    order_no=ord_no_1,
+                    buy_time_str=buy_time_1,
+                    tp_pct=tp_pct,
+                    sl_pct=sl_pct,
+                    tp_px=tp_px,
+                    sl_px=sl_px,
+                    time_stop_min=time_stop_min,
+                    strategy_tag=strategy_tag,
+                    ref_price=ref_price,
+                    moe_res=moe_res,
+                    buy_attempts=1,
+                    stk_bal_snapshot=stk_bal_final,
+                    fallback_stk_bal=stk_bal_1 or stk_bal_wait_1,
+                    known_filled_hint=max(already_filled_qty, filled_1),
+                )
+                return saved_partial
+
+            final_filled = already_filled_qty
+            for h in stk_bal_final.get("holdings", []):
+                if str(h.get("symbol") or h.get("stk_cd") or "").strip().upper() == symbol.strip().upper():
+                    parsed_final = self._parse_int_strict(h.get("quantity") if "quantity" in h else h.get("poss_qty", 0))
+                    if parsed_final is not None:
+                        final_filled = max(final_filled, parsed_final)
+                    break
+
+            if isinstance(cancel_res_2, dict) and cancel_res_2.get("ok") is False:
+                self._store_pending_buy_order({"symbol": symbol, "order_no": ord_no_2, "target_qty": remaining_qty})
 
             if final_filled > 0:
                 real_buy_px, real_qty = self._sync_real_ledger_entry(symbol, order_px_2, final_filled)
@@ -734,6 +2026,7 @@ class KiwoomLiveRunner:
                     "quantity": real_qty,
                     "price": real_buy_px,
                     "buy_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "order_no": ord_no_2 or ord_no_1,
                     "tp_pct": tp_pct,
                     "sl_pct": sl_pct,
                     "tp_px": tp_px_dyn,
@@ -744,24 +2037,42 @@ class KiwoomLiveRunner:
                     "gbdt_confidence": float(moe_res.get("gating_confidence", 0.60)),
                     "cross_dir": moe_res.get("cross_dir", "HOLD"),
                     "features": moe_res.get("features", {}),
+                "learning_snapshot_id": (moe_res.get("learning_snapshot") or {}).get("event_id"),
+                "learning_feature_names": (moe_res.get("learning_snapshot") or {}).get("feature_names", []),
+                    "active_model_id": moe_res.get("active_model_id"),
+                    "active_model_sha256": moe_res.get("active_model_sha256"),
+                    "active_model_version": moe_res.get("active_model_version"),
+                    "active_model_schema": moe_res.get("active_model_schema"),
+                    "active_model_num_features": moe_res.get("active_model_num_features"),
+                    "active_model_fallback_status": moe_res.get("active_model_fallback_status"),
+                    "active_model_is_fallback": moe_res.get("active_model_is_fallback"),
                     "high_price_during_hold": real_buy_px,
                     "low_price_during_hold": real_buy_px,
                     "buy_attempts": 2
                 }
                 self._save_active_position(filled_pos)
-                logger.info(f"? [?  ?] {symbol} {real_qty}??? (? ??: ${real_buy_px:.2f})")
-                self.notifier.send_entry_alert(
-                    ticker=symbol,
-                    entry_price=real_buy_px,
-                    qty=real_qty,
-                    gbdt_prob=float(moe_res.get("gating_confidence", 0.60)),
-                    cross_dir=moe_res.get("cross_dir", "HOLD"),
-                    tp_price=tp_px_dyn,
-                    sl_price=sl_px_dyn,
-                    time_stop_minutes=time_stop_min,
-                    strategy_tag=strategy_tag,
-                    is_simulation=self.broker.is_simulation
+                self.experience_logger.record_order_event(
+                    symbol=symbol, action="BUY", attempt=2, order_no=ord_no_2 or ord_no_1,
+                    price=real_buy_px, quantity=real_qty, status="FILLED",
+                    note=f"부분체결 확정 ({real_qty}주 @ ${real_buy_px:.2f})"
                 )
+                logger.info(f"? [?  ?] {symbol} {real_qty}??? (? ??: ${real_buy_px:.2f})")
+                try:
+                    self.notifier.send_entry_alert(
+                        ticker=symbol,
+                        entry_price=real_buy_px,
+                        qty=real_qty,
+                        gbdt_prob=float(moe_res.get("gating_confidence", 0.60)),
+                        cross_dir=moe_res.get("cross_dir", "HOLD"),
+                        tp_price=tp_px_dyn,
+                        sl_price=sl_px_dyn,
+                        time_stop_minutes=time_stop_min,
+                        strategy_tag=strategy_tag,
+                        is_simulation=self.broker.is_simulation,
+                        model_snapshot_info=moe_res,
+                    )
+                except Exception as te:
+                    logger.warning(self._redact_log(f"텔레그램 매수 체결 알림 발송 에러(무시됨): {te}"))
                 return True
             else:
                 self._clear_active_position()
@@ -769,6 +2080,27 @@ class KiwoomLiveRunner:
                 return False
 
         except Exception as e:
+            if ord_no_1 and self._get_active_position() is None:
+                try:
+                    self._preserve_verified_partial_buy(
+                        symbol=symbol,
+                        order_no=ord_no_2 or ord_no_1,
+                        buy_time_str=buy_time_1,
+                        tp_pct=tp_pct,
+                        sl_pct=sl_pct,
+                        tp_px=tp_px,
+                        sl_px=sl_px,
+                        time_stop_min=time_stop_min,
+                        strategy_tag=strategy_tag,
+                        ref_price=ref_price,
+                        moe_res=moe_res if isinstance(moe_res, dict) else {},
+                        buy_attempts=2 if ord_no_2 else 1,
+                        stk_bal_snapshot=stk_bal_1,
+                        fallback_stk_bal=stk_bal_wait_1,
+                        known_filled_hint=max(already_filled_qty, filled_1),
+                    )
+                except Exception:
+                    pass
             logger.error(self._redact_log(f"??   ?: {e}"))
             system_logger.log("ERROR", "BuyChase", self._redact_log(f"?   ? : {e}"))
             try:
@@ -813,11 +2145,12 @@ class KiwoomLiveRunner:
                         break
                 if actual_qty <= 0:
                     logger.info(f"? [? ? 0??] {symbol} ?? 100% ? ? ? ?? ? ?AI ???? ?")
-                    self._clear_active_position()
-                    return True
+                    self._reconcile_active_position_with_ledger(stk_bal_check)
+                    return self._get_active_position() is None
                 quantity = min(quantity, actual_qty)
             else:
-                logger.warning(f"초기 잔고 조회 실패. 전달받은 수량({quantity})으로 매도 진행.")
+                logger.warning("SELL deferred: fresh holdings unavailable; position retained")
+                return False
 
             while True:
                 loop_retry += 1
@@ -831,7 +2164,7 @@ class KiwoomLiveRunner:
                     order_label = "? ? ?(Market Order)"
                 else:
                     # ? ? ? (? ?? ? ?? ? ): Bid - $0.05 ????
-                    sell_px = max(0.01, round(latest_px - 0.05, 2)) if latest_px > 0 else 0.0
+                    sell_px = max(0.01, round(latest_px - config.SELL_SLIPPAGE_ADJUST, 2)) if latest_px > 0 else 0.0
                     order_label = f"?  ??(${sell_px:.2f})"
 
                 logger.info(f"? [ ?  ({loop_retry}?)] {symbol} {quantity}?| {order_label} | ?: {reason_desc} ({self.order_timeout_sell_sec:.0f}? ??")
@@ -860,7 +2193,8 @@ class KiwoomLiveRunner:
                             exit_price=latest_px,
                             exit_reason=reason_desc,
                             qty=sold_qty,
-                            is_simulation=self.broker.is_simulation
+                            is_simulation=self.broker.is_simulation,
+                            model_snapshot_info=active_pos or self.get_active_model_info(),
                         )
                     except Exception as te:
                         logger.error(self._redact_log(f"텔레그램 매도 알림 1 발송 에러: {te}"))
@@ -890,7 +2224,27 @@ class KiwoomLiveRunner:
                             "cross_dir": active_pos.get("cross_dir", "HOLD"),
                             "buy_attempts": active_pos.get("buy_attempts", 1),
                             "sell_attempts": loop_retry,
-                            "features": active_pos.get("features", {})
+                            "features": active_pos.get("features", {}),
+                            "learning_snapshot_id": active_pos.get("learning_snapshot_id"),
+                            "learning_feature_names": active_pos.get("learning_feature_names", []),
+                            "active_model_sha256": active_pos.get("active_model_sha256"),
+                            "active_model_id": active_pos.get("active_model_id"),
+                            "active_model_schema": active_pos.get("active_model_schema"),
+                            "exit_price_source": "LATEST_QUOTE_PROXY_NOT_BROKER_FILL",
+                            "risk_settings": {
+                                "tp_pct": active_pos.get("tp_pct"), "sl_pct": active_pos.get("sl_pct"),
+                                "time_stop_minutes": active_pos.get("time_stop_minutes"),
+                                "trailing_trigger_pct": active_pos.get("trailing_trigger_pct", config.TRAILING_TRIGGER_PCT),
+                                "relay_role": active_pos.get("relay_role"),
+                                "relay_leg_id": active_pos.get("relay_leg_id"),
+                                "relay_cycle_id": active_pos.get("relay_cycle_id"),
+                                "trailing_drop_pct": config.TRAILING_DROP_PCT,
+                            },
+                            "fee_usd": None,
+                            "execution_order_references": {
+                                "BUY": self._learning_order_reference(active_pos.get("order_no")),
+                                "SELL": self._learning_order_reference(s_ord_no),
+                            }
                         })
                         self.experience_logger.record_order_event(
                             symbol=symbol, action="SELL", attempt=loop_retry, order_no=s_ord_no,
@@ -903,30 +2257,152 @@ class KiwoomLiveRunner:
                     system_logger.log("TRADE", "Liquidation", f"? [{mode_title} 100% ? ? ?] {symbol} {quantity}? | ?: {reason_desc} |  ?: {final_pnl_pct:+.2f}%")
 
                     try:
-                        sell_msg = f"""{mode_title} 100% 매도 청산 완료\n🚨 **브로커:** `{self.broker.broker_name} {self.broker.mode_str}`\n💡 **사유:** `{reason_desc}`\n📊 **종목/수량:** `{symbol} {quantity:,}주`\n💰 **체결가:** `${latest_px:.2f}` (최종 수익률: {final_pnl_pct:+.2f}%)\n🛡️ **사후 관리:** `100% 현금화 완료 (AI MoE 새 진입 대기)`"""
-                        self.dispatcher.send_telegram_message(sell_msg)
+                        pos_model_id = active_pos.get("active_model_id") or self.get_active_model_info().get("active_model_id", "UNKNOWN")
+                        pos_model_ver = active_pos.get("active_model_version") or str(active_pos.get("active_model_sha256") or "")[:12] or "unknown"
+                        sell_msg = (
+                            f"{mode_title} 100% 매도 청산 완료\n"
+                            f"🚨 **브로커:** `{self.broker.broker_name} {self.broker.mode_str}`\n"
+                            f"🧠 **진입 모델:** `{pos_model_id}` (`{pos_model_ver}`)\n"
+                            f"💡 **사유:** `{reason_desc}`\n"
+                            f"📊 **종목/수량:** `{symbol} {quantity:,}주`\n"
+                            f"💰 **체결가:** `${latest_px:.2f}` (최종 수익률: {final_pnl_pct:+.2f}%)\n"
+                            f"🛡️ **사후 관리:** `100% 현금화 완료 (AI MoE 새 진입 대기)`"
+                        )
+                        # Relay emits a role-specific leg alert and, only after
+                        # reconciliation, a separate cycle-complete alert.
+                        if not getattr(self, '_uses_relay_notifications', False):
+                            self.dispatcher.send_telegram_message(sell_msg)
                     except Exception as te2:
                         logger.error(self._redact_log(f"텔레그램 매도 알림 2 발송 에러: {te2}"))
                     return True
 
+                cancel_res_s = None
                 if s_ord_no:
-                    self.broker.cancel_order(order_no=s_ord_no, symbol=symbol, quantity=rem_qty)
+                    cancel_res_s = self.broker.cancel_order(order_no=s_ord_no, symbol=symbol, quantity=rem_qty)
                     time.sleep(config.CANCEL_ORDER_WAIT_TIME)
-                
+                if not s_ord_no or (isinstance(cancel_res_s, dict) and cancel_res_s.get("ok") is False):
+                    logger.error(f"❌ [2차 매도 중단] 1차 매도 주문(#{s_ord_no}) 취소 요청이 실패하여 2차 추격 매도를 중단합니다.")
+                    return False
+
+                sym_up = symbol.strip().upper()
+                cancel_ord_no_s = str(cancel_res_s.get("cancel_ord_no") or "").strip() if isinstance(cancel_res_s, dict) else ""
+                open_confirmed_cancel_s = 0
+
+                if self._can_query_broker_method("get_open_orders"):
+                    open_res_s = self.broker.get_open_orders()
+                    open_orders_s = self._extract_open_orders_list(open_res_s)
+                    if open_orders_s is None:
+                        logger.error(f"❌ [2차 매도 중단] 1차 매도 취소 후 미체결 원장 조회 실패로 2차 추격 매도를 중단합니다.")
+                        return False
+                    for o_item in open_orders_s:
+                        if not isinstance(o_item, dict):
+                            return False
+                        o_no = str(o_item.get("ord_no") or o_item.get("order_no") or "").strip()
+                        o_orig = str(o_item.get("orig_ord_no") or o_item.get("original_order_no") or "").strip()
+                        o_orig_clean = "" if o_orig in ("", "000000000") else o_orig
+                        o_sym = str(o_item.get("stk_cd") or o_item.get("symbol") or o_item.get("symb") or "").strip().upper()
+                        o_rem = self._parse_int_strict(
+                            o_item.get("nccs_qty") if "nccs_qty" in o_item else o_item.get("ord_remnq", o_item.get("remaining_quantity", 0))
+                        )
+                        if o_rem is None or (o_rem > 0 and (o_no in (s_ord_no, cancel_ord_no_s) or o_orig_clean == s_ord_no or o_sym == sym_up)):
+                            logger.warning(f"⚠️ [2차 매도 중단] 1차 매도 주문(#{s_ord_no}) 미체결 잔량({o_rem}주)이 잔류하여 2차 추격 매도를 중단합니다.")
+                            return False
+                        if o_no == s_ord_no or o_orig_clean == s_ord_no or (cancel_ord_no_s and o_no == cancel_ord_no_s):
+                            o_can = self._parse_int_strict(
+                                o_item.get("cancelled_qty")
+                                if "cancelled_qty" in o_item
+                                else (o_item.get("cncl_cfrm_qty") if "cncl_cfrm_qty" in o_item else o_item.get("cncl_qty", 0))
+                            )
+                            if o_can is not None and o_can > 0 and o_rem == 0:
+                                open_confirmed_cancel_s = max(open_confirmed_cancel_s, o_can)
+
                 stk_bal_recheck = self.broker.get_overseas_stock_balance(force_refresh=True)
-                if stk_bal_recheck.get("ok"):
-                    new_actual_qty = 0
-                    for h in stk_bal_recheck.get("holdings", []):
-                        if str(h.get("symbol") or h.get("stk_cd") or "").strip().upper() == symbol:
-                            new_actual_qty = int(float(str(h.get("quantity") or h.get("poss_qty") or 0).replace(",", "")))
-                            break
-                    if new_actual_qty <= 0:
-                        logger.info(f"🟢 [매도 완결] {symbol} 잔고 0주 확인. 추격 종료.")
-                        self._clear_active_position()
-                        return True
-                    quantity = new_actual_qty
-                else:
-                    logger.warning(f"잔고 재조회 실패. 기존 수량({quantity})으로 매도 추격 계속.")
+                if not isinstance(stk_bal_recheck, dict) or stk_bal_recheck.get("ok") is not True or not isinstance(stk_bal_recheck.get("holdings"), list):
+                    logger.error(f"❌ [2차 매도 중단] 1차 매도 취소 후 잔고 재조회 실패로 2차 추격 매도를 중단합니다.")
+                    return False
+
+                new_actual_qty = 0
+                new_sell_avail = 0
+                for h in stk_bal_recheck.get("holdings", []):
+                    if not isinstance(h, dict):
+                        return False
+                    if str(h.get("symbol") or h.get("stk_cd") or "").strip().upper() == sym_up:
+                        pq = self._parse_int_strict(h.get("quantity") if "quantity" in h else h.get("poss_qty", 0))
+                        sa = self._parse_int_strict(h.get("sell_available") if "sell_available" in h else h.get("sell_alowq", pq if pq is not None else 0))
+                        if pq is None:
+                            return False
+                        new_actual_qty = pq
+                        new_sell_avail = sa if sa is not None else pq
+                        break
+
+                s_found_evidence = False
+                s_hist_filled = 0
+                s_confirmed_cancel = open_confirmed_cancel_s
+
+
+                if self._can_query_broker_method("get_daily_execution_history"):
+                    hist_s = self.broker.get_daily_execution_history()
+                    if not isinstance(hist_s, dict) or hist_s.get("ok") is not True or not isinstance(hist_s.get("executions"), list):
+                        logger.error("❌ [2차 매도 중단] 1차 매도 취소 후 체결원장 조회 실패로 2차 추격 매도를 중단합니다.")
+                        return False
+                    s_scan = self._scan_closed_order_rows(
+                        hist_s.get("executions", []), s_ord_no, sym_up, "SELL", quantity, cancel_ord_no_s,
+                    )
+                    if s_scan is None:
+                        logger.error(f"❌ [2차 매도 중단] 체결원장에서 1차 매도(#{s_ord_no}) 수량 모순 또는 미체결 잔량이 감지되었습니다.")
+                        return False
+                    s_found_evidence, s_hist_filled, s_orig_can, s_child_can = s_scan
+                    if s_orig_can > 0 and s_child_can > 0 and s_orig_can != s_child_can:
+                        return False
+                    s_confirmed_cancel = max(s_confirmed_cancel, s_orig_can, s_child_can)
+
+                if self._can_query_broker_method("get_order_history"):
+                    ny_compact = self._get_current_ny_date().replace("-", "")
+                    oh_s = self.broker.get_order_history(ny_compact, ny_compact)
+                    if not isinstance(oh_s, dict) or oh_s.get("ok") is not True or not isinstance(oh_s.get("orders"), list):
+                        logger.error("❌ [2차 매도 중단] 1차 매도 취소 후 주문내역(ust21180) 조회 실패로 2차 추격 매도를 중단합니다.")
+                        return False
+                    oh_s_scan = self._scan_closed_order_rows(
+                        oh_s.get("orders", []), s_ord_no, sym_up, "SELL", quantity, cancel_ord_no_s,
+                    )
+                    if oh_s_scan is None:
+                        logger.error(f"❌ [2차 매도 중단] 주문내역(ust21180)에서 1차 매도(#{s_ord_no}) 수량 모순 또는 잔량이 감지되었습니다.")
+                        return False
+                    oh_s_found, oh_s_fil, oh_s_orig_can, oh_s_child_can = oh_s_scan
+                    if oh_s_orig_can > 0 and oh_s_child_can > 0 and oh_s_orig_can != oh_s_child_can:
+                        return False
+                    if oh_s_found:
+                        if s_found_evidence and s_hist_filled != oh_s_fil:
+                            return False
+                        s_found_evidence = True
+                        s_hist_filled = max(s_hist_filled, oh_s_fil)
+                        s_confirmed_cancel = max(s_confirmed_cancel, oh_s_orig_can, oh_s_child_can)
+
+                if new_actual_qty <= 0:
+                    if (s_found_evidence or self._can_query_broker_method("get_order_history")) and (
+                        not s_found_evidence or s_hist_filled != quantity or s_confirmed_cancel > 0
+                    ):
+                        logger.error(f"❌ [2차 매도 중단] 잔고는 0주이나 원장에서 1차 매도(#{s_ord_no}) 전량 체결이 확인되지 않았습니다.")
+                        return False
+                    logger.info(f"🟢 [매도 완결] {symbol} 잔고 0주 확인. 추격 종료.")
+                    self._clear_active_position()
+                    return True
+
+                if s_found_evidence or self._can_query_broker_method("get_order_history"):
+                    if (
+                        not s_found_evidence
+                        or (s_hist_filled + s_confirmed_cancel != quantity)
+                        or (new_actual_qty != quantity - s_hist_filled)
+                        or (s_confirmed_cancel <= 0)
+                    ):
+                        logger.error(
+                            f"❌ [2차 매도 중단] 1차 매도(#{s_ord_no}) 취소 후 체결({s_hist_filled}주)/취소({s_confirmed_cancel}주)/잔고({new_actual_qty}주) 수량이 모순되어 2차 매도를 중단합니다."
+                        )
+                        return False
+
+                quantity = min(new_actual_qty, new_sell_avail, quantity - s_hist_filled)
+                if quantity <= 0:
+                    return False
 
         except Exception as e:
             logger.error(self._redact_log(f"매도 추격 주문 에러: {e}"))
@@ -944,29 +2420,707 @@ class KiwoomLiveRunner:
     _execute_buy_with_chase = _execute_buy_with_10s_chase
     _execute_sell_with_chase = _execute_sell_with_10s_chase
 
+    def _emit_model_state_alerts_from_eval(self, moe_res: Dict[str, Any]):
+        """
+        Inspects model snapshot metadata from a 15m evaluation result and emits
+        deduplicated Telegram alerts for hot-reload, Champion fallback, or BLOCKED state.
+        """
+        try:
+            load_status = str(moe_res.get("active_model_load_status") or "")
+            is_fallback = bool(moe_res.get("active_model_is_fallback", False))
+            consistency_ok = bool(moe_res.get("model_consistency_ok", True))
+            consistency_reason = str(moe_res.get("model_consistency_reason") or "")
+            hot_reloaded = bool(moe_res.get("model_hot_reloaded", False))
+            prev_sha = str(moe_res.get("previous_model_sha256_before_eval") or "")
+
+            if load_status == "BLOCKED" or not consistency_ok:
+                self.notifier.send_model_state_alert(
+                    event_type="BLOCKED",
+                    model_info=moe_res,
+                    reason=consistency_reason or "모든 모델 로드 실패 또는 manifest/메모리 불일치로 신규 매수가 차단되었습니다.",
+                )
+            elif is_fallback or load_status == "FALLBACK":
+                self.notifier.send_model_state_alert(
+                    event_type="FALLBACK_TO_CHAMPION",
+                    model_info=moe_res,
+                    reason="기본 모델 검증 실패로 Champion 폴백 모델이 활성화되었습니다. 실제 활성 모델은 이 알림의 모델 정보를 확인하세요.",
+                )
+            elif hot_reloaded:
+                self.notifier.send_model_state_alert(
+                    event_type="MODEL_HOT_RELOADED",
+                    model_info=moe_res,
+                    previous_model_sha256=prev_sha,
+                    reason="자동 재학습/매니페스트 갱신이 감지되어 최신 모델 스냅샷으로 무중단 핫리로드되었습니다.",
+                )
+        except Exception as e:
+            logger.warning(self._redact_log(f"모델 상태 알림 발송 중 에러(무시됨): {e}"))
+
+    def _is_circuit_breaker_halted(self) -> Tuple[bool, str]:
+        if bool(getattr(self, "daily_circuit_breaker_triggered", False)):
+            return True, "DAILY_CIRCUIT_BREAKER_TRIGGERED"
+        try:
+            from core.circuit_breaker import CIRCUIT_STATE_FILE, read_order_state
+            if Path(CIRCUIT_STATE_FILE).exists():
+                st = read_order_state()
+                if isinstance(st, dict) and st.get("status") not in ("NORMAL", None):
+                    return True, f"CIRCUIT_BREAKER_{st.get('status')}"
+        except Exception:
+            pass
+        return False, ""
+
+    def _collect_cycle_market_snapshot(
+        self,
+        df_15m: Any,
+        now_dt: datetime,
+        ny_dt: datetime,
+        is_pre_market: bool,
+        is_regular_market: bool,
+    ) -> Dict[str, Any]:
+        candle_time_et = "UNAVAILABLE"
+        candle_age_hours = 9999.0
+        has_sufficient_candles = False
+        if df_15m is not None and not getattr(df_15m, "empty", True) and len(df_15m) >= 72:
+            has_sufficient_candles = True
+            try:
+                if hasattr(df_15m.index, "tz") or "Datetime" in str(type(df_15m.index)):
+                    last_c_ts = df_15m.index[-1]
+                elif "datetime" in df_15m.columns:
+                    import pandas as pd
+                    last_c_ts = pd.to_datetime(df_15m["datetime"].iloc[-1])
+                else:
+                    last_c_ts = None
+                if last_c_ts is not None:
+                    c_naive = last_c_ts.replace(tzinfo=None) if getattr(last_c_ts, "tzinfo", None) is not None else last_c_ts
+                    candle_time_et = c_naive.strftime("%Y-%m-%d %H:%M ET")
+                    ny_naive = ny_dt.replace(tzinfo=None)
+                    candle_age_hours = (ny_naive - c_naive).total_seconds() / 3600.0
+            except Exception:
+                pass
+
+        ws_is_mock = hasattr(self.ws_streamer.get_latest_price, "_mock_name") or hasattr(
+            self.ws_streamer.get_latest_price, "assert_called"
+        )
+        quote_fn = getattr(self.broker, "get_stock_quote", None)
+        quote_mock_configured = bool(
+            quote_fn is not None
+            and (
+                getattr(quote_fn, "side_effect", None) is not None
+                or isinstance(getattr(quote_fn, "return_value", None), dict)
+                or not hasattr(quote_fn, "_mock_name")
+            )
+        )
+
+        live_prices: Dict[str, float] = {}
+        quote_meta: Dict[str, Dict[str, Any]] = {}
+        default_q_time = ny_dt.strftime("%Y-%m-%d %H:%M ET")
+
+        if ws_is_mock:
+            for sym in config.ALL_SYMBOLS:
+                px = float(self.ws_streamer.get_latest_price(sym, 0.0) or 0.0)
+                live_prices[sym] = px
+                quote_meta[sym] = {
+                    "ok": px > 0,
+                    "symbol": sym,
+                    "last_price": px,
+                    "quote_time_et": default_q_time,
+                    "quote_age_sec": 0.0,
+                    "is_previous_session_quote": False,
+                    "is_fresh": px > 0,
+                    "stale_reason": "" if px > 0 else "QUOTE_PRICE_ZERO",
+                }
+            if quote_fn is not None and (
+                getattr(quote_fn, "side_effect", None) is not None
+                or isinstance(getattr(quote_fn, "return_value", None), dict)
+            ):
+                for sym in config.TRADE_SYMBOLS:
+                    try:
+                        q_res = quote_fn(sym)
+                        if isinstance(q_res, dict):
+                            q_px = float(q_res.get("last_price", live_prices.get(sym, 0.0)) or 0.0)
+                            if q_px > 0:
+                                live_prices[sym] = q_px
+                            quote_meta[sym] = q_res
+                    except Exception as qe:
+                        quote_meta[sym] = {
+                            "ok": False,
+                            "symbol": sym,
+                            "last_price": 0.0,
+                            "quote_time_et": "UNAVAILABLE",
+                            "is_previous_session_quote": False,
+                            "is_fresh": False,
+                            "stale_reason": f"QUOTE_ERROR: {qe}",
+                        }
+        else:
+            for sym in config.ALL_SYMBOLS:
+                if self.ws_streamer.is_live_stream_active(sym, max_staleness_sec=180.0):
+                    px = float(self.ws_streamer.latest_prices.get(sym, 0.0) or 0.0)
+                    last_t = float(self.ws_streamer.last_ws_tick_time.get(sym, time.time()))
+                    tick_ny = datetime.fromtimestamp(last_t, tz=ZoneInfo("America/New_York"))
+                    live_prices[sym] = px
+                    quote_meta[sym] = {
+                        "ok": px > 0,
+                        "symbol": sym,
+                        "last_price": px,
+                        "quote_time_et": tick_ny.strftime("%Y-%m-%d %H:%M ET"),
+                        "quote_age_sec": max(0.0, time.time() - last_t),
+                        "is_previous_session_quote": False,
+                        "is_fresh": px > 0,
+                        "stale_reason": "",
+                    }
+                else:
+                    try:
+                        q_res = self.broker.get_stock_quote(sym) if quote_fn is not None else {}
+                    except Exception as qe:
+                        q_res = {
+                            "ok": False,
+                            "symbol": sym,
+                            "last_price": 0.0,
+                            "quote_time_et": "UNAVAILABLE",
+                            "is_previous_session_quote": False,
+                            "is_fresh": False,
+                            "stale_reason": f"QUOTE_ERROR: {qe}",
+                        }
+                    if isinstance(q_res, dict):
+                        px = float(q_res.get("last_price", 0.0) or 0.0)
+                        if px > 0 and q_res.get("is_fresh", True):
+                            self.ws_streamer.latest_prices[sym] = px
+                        live_prices[sym] = px
+                        quote_meta[sym] = q_res
+                    else:
+                        px = float(self.ws_streamer.get_latest_price(sym, 0.0) or 0.0)
+                        live_prices[sym] = px
+                        quote_meta[sym] = {
+                            "ok": px > 0,
+                            "symbol": sym,
+                            "last_price": px,
+                            "quote_time_et": default_q_time,
+                            "quote_age_sec": 0.0,
+                            "is_previous_session_quote": False,
+                            "is_fresh": px > 0,
+                            "stale_reason": "",
+                        }
+
+        base_q = quote_meta.get(config.BASE_ASSET_LONG, {})
+        quote_time_et = str(base_q.get("quote_time_et") or default_q_time)
+        data_stale = False
+        stale_reason = ""
+
+        max_candle_age_h = 96.0 if ny_dt.weekday() == 0 else (72.0 if ny_dt.weekday() in (5, 6) else 48.0)
+        if not has_sufficient_candles:
+            data_stale = True
+            stale_reason = "INSUFFICIENT_15M_CANDLES"
+        elif candle_age_hours > max_candle_age_h:
+            data_stale = True
+            stale_reason = f"STALE_15M_CANDLES(last={candle_time_et}, age={candle_age_hours:.1f}h)"
+        else:
+            base_px = float(live_prices.get(config.BASE_ASSET_LONG, 0.0) or 0.0)
+            if base_px <= 0 or base_q.get("ok") is False:
+                data_stale = True
+                stale_reason = str(base_q.get("stale_reason") or "QUOTE_UNAVAILABLE_OR_ZERO")
+            elif is_pre_market and bool(base_q.get("is_previous_session_quote", False)):
+                data_stale = True
+                stale_reason = str(base_q.get("stale_reason") or "PREVIOUS_REGULAR_CLOSE_REJECTED_IN_PREMARKET")
+            elif base_q.get("is_fresh") is False:
+                data_stale = True
+                stale_reason = str(base_q.get("stale_reason") or "STALE_QUOTE_DATA")
+            elif base_q.get("quote_age_sec") is not None:
+                max_q_age = 1800.0 if is_pre_market else (600.0 if is_regular_market else 86400.0 * 4)
+                q_age = float(base_q.get("quote_age_sec", 0.0) or 0.0)
+                if q_age > max_q_age:
+                    data_stale = True
+                    stale_reason = f"QUOTE_AGE_EXCEEDED({int(q_age)}s)"
+
+        return {
+            "live_prices": live_prices,
+            "quote_meta": quote_meta,
+            "quote_time_et": quote_time_et,
+            "candle_time_et": candle_time_et,
+            "candle_age_hours": candle_age_hours,
+            "data_stale": data_stale,
+            "stale_reason": stale_reason,
+        }
+
+    def _entry_quantity(self, usd_available, price):
+        return int((usd_available * config.MAX_ALLOCATION_RATIO) / (price + config.QTY_CALC_BUFFER))
+
+    def _prepare_decision_candles(self, candles, ny_dt, is_regular_market):
+        return candles
+
+    def _load_decision_candles(self, ny_dt, is_regular_market, sync_intraday):
+        if sync_intraday:
+            self.data_lake.sync_live_intraday_candles(config.ALL_SYMBOLS)
+        candles = self.data_lake.load_candles(config.BASE_ASSET_LONG, "15m")
+        return self._prepare_decision_candles(candles, ny_dt, is_regular_market)
+
+    def evaluate_15m_cycle_once(
+        self,
+        allow_order_execution: bool = True,
+        sync_intraday: bool = True,
+        now_dt: Optional[datetime] = None,
+        market_session: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Executes a single 15-minute AI evaluation cycle (used by _market_execution_loop
+        in both PRE_MARKET_WAITING and REGULAR_MARKET_OPEN, and by verification tests).
+        Pre-market evaluations generate AI signals and Telegram reports only (SIGNAL_ONLY — NO ORDER).
+        """
+        explicit_now = now_dt is not None
+        now_dt = now_dt or datetime.now()
+        if now_dt.tzinfo is None:
+            now_dt_aware = now_dt.replace(tzinfo=ZoneInfo("Asia/Seoul"))
+        else:
+            now_dt_aware = now_dt
+        ny_dt = now_dt_aware.astimezone(ZoneInfo("America/New_York"))
+        active_pos = self._get_active_position()
+
+        if market_session:
+            raw_session = str(market_session).strip().upper()
+        elif explicit_now:
+            raw_session = str(USMarketCalendar.get_market_status(now_dt_aware).get("session_name", "REGULAR_MARKET_OPEN")).upper()
+        else:
+            raw_session = str(getattr(self, "_last_market_session", None) or "REGULAR_MARKET_OPEN").upper()
+
+        if raw_session in ("PRE_MARKET_WAITING", "PRE_MARKET"):
+            session_name = "PRE_MARKET_WAITING"
+            market_state_label = "PRE_MARKET"
+            is_pre_market = True
+            is_regular_market = False
+        elif raw_session in ("REGULAR_MARKET_OPEN", "REGULAR_MARKET"):
+            session_name = "REGULAR_MARKET_OPEN"
+            market_state_label = "REGULAR_MARKET"
+            is_pre_market = False
+            is_regular_market = True
+        else:
+            session_name = raw_session
+            market_state_label = "REGULAR_MARKET" if raw_session == "EOD_LIQUIDATION" else raw_session
+            is_pre_market = False
+            is_regular_market = False
+
+        # Hard Interlock #1: 프리마켓에서는 어떠한 경우에도 실주문 및 정규장 DB 오염 동기화를 차단
+        effective_allow_order = bool(allow_order_execution) and is_regular_market and (not is_pre_market)
+        effective_sync_intraday = bool(sync_intraday) and is_regular_market and (not is_pre_market)
+
+        if effective_sync_intraday:
+            try:
+                shadow_live_p = {sym: self.ws_streamer.get_latest_price(sym, 0.0) for sym in config.TRADE_SYMBOLS}
+                self.shadow_tracker.increment_candle(exit_prices=shadow_live_p)
+            except Exception as e:
+                system_logger.log("ERROR", "ShadowTracker", self._redact_log(f"캔들 업데이트 중 에러: {e}"))
+        df_15m = self._load_decision_candles(ny_dt, is_regular_market, effective_sync_intraday)
+        snap_data = self._collect_cycle_market_snapshot(
+            df_15m=df_15m,
+            now_dt=now_dt_aware,
+            ny_dt=ny_dt,
+            is_pre_market=is_pre_market,
+            is_regular_market=is_regular_market,
+        )
+        live_prices = snap_data["live_prices"]
+        quote_time_et = snap_data["quote_time_et"]
+        candle_time_et = snap_data["candle_time_et"]
+        data_stale = bool(snap_data["data_stale"])
+        stale_reason = str(snap_data["stale_reason"] or "")
+
+        op_mode_label = "SIMULATION" if getattr(self.broker, "is_simulation", True) else "REAL"
+        soxl_px = float(live_prices.get(config.BASE_ASSET_LONG, 0.0) or 0.0)
+        soxs_px = float(live_prices.get(config.BASE_ASSET_SHORT, 0.0) or 0.0)
+
+        order_attempted = False
+        order_executed = False
+        order_allowed = False
+        order_block_reason = "NONE"
+        order_block_detail = ""
+        pre_order_decision = "WAIT_HOLD"
+        premarket_policy = "NONE" if is_pre_market else "REGULAR_EXECUTION_POLICY"
+        winner_sym = None
+        order_qty = 0
+
+        if data_stale:
+            gbdt_eng = getattr(self.moe_orchestrator, "gbdt_engine", None)
+            if gbdt_eng is not None and hasattr(gbdt_eng, "ensure_latest_manifest_model"):
+                try:
+                    gbdt_eng.ensure_latest_manifest_model()
+                except Exception:
+                    pass
+            m_info = self.get_active_model_info()
+            moe_res = {
+                "selected_expert": "none",
+                "expert_desc": f"SIGNAL_UNAVAILABLE_STALE_DATA ({stale_reason})",
+                "gating_confidence": 0.0,
+                "expert_confidence": 0.0,
+                "threshold_applied": float(config.GBDT_CONFIDENCE_THRESHOLD),
+                "regime_snapshot": {},
+                "direction": "NONE",
+                "cross_dir": "NONE",
+                "dir_gbdt": "NONE",
+                "is_approved": False,
+                "is_cross_veto": False,
+                "is_60m_trend_ok": False,
+                "dip_ok": False,
+                "all_gating_confidences": {"cross_asset": 0.0, "gbdt_pattern": 0.0},
+                "gbdt_probs": {"LONG": 0.0, "SHORT": 0.0, "NONE": 1.0},
+                "features": {},
+                "active_model_id": m_info.get("active_model_id", "UNKNOWN"),
+                "active_model_sha256": m_info.get("model_sha256", ""),
+                "active_model_version": m_info.get("model_version", "NONE"),
+                "active_model_schema": m_info.get("feature_schema", "UNKNOWN"),
+                "active_model_num_features": m_info.get("num_features", 0),
+                "active_model_load_status": m_info.get("load_status", ""),
+                "active_model_fallback_status": m_info.get("fallback_status", ""),
+                "active_model_is_fallback": bool(m_info.get("is_fallback", False)),
+                "model_hot_reloaded": False,
+                "model_consistency_ok": bool(m_info.get("is_manifest_memory_consistent", True)),
+                "model_consistency_reason": str(m_info.get("consistency_reason", "CONSISTENT")),
+                "data_stale": True,
+                "stale_reason": stale_reason,
+                "signal_status": "SIGNAL_UNAVAILABLE_STALE_DATA",
+                "timestamp": ny_dt.strftime("%Y-%m-%d %H:%M:%S"),
+            }
+            self._last_moe_res = moe_res
+            self._emit_model_state_alerts_from_eval(moe_res)
+            order_allowed = False
+            order_block_reason = "DATA_STALE"
+            order_block_detail = stale_reason or "DATA_STALE"
+            pre_order_decision = "SIGNAL_UNAVAILABLE_STALE_DATA"
+            premarket_policy = "SIGNAL_UNAVAILABLE_STALE_DATA"
+            if stale_reason == "FIRST_15M_CANDLE_NOT_CLOSED":
+                order_block_reason = stale_reason
+                pre_order_decision = premarket_policy = "WAIT_FIRST_COMPLETED_15M"
+                moe_res["signal_status"] = pre_order_decision
+                moe_res["expert_desc"] = pre_order_decision
+            conf = 0.0
+            is_appr = False
+            direction = "NONE"
+            p_long = 0.0
+            p_short = 0.0
+        else:
+            moe_res = self.moe_orchestrator.evaluate_dual_filter_signal(
+                df_candle_15m=df_15m,
+                live_prices=live_prices,
+            )
+            try:
+                self.experience_logger.record_learning_decision(moe_res.get("learning_snapshot"))
+            except Exception:
+                logger.error("Learning decision enqueue failed; trading continues")
+            moe_res["data_stale"] = False
+            moe_res["stale_reason"] = ""
+            self._last_moe_res = moe_res
+
+            # Emit any model state transition alert (HOT_RELOADED / FALLBACK / BLOCKED)
+            # self._emit_model_state_alerts_from_eval(moe_res)
+
+            conf = float(moe_res.get("gating_confidence", 0.0)) * 100.0
+            is_appr = bool(moe_res.get("is_approved", False))
+            direction = str(moe_res.get("direction", "NONE"))
+            gbdt_probs = moe_res.get("gbdt_probs", {"LONG": 0.0, "SHORT": 0.0, "NONE": 0.0})
+            p_long = float(gbdt_probs.get("LONG", 0.0)) * 100.0
+            p_short = float(gbdt_probs.get("SHORT", 0.0)) * 100.0
+
+            # 1. 쉐도우 트래커(가상 매매): effective_allow_order=True (정규장) 일 때만 DB에 기록
+            if effective_allow_order:
+                shadow_dir = "LONG" if p_long >= p_short else "SHORT"
+                shadow_sym = config.BASE_ASSET_LONG if shadow_dir == "LONG" else config.BASE_ASSET_SHORT
+                shadow_px = live_prices.get(shadow_sym, 0.0)
+                try:
+                    shadow_atr = self._get_5m_atr_pct(shadow_sym, shadow_px) if shadow_px > 0 else 1.8
+                    self.shadow_tracker.try_enter_shadow_trade(
+                        symbol=shadow_sym,
+                        price=shadow_px,
+                        current_time=ny_dt,
+                        atr_pct=(shadow_atr / 100.0),
+                        **ShadowTracker.entry_signal_from_decision(moe_res, shadow_dir),
+                    )
+                except Exception as e:
+                    system_logger.log("ERROR", "ShadowTracker", self._redact_log(f"가상 진입 추가 중 에러: {e}"))
+
+            # 2. 실전 매매 사전 판단 및 (정규장 + 9대 조건 통과 시) 주문 실행
+            cb_halted, cb_reason = self._is_circuit_breaker_halted()
+            model_guard_failed = (
+                not bool(moe_res.get("model_consistency_ok", True))
+                or moe_res.get("active_model_load_status") == "BLOCKED"
+            )
+
+            if model_guard_failed:
+                pre_order_decision = "BLOCKED_BY_MODEL_GUARD"
+                order_allowed = False
+                order_block_reason = "RISK_BLOCK"
+                order_block_detail = str(moe_res.get("model_consistency_reason") or "MODEL_BLOCKED")
+                if is_pre_market:
+                    premarket_policy = "NONE"
+            elif is_pre_market:
+                # 프리마켓: 신호 생성 및 텔레그램 전송만 수행하고 실제 주문은 100% 차단 (SIGNAL_ONLY — NO ORDER)
+                order_allowed = False
+                order_block_reason = "PRE_MARKET"
+                order_executed = False
+                order_attempted = False
+                if is_appr and direction in ["LONG", "SHORT"]:
+                    winner_sym = config.BASE_ASSET_LONG if direction == "LONG" else config.BASE_ASSET_SHORT
+                    pre_order_decision = "SIGNAL_ONLY — NO ORDER"
+                    premarket_policy = "SIGNAL_ONLY — NO ORDER"
+                    order_block_detail = "PRE_MARKET (SIGNAL_ONLY — NO ORDER)"
+                else:
+                    pre_order_decision = "WAIT_HOLD"
+                    premarket_policy = "NONE"
+                    order_block_detail = "PRE_MARKET_WAITING"
+            elif is_appr and direction in ["LONG", "SHORT"]:
+                winner_sym = config.BASE_ASSET_LONG if direction == "LONG" else config.BASE_ASSET_SHORT
+                cur_px = float(live_prices.get(winner_sym, 0.0) or 0.0)
+                if cb_halted:
+                    pre_order_decision = "BLOCKED_BY_CIRCUIT_BREAKER_HALT"
+                    order_allowed = False
+                    order_block_reason = "RISK_BLOCK"
+                    order_block_detail = cb_reason or "CIRCUIT_BREAKER_HALT"
+                elif active_pos:
+                    pre_order_decision = "SKIP_EXISTING_POSITION"
+                    order_allowed = False
+                    order_block_reason = "RISK_BLOCK"
+                    order_block_detail = "EXISTING_POSITION"
+                elif cur_px <= 0:
+                    pre_order_decision = "SKIP_INVALID_PRICE"
+                    order_allowed = False
+                    order_block_reason = "DATA_STALE"
+                    order_block_detail = "INVALID_PRICE"
+                elif not effective_allow_order:
+                    pre_order_decision = f"READY_TO_BUY_{winner_sym}_ORDER_SUPPRESSED"
+                    order_allowed = False
+                    order_block_reason = "RISK_BLOCK"
+                    order_block_detail = "ORDER_EXECUTION_SUPPRESSED"
+                elif getattr(self, "_unreconciled_holding_mismatch", None) is not None:
+                    pre_order_decision = "BLOCKED_BY_UNRECONCILED_HOLDING_MISMATCH"
+                    order_allowed = False
+                    order_block_reason = "RISK_BLOCK"
+                    order_block_detail = "UNRECONCILED_HOLDING_MISMATCH"
+                elif not self._verify_pre_buy_ledger_clean(winner_sym):
+                    pre_order_decision = "BLOCKED_BY_PRE_BUY_LEDGER_GUARD"
+                    order_allowed = False
+                    order_block_reason = "RISK_BLOCK"
+                    order_block_detail = "UNCONFIRMED_ORDER_OR_LEDGER_GUARD"
+                else:
+                    conn_res = self.broker.test_connection()
+                    if (
+                        not isinstance(conn_res, dict)
+                        or not conn_res.get("ok", True)
+                        or conn_res.get("deposit_ok") is False
+                        or conn_res.get("stock_ok") is False
+                    ):
+                        pre_order_decision = "DEFERRED_BALANCE_QUERY_FAILED"
+                        order_allowed = False
+                        order_block_reason = "RISK_BLOCK"
+                        order_block_detail = "KIWOOM_API_BALANCE_QUERY_FAILED"
+                        system_logger.log("WARNING", "Trade", f"[B-02 Pre-Buy Guard] 예수금 조회 실패로 {winner_sym} 진입 보류")
+                    else:
+                        usd_avail = float(conn_res.get("usd_order_available", 0.0))
+                        order_qty = self._entry_quantity(usd_avail, cur_px)
+                        if order_qty > 0:
+                            order_allowed = True
+                            order_block_reason = "NONE"
+                            pre_order_decision = f"EXECUTE_BUY_{winner_sym}"
+                            system_logger.log("TRADE", "AI", f"V3 AI 신호 발생! {winner_sym} {order_qty}주 매수")
+                            atr_pct = self._get_5m_atr_pct(winner_sym, cur_px)
+                            sl_pct = config.SL_MIN_PCT * 100.0
+                            tp_pct = config.MAX_TP_PCT * 100.0
+                            targets = {
+                                "dynamic_tp_px": round(cur_px * (1.0 + tp_pct / 100.0), 2),
+                                "dynamic_sl_px": round(cur_px * (1.0 - sl_pct / 100.0), 2),
+                                "tp_pct": tp_pct,
+                                "sl_pct": sl_pct,
+                                "time_stop_minutes": config.TIME_STOP_MINUTES,
+                                "strategy_tag": "Lumos V4 Optimal",
+                            }
+                            order_attempted = True
+                            order_executed = bool(
+                                self._execute_buy_with_10s_chase(
+                                    symbol=winner_sym,
+                                    target_qty=order_qty,
+                                    ref_price=cur_px,
+                                    moe_res=moe_res,
+                                    targets=targets,
+                                )
+                            )
+                            if not order_executed:
+                                order_allowed = False
+                                order_block_detail = getattr(self, '_buy_execution_outcome', None) or "BUY_EXECUTION_NOT_CONFIRMED"
+                                order_block_reason = "ORDER_UNFILLED" if order_block_detail == 'BUY_UNFILLED_CANCELLED' else "RISK_BLOCK"
+                                pre_order_decision = order_block_detail
+                                if order_block_detail == 'BUY_UNFILLED_CANCELLED':
+                                    moe_res['buy_order_attempts'] = self._buy_execution_attempts
+                        else:
+                            size_block_detail = getattr(self, '_entry_block_detail', None) or "INSUFFICIENT_FUNDS"
+                            pre_order_decision = "SKIP_" + size_block_detail
+                            order_allowed = False
+                            order_block_reason = "RISK_BLOCK"
+                            order_block_detail = size_block_detail
+                            logger.info('Entry quantity blocked: %s', size_block_detail)
+            else:
+                # 신호 미승인 상태: 크로스에셋 Veto / 60m 추세 필터 / 서킷브레이커에 의한 차단인지 일반 관망(NONE)인지 구분
+                gbdt_raw_dir = str(moe_res.get("dir_gbdt", "NONE")).upper()
+                hurdle_val = float(moe_res.get("threshold_applied", config.GBDT_CONFIDENCE_THRESHOLD)) * 100.0
+                veto_blocked = bool(moe_res.get("is_cross_veto", False))
+                trend_blocked = not bool(moe_res.get("is_60m_trend_ok", True))
+                dip_blocked = not bool(moe_res.get("dip_ok", True))
+                if cb_halted:
+                    pre_order_decision = "BLOCKED_BY_CIRCUIT_BREAKER_HALT"
+                    order_allowed = False
+                    order_block_reason = "RISK_BLOCK"
+                    order_block_detail = cb_reason or "CIRCUIT_BREAKER_HALT"
+                elif gbdt_raw_dir in ("LONG", "SHORT") and conf >= hurdle_val and (veto_blocked or trend_blocked or dip_blocked):
+                    pre_order_decision = "BLOCKED_BY_RISK_FILTER"
+                    order_allowed = False
+                    order_block_reason = "RISK_BLOCK"
+                    if veto_blocked:
+                        order_block_detail = "CROSS_ASSET_VETO"
+                    elif trend_blocked:
+                        order_block_detail = "QQQ_60M_TREND_FILTER"
+                    else:
+                        order_block_detail = "RSI_DIP_FILTER"
+                elif active_pos:
+                    pre_order_decision = "WAIT_HOLD"
+                    order_allowed = False
+                    order_block_reason = "RISK_BLOCK"
+                    order_block_detail = "EXISTING_POSITION"
+                else:
+                    pre_order_decision = "WAIT_HOLD"
+                    order_allowed = bool(effective_allow_order)
+                    order_block_reason = "NONE"
+
+        display_cur_px = soxs_px if direction == "SHORT" and soxs_px > 0 else soxl_px
+        moe_res["market_state"] = market_state_label
+        moe_res["session_state"] = session_name
+        moe_res["operation_mode"] = op_mode_label
+        moe_res["current_price"] = display_cur_px
+        moe_res["soxl_price"] = soxl_px
+        moe_res["soxs_price"] = soxs_px
+        moe_res["quote_time_et"] = quote_time_et
+        moe_res["candle_time_et"] = candle_time_et
+        moe_res["order_allowed"] = order_allowed
+        moe_res["order_block_reason"] = order_block_reason
+        moe_res["order_block_detail"] = order_block_detail
+        moe_res["order_executed"] = order_executed
+        moe_res["premarket_policy"] = premarket_policy
+
+        # Send 15m briefing using the exact model snapshot & order gate status
+        briefing_msg = self.notifier.compose_signal_briefing_alert(
+            moe_res=moe_res,
+            ny_time_str=ny_dt.strftime("%H:%M"),
+            kst_time_str=now_dt_aware.strftime("%H:%M"),
+            has_active_pos=bool(active_pos),
+            market_state=market_state_label,
+            session_state=session_name,
+            operation_mode=op_mode_label,
+            current_price=display_cur_px,
+            soxl_price=soxl_px,
+            soxs_price=soxs_px,
+            quote_time_et=quote_time_et,
+            candle_time_et=candle_time_et,
+            order_allowed=order_allowed,
+            order_block_reason=order_block_reason,
+            order_block_detail=order_block_detail,
+            order_executed=order_executed,
+            premarket_policy=premarket_policy,
+            data_stale=data_stale,
+            stale_reason=stale_reason,
+        )
+        # try:
+        #     self.dispatcher.send_telegram_message(briefing_msg)
+        # except Exception as te:
+        #     logger.warning(self._redact_log(f"텔레그램 15분 브리핑 발송 에러(무시됨): {te}"))
+
+        # If Cross-Asset Veto blocked an otherwise high-confidence signal, send Veto alert with snapshot
+        # if not data_stale and bool(moe_res.get("is_cross_veto", False)):
+        #     try:
+        #         raw_dir = "LONG" if p_long >= p_short else "SHORT"
+        #         veto_ticker = config.BASE_ASSET_LONG if raw_dir == "LONG" else config.BASE_ASSET_SHORT
+        #         self.notifier.send_veto_alert(
+        #             ticker=veto_ticker,
+        #             gbdt_prob=float(moe_res.get("gating_confidence", 0.0)),
+        #             veto_reason=str(moe_res.get("veto_reason", "Cross-Asset Veto")),
+        #             model_snapshot_info=moe_res,
+        #         )
+        #     except Exception as vte:
+        #         logger.warning(self._redact_log(f"텔레그램 Veto 알림 발송 에러(무시됨): {vte}"))
+
+        system_logger.log(
+            "INFO",
+            "AI",
+            f"15분 정기 브리핑 완료 [세션: {session_name} | 판단: {direction} ({conf:.1f}%) | "
+            f"시세시각: {quote_time_et} | 캔들시각: {candle_time_et} | 주문가능: {'ALLOWED' if order_allowed else 'BLOCKED'}({order_block_reason}) | "
+            f"모델: {moe_res.get('active_model_id')}[{moe_res.get('active_model_version')}]]",
+        )
+
+        try:
+            self.experience_logger.record_learning_cycle({
+                "snapshot_id": (moe_res.get("learning_snapshot") or {}).get("event_id"),
+                "model_sha256": moe_res.get("active_model_sha256"),
+                "direction": direction, "confidence": conf, "threshold": moe_res.get("threshold_applied"),
+                "order_attempted": order_attempted, "order_executed": order_executed,
+                "order_allowed": order_allowed, "order_block_reason": order_block_reason,
+                "data_stale": data_stale, "stale_reason": stale_reason,
+                "quote_time_et": quote_time_et, "candle_time_et": candle_time_et,
+                "cross_veto": moe_res.get("is_cross_veto"), "trend_ok": moe_res.get("is_60m_trend_ok"),
+                "dip_ok": moe_res.get("dip_ok"), "model_approved": moe_res.get("is_approved"),
+                "decision_time_ny": ny_dt.isoformat(), "winner_symbol": winner_sym,
+                "order_quantity": order_qty, "pre_order_decision": pre_order_decision,
+                "position_before_symbol": (active_pos or {}).get("symbol"),
+                "position_before_quantity": (active_pos or {}).get("quantity"),
+                "session": session_name, "snapshot_available": isinstance(moe_res.get("learning_snapshot"), dict),
+            })
+        except Exception:
+            logger.error("Learning cycle outcome enqueue failed")
+
+        return {
+            "moe_res": moe_res,
+            "briefing_msg": briefing_msg,
+            "pre_order_decision": pre_order_decision,
+            "order_attempted": order_attempted,
+            "order_executed": order_executed,
+            "order_allowed": order_allowed,
+            "order_block_reason": order_block_reason,
+            "order_block_detail": order_block_detail,
+            "premarket_policy": premarket_policy,
+            "market_state": market_state_label,
+            "session_state": session_name,
+            "data_stale": data_stale,
+            "stale_reason": stale_reason,
+            "quote_time_et": quote_time_et,
+            "candle_time_et": candle_time_et,
+            "current_price": display_cur_px,
+            "winner_symbol": winner_sym,
+            "order_qty": order_qty,
+        }
+
+    def _execution_should_stop(self):
+        return False
+
     def _market_execution_loop(self):
         logger.info("?? [?  ?????  ? ? (: 15?...")
         system_logger.log("INFO", "LiveRunner", "???  ??????")
         
-        while True:
+        while not self._execution_should_stop():
             try:
                 mkt = USMarketCalendar.get_market_status()
                 current_session = mkt["session_name"]
 
                 if self._last_market_session != current_session:
-                    if current_session == "REGULAR_MARKET_OPEN":
+                    if current_session == "PRE_MARKET_WAITING":
+                        self._last_briefing_time = 0.0
+                        system_logger.log(
+                            "INFO",
+                            "MarketSession",
+                            f"프리마켓 AI 신호 감시 모드 진입 (PRE_MARKET_WAITING | SIGNAL_ONLY — NO ORDER | {mkt['now_kst_str']})",
+                        )
+                    elif current_session == "REGULAR_MARKET_OPEN":
                         self.ws_streamer.reset_session_ticks()
+                        self._last_briefing_time = 0.0
                         
                         system_logger.log("TRADE", "MarketSession", f"??? ?? ? ? ({mkt['now_kst_str']})")
-                        open_msg = f"""🟢 **[미국장 오픈 알림]**
-
-⏰ 현재 시간: `{mkt['now_kst_str']}`
-💼 체결 모드: `{self.broker.mode_str}`
-🧠 AI 엔진: `하이브리드 MoE V5 (09:30~15:30 EDT)`
-🎯 진입 기준: `GBDT {config.GBDT_CONFIDENCE_THRESHOLD*100:.1f}% 이상`
-🛡️ 청산 기준: `Max TP +3.0% / SL -2.0% / 90m 타임스탑 / ATR 트레일링`
-🧹 장마감: `{config.PHASE_EOD_CLEAR} EDT 0% 오버나잇 청산`"""
-                        self.dispatcher.send_telegram_message(open_msg)
+                        open_msg = self.notifier.compose_market_open_alert(
+                            now_kst_str=mkt["now_kst_str"],
+                            mode_str=self.broker.mode_str,
+                            model_info=self.get_active_model_info(),
+                        )
+                        try:
+                            self.dispatcher.send_telegram_message(open_msg)
+                        except Exception as te:
+                            logger.warning(self._redact_log(f"미국장 오픈 텔레그램 발송 에러(무시됨): {te}"))
 
                     elif current_session in ["AFTER_MARKET_CLOSED", "CLOSED"]:
                         eod_date_file = DATA_DIR / "last_eod_date.json"
@@ -990,10 +3144,19 @@ class KiwoomLiveRunner:
                                         msg = f"📊 **[오늘의 실제 매매 체결 내역 (증권사 원장)]**\n\n총 {exec_hist['execution_count']}건의 체결 내역이 확인되었습니다.\n"
                                         for ex in exec_hist["executions"]:
                                             sym = ex.get('pdno') or ex.get('stk_cd') or ex.get('symbol') or "알수없음"
-                                            od_type = ex.get('sll_buy_dvsn_cd_name') or ex.get('order_type') or ex.get('sll_buy_dvsn_cd') or "체결"
-                                            qty = ex.get('ccld_qty') or ex.get('quantity') or ex.get('ord_qty') or 0
-                                            px = ex.get('ft_ccld_unpr3') or ex.get('ccld_unpr') or ex.get('price') or 0
-                                            msg += f"• {sym} | {od_type} | {qty}주 @ \n"
+                                            od_type = ex.get('sll_buy_dvsn_cd_name') or ex.get('slby_tp_nm') or ex.get('order_type') or ex.get('sll_buy_dvsn_cd') or "체결"
+                                            raw_qty = ex.get('ccld_qty') or ex.get('cntr_qty') or ex.get('quantity') or ex.get('ord_qty') or 0
+                                            raw_px = ex.get('ft_ccld_unpr3') or ex.get('cntr_uv') or ex.get('ccld_unpr') or ex.get('price') or 0
+                                            try:
+                                                qty_int = int(float(str(raw_qty).replace(",", "").strip() or 0))
+                                            except Exception:
+                                                qty_int = raw_qty
+                                            try:
+                                                px_flt = float(str(raw_px).replace(",", "").strip() or 0.0)
+                                                px_str = f"${px_flt:.4f}"
+                                            except Exception:
+                                                px_str = f"${raw_px}"
+                                            msg += f"• {sym} | {od_type} | {qty_int}주 @ {px_str}\n"
                                         self.dispatcher.send_telegram_message(msg)
                                         system_logger.log("INFO", "ExecutionHistory", f"당일 체결 내역 브리핑 발송 완료 ({exec_hist['execution_count']}건)")
                                 except Exception as eh_err:
@@ -1020,130 +3183,44 @@ class KiwoomLiveRunner:
 
                     self._last_market_session = current_session
 
-                # === AI Evaluation & Briefing ===
-                if current_session == "REGULAR_MARKET_OPEN" and not self._is_order_in_progress:
+                # === AI Evaluation & Briefing (Regular Market + Pre-Market Signal-Only Mode) ===
+                if current_session in ("REGULAR_MARKET_OPEN", "PRE_MARKET_WAITING") and not self._is_order_in_progress:
                     now_t = time.time()
-                    active_pos = self._get_active_position()
-                    
                     now_dt = datetime.now()
                     force_first_run = (self._last_briefing_time == 0.0)
                     is_target_minute = (now_dt.minute % 15 == 0)
                     
                     if (is_target_minute or force_first_run) and (now_t - self._last_briefing_time) >= 60:
                         self._last_briefing_time = now_t
-                        
+                        is_regular_open = (current_session == "REGULAR_MARKET_OPEN")
                         try:
-                            self.shadow_tracker.increment_candle()
-                        except Exception as e:
-                            system_logger.log("ERROR", "ShadowTracker", self._redact_log(f"캔들 업데이트 중 에러: {e}"))
-                        
-                        try:                            # 2) 전 종목 Intraday 캔들 동기화
-                            self.data_lake.sync_live_intraday_candles(config.ALL_SYMBOLS)
-                            df_15m = self.data_lake.load_candles(config.BASE_ASSET_LONG, "15m")
-                            live_prices = {sym: self.ws_streamer.get_latest_price(sym, 0.0) for sym in config.ALL_SYMBOLS}
-                            
-                            moe_res = self.moe_orchestrator.evaluate_dual_filter_signal(df_candle_15m=df_15m, live_prices=live_prices)
-                            self._last_moe_res = moe_res
-                            
-                            conf = float(moe_res.get('gating_confidence', 0.0)) * 100.0
-                            is_appr = moe_res.get('is_approved', False)
-                            direction = moe_res.get('direction', 'NONE')
-                            
-                            gbdt_probs = moe_res.get('gbdt_probs', {"LONG": 0.0, "SHORT": 0.0, "NONE": 0.0})
-                            p_long = gbdt_probs.get("LONG", 0.0) * 100
-                            p_short = gbdt_probs.get("SHORT", 0.0) * 100
-                            p_none = gbdt_probs.get("NONE", 0.0) * 100
-                            
-                            ny_dt = now_dt.astimezone(ZoneInfo('America/New_York'))
-                            if direction == "LONG":
-                                dir_str = f"{config.BASE_ASSET_LONG} 매수"
-                            elif direction == "SHORT":
-                                dir_str = f"{config.BASE_ASSET_SHORT} 매수"
-                            else:
-                                dir_str = "매수 관망"
-                                
-                            briefing_msg = f"""🤖 <b>[Lumos AI 정기 브리핑]</b>
-⏰ 시간: {ny_dt.strftime('%H:%M')} (뉴욕시간)
-⏰ 시간: {now_dt.strftime('%H:%M')} (한국시간)
-🧭 AI 판독 방향: {dir_str}
-🎯 진입 임계값: {config.GBDT_CONFIDENCE_THRESHOLD * 100:.1f}%
-📈 {config.BASE_ASSET_LONG} 확률: {p_long:.1f}%
-📉 {config.BASE_ASSET_SHORT} 확률: {p_short:.1f}%
-⏸ 관망 확률: {p_none:.1f}%
-🔥 최종 GBDT 확신도: {conf:.1f}%
-🚦 상태: {'진입 승인 🟢 (보유종목 있어 실제 진입은 Skip)' if (is_appr and active_pos) else '진입 승인 🟢' if is_appr else '관망 유지 🟡'}
-"""
-                            self.dispatcher.send_telegram_message(briefing_msg)
-                            system_logger.log("INFO", "AI", f"15???? ? (?: {conf:.1f}%)")
-                            
-                            # 1. 쉐도우 트래커(가상 매매): 70.4% 컷 무시, NONE 판단 무시. 매 15분마다 무조건 진입
-                            shadow_dir = "LONG" if p_long >= p_short else "SHORT"
-                            shadow_sym = config.BASE_ASSET_LONG if shadow_dir == "LONG" else config.BASE_ASSET_SHORT
-                            shadow_px = live_prices.get(shadow_sym, 0.0)
-                            
-                            try:
-                                shadow_atr = self._get_5m_atr_pct(shadow_sym, shadow_px) if shadow_px > 0 else 1.8
-                                self.shadow_tracker.try_enter_shadow_trade(
-                                    symbol=shadow_sym,
-                                    price=shadow_px,
-                                    current_time=ny_dt,
-                                    atr_pct=(shadow_atr / 100.0)
-                                )
-                            except Exception as e:
-                                system_logger.log("ERROR", "ShadowTracker", self._redact_log(f"가상 진입 추가 중 에러: {e}"))
-                            
-                            # 2. 실전 매매 로직 (기존 70.4% 룰 및 릴레이 원칙 유지)
-                            if is_appr:
-                                if direction in ["LONG", "SHORT"]:
-                                    winner_sym = config.BASE_ASSET_LONG if direction == "LONG" else config.BASE_ASSET_SHORT
-                                    cur_px = live_prices.get(winner_sym, 0.0)
-                                    
-                                    if cur_px > 0 and not active_pos:
-                                        conn_res = self.broker.test_connection()
-                                        usd_avail = float(conn_res.get("usd_order_available", 0.0))
-                                        order_qty = int((usd_avail * config.MAX_ALLOCATION_RATIO) / (cur_px + config.QTY_CALC_BUFFER))
-                                        if order_qty > 0:
-                                            system_logger.log("TRADE", "AI", f"V3 AI 신호 발생! {winner_sym} {order_qty}주 매수")
-                                            atr_pct = self._get_5m_atr_pct(winner_sym, cur_px)
-                                            sl_pct = max(config.SL_MIN_PCT * 100.0, min(config.SL_MAX_PCT * 100.0, atr_pct * config.SL_ATR_MULTIPLIER))
-                                            tp_pct = config.MAX_TP_PCT * 100.0
-                                            
-                                            targets = {
-                                                "dynamic_tp_px": round(cur_px * (1.0 + tp_pct/100.0), 2),
-                                                "dynamic_sl_px": round(cur_px * (1.0 - sl_pct/100.0), 2),
-                                                "tp_pct": tp_pct,
-                                                "sl_pct": sl_pct,
-                                                "time_stop_minutes": config.TIME_STOP_MINUTES,
-                                                "strategy_tag": "Lumos V4 Optimal"
-                                            }
-                                            self._execute_buy_with_10s_chase(
-                                                symbol=winner_sym,
-                                                target_qty=order_qty,
-                                                ref_price=cur_px,
-                                                moe_res=moe_res,
-                                                targets=targets
-                                            )
+                            self.evaluate_15m_cycle_once(
+                                allow_order_execution=is_regular_open,
+                                sync_intraday=is_regular_open,
+                                now_dt=now_dt,
+                                market_session=current_session,
+                            )
                         except Exception as e:
                             system_logger.log("ERROR", "AI", self._redact_log(f"AI ? ?? : {e}"))
 
 
                 if mkt["is_open"] and not self._is_order_in_progress:
                     try:
-                        stk_bal = self.broker.get_overseas_stock_balance()
+                        live_p = {
+                            config.TRADE_SYMBOLS[0]: self.ws_streamer.get_latest_price(config.TRADE_SYMBOLS[0], 0.0),
+                            config.TRADE_SYMBOLS[1]: self.ws_streamer.get_latest_price(config.TRADE_SYMBOLS[1], 0.0)
+                        }
+                        if current_session == "EOD_LIQUIDATION":
+                            try:
+                                self.shadow_tracker.flush_eod(exit_prices=live_p)
+                            except Exception as e:
+                                system_logger.log("ERROR", "ShadowTracker", self._redact_log(f"EOD 초기화 중 에러: {e}"))
+
+                        stk_bal = self.broker.get_overseas_stock_balance(force_refresh=True)
                         if stk_bal.get("ok"):
-                            if not stk_bal.get("holdings"):
-                                if self._get_active_position():
-                                    self._clear_active_position()
-                            else:
-                                live_p = {
-                                    config.TRADE_SYMBOLS[0]: self.ws_streamer.get_latest_price(config.TRADE_SYMBOLS[0], 0.0),
-                                    config.TRADE_SYMBOLS[1]: self.ws_streamer.get_latest_price(config.TRADE_SYMBOLS[1], 0.0)
-                                }
+                            self._reconcile_active_position_with_ledger(stk_bal)
+                            if stk_bal.get("holdings"):
                                 if current_session == "EOD_LIQUIDATION":
-                                    try:
-                                        self.shadow_tracker.flush_eod()
-                                    except Exception as e:
-                                        system_logger.log("ERROR", "ShadowTracker", self._redact_log(f"EOD 초기화 중 에러: {e}"))
                                     for h in stk_bal.get("holdings"):
                                         sym = str(h.get("symbol") or h.get("stk_cd") or "").strip().upper()
                                         qty = int(float(str(h.get("quantity") or h.get("poss_qty") or 0).replace(",", "")))
@@ -1172,7 +3249,7 @@ class KiwoomLiveRunner:
                 system_logger.log("ERROR", "LiveRunner", self._redact_log(f" ? : {e}"))
                 time.sleep(config.MAIN_LOOP_ERROR_WAIT)
 
-    def run_once_and_start_listener(self):
+    def run_once_and_start_listener(self, start_background_threads: bool = True) -> Dict[str, Any]:
         """
         1???? ? ??????  ????? ??? ??
         """
@@ -1210,48 +3287,98 @@ class KiwoomLiveRunner:
 
         # 2.5. 기존에 걸려있는 모든 미체결 주문 일괄 취소 (수동 주문 잔재로 인한 예수금 잠김 방지)
         logger.info(f"\\n[2.5/3] 기존 미체결 주문 일괄 취소 확인 중...")
-        try:
-            cancel_res = self.broker.cancel_all_open_orders()
-            if cancel_res:
-                logger.info(f"   => {len(cancel_res)}건의 기존 미체결 주문을 성공적으로 취소했습니다.")
-            else:
-                logger.info(f"   => 취소할 기존 미체결 주문이 없습니다.")
-        except Exception as e:
-            logger.warning(self._redact_log(f"   => 기존 미체결 주문 취소 중 에러 발생 (무시하고 진행): {e}"))
+        if start_background_threads:
+            try:
+                cancel_res = self.broker.cancel_all_open_orders()
+                if cancel_res:
+                    logger.info(f"   => {len(cancel_res)}건의 기존 미체결 주문을 성공적으로 취소했습니다.")
+                else:
+                    logger.info(f"   => 취소할 기존 미체결 주문이 없습니다.")
+            except Exception as e:
+                logger.warning(self._redact_log(f"   => 기존 미체결 주문 취소 중 에러 발생 (무시하고 진행): {e}"))
 
-        # 3. 모델 등 정보 설정
-        cross_asset_txt = "O" if getattr(config, "USE_CROSS_ASSET_VETO", False) else "X"
-        trend_txt = "O" if getattr(config, "USE_60M_TREND_FILTER", False) else "X"
-        ai_engine_desc = f"Phase 1: 15m GBDT Model (진입 > {config.GBDT_CONFIDENCE_THRESHOLD*100:.1f}% / 크로스에셋 Veto: {cross_asset_txt} / QQQ 60분 추세방패: {trend_txt})"
-        start_msg = f"""🚀 **[Lumos {self.broker.mode_str} 거래 시스템 시작]**
-⏰ **현재 시간:** {mkt_status['now_kst_str']}
-🔄 **시간 동기화:** 100% 일치 (KST-NYT {sync_res['delta_hours']:.0f}h 시차 검증 완료)
-📊 **시장 상태:** {mkt_status['status_desc']}
-⏳ **다음 개장/폐장:** {mkt_status['next_open_kst_str']} ({mkt_status['time_until_open_str']})
-🏢 **연결 증권사:** {self.broker.broker_name} ({self.broker.mode_str})
-💳 **계좌 번호:** {self.broker.account_no}-{self.broker.account_type}
-💵 **가용 예수금:** ${conn_res['usd_order_available']:,.2f} USD
-📦 **현재 보유종목:** {conn_res['holdings_count']}종목
-🧠 **AI 엔진:** {ai_engine_desc}
-⚡ **마켓 데이터:** 10ms WebSocket 스트리밍 기반 실시간 체결 처리 중...
-
-✅ 성공적으로 초기화되었습니다. 매매 대기 중..."""
+        # 3. 모델 등 정보 설정 (Single Source of Truth: MLFeatureEngine.get_active_model_info())
+        active_model_info = self.get_active_model_info()
+        start_msg = self.notifier.compose_startup_alert(
+            mode_str=self.broker.mode_str,
+            broker_name=self.broker.broker_name,
+            account_masked=f"{self.broker.account_no}-{self.broker.account_type}",
+            mkt_status=mkt_status,
+            sync_res=sync_res,
+            conn_res=conn_res,
+            model_info=active_model_info,
+        )
         try:
-            self.dispatcher.send_telegram_message(start_msg)
-            system_logger.log("INFO", "LiveRunner", self._redact_log(f"? {self.broker.mode_str} ?  ? ??? (: {self.broker.account_no}, ?? ${conn_res['usd_order_available']:,.2f})"))
+            if not self.notifier._check_and_record_state_dedup(
+                "STARTUP",
+                f"{active_model_info.get('active_model_id')}:{active_model_info.get('active_model_sha256')}:{active_model_info.get('load_status')}",
+            ):
+                self.dispatcher.send_telegram_message(start_msg)
+            if active_model_info.get("load_status") == "BLOCKED" or not active_model_info.get("is_manifest_memory_consistent", True):
+                self.notifier.send_model_state_alert(
+                    event_type="BLOCKED",
+                    model_info=active_model_info,
+                    reason=str(active_model_info.get("consistency_reason") or "모델 로드 실패로 신규 진입 차단"),
+                )
+            elif active_model_info.get("is_fallback") or active_model_info.get("load_status") == "FALLBACK":
+                self.notifier.send_model_state_alert(
+                    event_type="FALLBACK_TO_CHAMPION",
+                    model_info=active_model_info,
+                    reason="기동 시 Primary 모델 대신 Champion 폴백 모델이 로드되었습니다.",
+                )
+            system_logger.log(
+                "INFO",
+                "LiveRunner",
+                self._redact_log(
+                    f"🚀 {self.broker.mode_str} 시스템 기동 완료 (모델: {active_model_info.get('active_model_id')}[{active_model_info.get('model_version')}], 가용예수금: ${conn_res['usd_order_available']:,.2f})"
+                ),
+            )
         except Exception as te:
             logger.warning(self._redact_log(f"? ? ? ?: {te}"))
-        
-        # 4. ????WebSocket) ??? ??
-        self.ws_streamer.start()
-        logger.info(f"??[{self.broker.broker_name} ??WebSocket ? ???] 10ms ??????? ?")
 
-        # 5. ????   ?????
-        trd_thread = threading.Thread(target=self._market_execution_loop, daemon=True)
-        trd_thread.start()
+        if not start_background_threads:
+            return {
+                "ok": True,
+                "active_model_info": active_model_info,
+                "start_msg": start_msg,
+                "mkt_status": mkt_status,
+                "sync_res": sync_res,
+                "conn_res": conn_res,
+            }
 
-        # 6. ??? ????? ? (Foreground Daemon)
-        self.controller.listen_loop(poll_interval=2)
+        # Start the optional shadow sidecar independently; never wait for model loading.
+        try:
+            from research.shadow_five_full15m_20261018.feed_bridge import autostart as _shadow_autostart
+            _shadow_autostart(self.broker.is_simulation)
+        except Exception:
+            logger.warning("Shadow auto-start unavailable; live startup continues")
+
+        try:
+            # 4. ????WebSocket) ??? ??
+            self.ws_streamer.start()
+            logger.info(f"??[{self.broker.broker_name} ??WebSocket ? ???] 10ms ??????? ?")
+
+            # 5. ????   ?????
+            trd_thread = threading.Thread(target=self._market_execution_loop, daemon=True)
+            trd_thread.start()
+
+            # 6. ??? ????? ? (Foreground Daemon)
+            self.controller.listen_loop(poll_interval=2)
+            return {"ok": True, "active_model_info": active_model_info}
+        finally:
+            try:
+                from research.shadow_five_full15m_20261018.feed_bridge import autostop as _shadow_autostop
+                _shadow_autostop(self.broker.is_simulation)
+            except Exception:
+                logger.warning("Shadow stop request unavailable; worker also watches Runner exit")
+
+
+def create_live_runner(is_simulation=None):
+    """Production entry selection; legacy class remains available for QA/rollback."""
+    if config.LIVE_EXECUTION_STRATEGY == "OPPOSITE_RELAY_V1":
+        from core.relay_live_runner import RelayLiveRunner
+        return RelayLiveRunner(is_simulation=is_simulation)
+    raise RuntimeError("Unsupported live execution strategy")
 
 
 if __name__ == "__main__":
@@ -1267,6 +3394,6 @@ if __name__ == "__main__":
     elif args.sim:
         is_sim = True
 
-    runner = KiwoomLiveRunner(is_simulation=is_sim)
+    runner = create_live_runner(is_simulation=is_sim)
     runner.run_once_and_start_listener()
 

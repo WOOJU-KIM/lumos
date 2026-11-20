@@ -3,6 +3,10 @@ import json
 import time
 import sqlite3
 import threading
+import logging
+import queue
+import atexit
+from contextlib import closing
 import config
 import pandas as pd
 from datetime import datetime
@@ -12,6 +16,9 @@ from typing import Dict, Any, List, Optional, Tuple
 # Add project root to sys.path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 from config import DATA_DIR
+from core.learning_audit import execution_evidence, json_value
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_CSV_PATH = DATA_DIR / "live_trades.csv"
 DEFAULT_DB_PATH = DATA_DIR / "live_experience.db"
@@ -70,15 +77,33 @@ class LiveExperienceLogger:
             return
         self.db_path = db_path or DEFAULT_DB_PATH
         self.csv_path = csv_path or DEFAULT_CSV_PATH
+        self.learning_db_path = self.db_path.with_suffix(self.db_path.suffix + ".learning.db")
         self._write_lock = threading.Lock()
         self._init_db()
         self._init_csv()
+        try:
+            with closing(self._get_learning_connection()) as learning:
+                learning.execute("""CREATE TABLE IF NOT EXISTS learning_events (
+                    event_id TEXT PRIMARY KEY, event_type TEXT NOT NULL,
+                    observed_at TEXT NOT NULL, payload_json TEXT NOT NULL)""")
+                learning.commit()
+        except Exception:
+            logger.error("Learning journal unavailable; append-only fallback will be used")
+        self._learning_events = queue.Queue()
+        self._learning_failures = []
+        self._learning_writer = threading.Thread(target=self._learning_writer_loop, daemon=True)
+        self._learning_writer.start()
+        atexit.register(self.flush_learning_events)
         self._initialized = True
 
     def _get_connection(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=10.0)
         conn.row_factory = sqlite3.Row
         return conn
+
+    def _get_learning_connection(self):
+        # Separate file and no lock wait: detailed evidence cannot lock trade storage.
+        return sqlite3.connect(self.learning_db_path, timeout=0)
 
     def _init_db(self):
         """SQLite 데이터베이스 테이블 초기화"""
@@ -197,12 +222,38 @@ class LiveExperienceLogger:
         pnl_krw = int(trade_data.get("pnl_krw", int(pnl_usd * 1350)))
 
         features = trade_data.get("features", {})
-        if isinstance(features, dict):
-            features_json_str = json.dumps(features, ensure_ascii=False)
-        elif isinstance(features, str):
-            features_json_str = features
-        else:
-            features_json_str = "{}"
+        if isinstance(features, str):
+            features = json.loads(features)
+        features = json_value(dict(features)) if isinstance(features, dict) else {}
+        required = list(trade_data.get("learning_feature_names", []))
+        missing = [name for name in required if features.get(name) is None]
+        features["__learning_audit__"] = {
+            "snapshot_id": trade_data.get("learning_snapshot_id"),
+            "model_sha256": trade_data.get("active_model_sha256"),
+            "model_id": trade_data.get("active_model_id"),
+            "feature_schema": trade_data.get("active_model_schema"),
+            "feature_names": trade_data.get("learning_feature_names", []),
+            "exit_price_source": trade_data.get("exit_price_source", "UNVERIFIED_LEGACY_VALUE"),
+            "fee_usd": trade_data.get("fee_usd"),
+            "fee_status": "OBSERVED" if trade_data.get("fee_usd") is not None else "UNKNOWN_NOT_ZERO",
+            "execution_order_references": trade_data.get("execution_order_references", {}),
+            "risk_settings": trade_data.get("risk_settings", {}),
+            "missing_features": missing,
+            "feature_complete": bool(required) and not missing,
+            "net_pnl_status": "UNVERIFIED_UNTIL_EXECUTION_AND_FEES_RECONCILED",
+            "raw_trade_values": {
+                "entry_time": entry_time_str, "exit_time": exit_time_str,
+                "actual_entry_price": act_entry_px, "actual_exit_price": act_exit_px,
+                "intended_entry_price": int_entry_px, "intended_exit_price": int_exit_px,
+                "quantity": qty, "pnl_pct": pnl_pct, "pnl_usd": pnl_usd,
+                "gross_pnl_from_recorded_prices_usd": (act_exit_px - act_entry_px) * qty,
+                "utc_offset_at_recording": now_dt.astimezone().strftime("%z"),
+            },
+        }
+        if not required or missing:
+            logger.warning("Trade learning snapshot incomplete: schema_available=%s missing_count=%s",
+                           bool(required), len(missing))
+        features_json_str = json.dumps(features, ensure_ascii=False, allow_nan=False)
 
         row_dict = {
             "trade_id": trade_id,
@@ -231,10 +282,12 @@ class LiveExperienceLogger:
             "features_json": features_json_str
         }
 
+        db_saved = csv_saved = False
         with self._write_lock:
             # 1. SQLite 적재
-            conn = self._get_connection()
+            conn = None
             try:
+                conn = self._get_connection()
                 c = conn.cursor()
                 c.execute("""
                 INSERT OR REPLACE INTO live_trades (
@@ -256,10 +309,11 @@ class LiveExperienceLogger:
                     row_dict["sell_attempts"], row_dict["features_json"], now_str
                 ))
                 conn.commit()
+                db_saved = True
             except Exception:
-                pass
+                logger.error("Trade database write failed; attempting CSV fallback", exc_info=True)
             finally:
-                conn.close()
+                if conn is not None: conn.close()
 
             # 2. CSV 파일 Append
             try:
@@ -269,10 +323,56 @@ class LiveExperienceLogger:
                     df_row.to_csv(self.csv_path, index=False, encoding="utf-8-sig")
                 else:
                     df_row.to_csv(self.csv_path, mode="a", header=False, index=False, encoding="utf-8-sig")
+                csv_saved = True
             except Exception:
-                pass
+                logger.error("Trade CSV write failed; database_saved=%s", db_saved, exc_info=True)
+
+        if not (db_saved or csv_saved):
+            raise IOError("Both trade storage destinations failed")
 
         return trade_id
+
+    def record_learning_decision(self, snapshot):
+        if not isinstance(snapshot, dict):
+            logger.error("Learning decision snapshot unavailable")
+            return None
+        self._learning_events.put_nowait((snapshot["event_id"], "DECISION", snapshot["observed_at"], snapshot))
+        return snapshot["event_id"]
+
+    def record_learning_execution(self, data):
+        from uuid import uuid4
+        evidence = execution_evidence(data)
+        self._learning_events.put_nowait((uuid4().hex, "EXECUTION", datetime.now().astimezone().isoformat(), evidence))
+
+    def record_learning_cycle(self, summary):
+        from uuid import uuid4
+        self._learning_events.put_nowait((uuid4().hex, "DECISION_OUTCOME", datetime.now().astimezone().isoformat(), json_value(summary)))
+
+    def _learning_writer_loop(self):
+        while True:
+            event = self._learning_events.get()
+            try:
+                encoded = json.dumps(event[3], ensure_ascii=False, allow_nan=False)
+                conn = self._get_learning_connection()
+                try:
+                    conn.execute("INSERT INTO learning_events VALUES (?, ?, ?, ?)", (*event[:3], encoded))
+                    conn.commit()
+                finally:
+                    conn.close()
+            except Exception:
+                logger.error("Learning database event write failed; using append-only fallback", exc_info=True)
+                try:
+                    fallback = self.csv_path.with_suffix(self.csv_path.suffix + ".learning.jsonl")
+                    with fallback.open("a", encoding="utf-8") as stream:
+                        stream.write(json.dumps(dict(event_id=event[0],event_type=event[1],observed_at=event[2],payload=event[3]),allow_nan=False)+"\n")
+                except Exception:
+                    self._learning_failures.append(event)
+                    logger.critical("Learning event could not be persisted; retained in memory", exc_info=True)
+            finally:
+                self._learning_events.task_done()
+
+    def flush_learning_events(self):
+        self._learning_events.join()
 
     def record_order_event(
         self,
@@ -287,6 +387,12 @@ class LiveExperienceLogger:
     ):
         """주문 이벤트(체결, 3초 타임아웃, 호가 재발주, 100% 현금 보존 취소) 기록"""
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        from uuid import uuid4
+        evidence = execution_evidence({"order_no": order_no, "symbol": symbol})
+        evidence.update(source="OBSERVED_APP_ORDER_EVENT_NOT_EXECUTION_PRICE_PROOF",
+                        action=action, status=status, attempt=int(attempt),
+                        recorded_price=float(price), recorded_quantity=int(quantity))
+        self._learning_events.put_nowait((uuid4().hex, "ORDER", datetime.now().astimezone().isoformat(), evidence))
         with self._write_lock:
             conn = self._get_connection()
             try:
@@ -330,26 +436,31 @@ class LiveExperienceLogger:
 
     def get_trades_dataframe(self) -> pd.DataFrame:
         """저장된 전체 실전 거래 내역을 판다스 DataFrame으로 반환 (AI 학습용 - DB 최우선)"""
+        frames = []
         with self._write_lock:
             # 1. DB 최우선 로드 (Single Source of Truth)
-            conn = self._get_connection()
+            conn = None
             try:
+                conn = self._get_connection()
                 df = pd.read_sql_query("SELECT * FROM live_trades ORDER BY entry_time ASC", conn)
                 if not df.empty:
-                    return df
+                    frames.append(df)
             except Exception:
-                pass
+                logger.error("Trade learning database read failed; checking CSV fallback")
             finally:
-                conn.close()
+                if conn is not None: conn.close()
 
             # 2. DB 실패 시 보조 수단으로 CSV 읽기
             if self.csv_path.exists():
                 try:
-                    return pd.read_csv(self.csv_path)
+                    frames.append(pd.read_csv(self.csv_path))
                 except Exception:
-                    pass
+                    logger.error("Trade learning CSV read failed")
             
-            return pd.DataFrame(columns=CSV_COLUMNS)
+            if not frames:
+                return pd.DataFrame(columns=CSV_COLUMNS)
+            # Database wins on duplicates; CSV-only successfully persisted trades survive.
+            return pd.concat(frames, ignore_index=True).drop_duplicates("trade_id", keep="first").sort_values("entry_time")
 
     def get_summary_stats(self) -> Dict[str, Any]:
         """모의/실전 누적 트레이딩 성적 및 슬리피지 통계 요약"""

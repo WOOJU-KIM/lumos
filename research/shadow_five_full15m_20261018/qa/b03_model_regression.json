@@ -1,0 +1,15 @@
+{
+  "status": "PASS",
+  "model_input_cases": 600,
+  "repeat_predictions_identical": true,
+  "models": {
+    "FULL_COND_PAYOFF_F1.0": 120,
+    "NET_GBDT": 120,
+    "NET_LAG_GBDT": 120,
+    "NET_TCN": 120,
+    "FULL_HIST_PAYOFF_F1.0": 120
+  },
+  "classification": "IN_SAMPLE_INFERENCE_QA_NOT_PERFORMANCE",
+  "broker_api_calls": 0,
+  "orders": 0
+}

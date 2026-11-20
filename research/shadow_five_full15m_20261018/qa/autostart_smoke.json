@@ -1,0 +1,11 @@
+{
+  "status": "PASS",
+  "real_runner_executed": false,
+  "actual_worker_spawned": true,
+  "existing_worker_reused": true,
+  "stale_pid_rejected": true,
+  "start_request_ms": 0.4744000034406781,
+  "worker_pid": 21848,
+  "broker_api_calls": 0,
+  "real_orders": 0
+}

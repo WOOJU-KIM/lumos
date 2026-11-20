@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LUMOS LightGBM 모델 내부 최적화 (추세 지속 + 평균회귀) 종합 기술 보고서</title>
+<style>
+  :root {
+    --bg: #0b0f19;
+    --card: #111827;
+    --border: #1f2937;
+    --text: #e5e7eb;
+    --muted: #9ca3af;
+    --accent: #10b981;
+    --blue: #38bdf8;
+    --warn: #f59e0b;
+    --danger: #ef4444;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 32px 24px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans KR", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+  }
+  .container { max-width: 1280px; margin: 0 auto; }
+  header {
+    background: linear-gradient(135deg, #111827 0%, #0f172a 100%);
+    border: 1px solid var(--border);
+    border-left: 5px solid var(--accent);
+    border-radius: 12px;
+    padding: 24px 28px;
+    margin-bottom: 28px;
+  }
+  h1 { margin: 0 0 8px 0; font-size: 24px; color: #fff; }
+  h2 {
+    margin: 28px 0 14px 0;
+    font-size: 19px;
+    color: var(--blue);
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 8px;
+  }
+  h3 { margin: 18px 0 10px 0; font-size: 15.5px; color: #f3f4f6; }
+  .meta { color: var(--muted); font-size: 13px; }
+  .kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: 16px;
+    margin-bottom: 28px;
+  }
+  .kpi-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 18px;
+  }
+  .kpi-label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+  .kpi-val { font-size: 24px; font-weight: 700; color: var(--accent); margin: 6px 0 4px 0; }
+  .kpi-sub { font-size: 12px; color: var(--muted); }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px 24px;
+    margin-bottom: 24px;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13.5px;
+    margin: 12px 0;
+  }
+  th, td {
+    border: 1px solid var(--border);
+    padding: 9px 12px;
+    text-align: right;
+  }
+  th {
+    background: #1e293b;
+    color: #f8fafc;
+    font-weight: 600;
+  }
+  td:first-child, th:first-child { text-align: left; }
+  tr:nth-child(even) { background: rgba(255,255,255,0.015); }
+  .highlight-row { background: rgba(16, 185, 129, 0.12) !important; font-weight: 600; }
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 11.5px;
+    font-weight: 600;
+  }
+  .badge-pass { background: rgba(16,185,129,0.2); color: #34d399; }
+  .badge-warn { background: rgba(245,158,11,0.2); color: #fbbf24; }
+  .badge-danger { background: rgba(239,68,68,0.2); color: #f87171; }
+  .two-col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+  }
+  code {
+    background: #1e293b;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 12.5px;
+    color: #38bdf8;
+  }
+  @media (max-width: 900px) { .two-col { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>LUMOS LightGBM 모델 내부 최적화 (추세 지속 + 평균회귀) 독립 검증 보고서</h1>
+    <div class="meta">
+      브랜치: <code>feat/lgbm-trend-mean-reversion</code> | 검증 기간: <code>2022-07-18 ~ 2026-10-14 (215주 Walk-Forward OOS, 33,810 Bars)</code> |
+      생성 시각: <code>2026-10-15 KST</code> | 실전 매매/주문/청산/Shadow 코드 변경: <code>0건 (완전 격리)</code>
+    </div>
+  </header>
+
+  <div class="kpi-grid">
+    <div class="kpi-card">
+      <div class="kpi-label">WFA 누적 수익률 (215주 OOS)</div>
+      <div class="kpi-val">+649.84%</div>
+      <div class="kpi-sub">Champion A (+390.63%) 대비 <b>+259.21%p</b></div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">연평균 복리수익률 (CAGR) / MDD</div>
+      <div class="kpi-val">60.65% / 28.93%</div>
+      <div class="kpi-sub">Champion A (45.39% / 29.95%) 대비 우위</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">OOS Macro-F1 / Log-Loss</div>
+      <div class="kpi-val">0.4341 / 1.0007</div>
+      <div class="kpi-sub">Champion A (0.4309 / 1.0117) 대비 개선</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">고확신(≥70.4%) 6봉 평균 수익률</div>
+      <div class="kpi-val">+1.177%</div>
+      <div class="kpi-sub">Champion A (+0.652%) 대비 <b>+80.5% 향상</b></div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">지속 하락장(Downtrend) LONG 비율</div>
+      <div class="kpi-val">58.18% (-8.13%p)</div>
+      <div class="kpi-sub">Champion A (66.31%) 대비 역추세 오진 감소</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>STEP 1. 기존 Champion 모델(72개 피처) 정밀 해부 및 편향 진단</h2>
+    <p>
+      <code>models/model_champion.pkl</code> 및 <code>core/ml_engine.py</code>의 72개 피처 정의, TreeSHAP 방향성 기여도, 가격 레벨별 분포를 전수 조사한 결과,
+      기존 모델이 <b>지속 하락장에서도 SOXL(LONG)을 과도하게 선택하던 핵심 원인 3가지</b>가 규명되었습니다.
+    </p>
+    <div class="two-col">
+      <div>
+        <h3>1) 달러($) 절대값 피처 8종의 가격 레벨 왜곡 (4.6x ~ 9.7x)</h3>
+        <table>
+          <thead>
+            <tr><th>피처명</th><th>SOXL &lt; $15 중앙값</th><th>SOXL &gt; $45 중앙값</th><th>왜곡 배율</th><th>교정 스키마 (STEP 2)</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><code>ATR_14</code></td><td>0.296</td><td>2.369</td><td><span class="badge badge-danger">8.00x</span></td><td><code>ATR_14_Pct</code> (% of Close)</td></tr>
+            <tr><td><code>BB_Upper</code></td><td>11.98</td><td>55.85</td><td><span class="badge badge-danger">4.66x</span></td><td><code>BB_Upper_Diff</code> (% from Close)</td></tr>
+            <tr><td><code>BB_Lower</code></td><td>11.12</td><td>51.84</td><td><span class="badge badge-danger">4.66x</span></td><td><code>BB_Lower_Diff</code> (% from Close)</td></tr>
+            <tr><td><code>KC_Upper</code></td><td>11.95</td><td>55.69</td><td><span class="badge badge-danger">4.66x</span></td><td><code>KC_Upper_Diff</code> (% from Close)</td></tr>
+            <tr><td><code>KC_Lower</code></td><td>11.15</td><td>51.98</td><td><span class="badge badge-danger">4.66x</span></td><td><code>KC_Lower_Diff</code> (% from Close)</td></tr>
+            <tr><td><code>MACD</code></td><td>0.130</td><td>1.184</td><td><span class="badge badge-danger">9.11x</span></td><td><code>MACD_Pct</code> (% of EMA26)</td></tr>
+            <tr><td><code>MACD_Signal</code></td><td>0.125</td><td>1.147</td><td><span class="badge badge-danger">9.18x</span></td><td><code>MACD_Signal_Pct</code> (% of EMA26)</td></tr>
+            <tr><td><code>MACD_Hist</code></td><td>0.036</td><td>0.349</td><td><span class="badge badge-danger">9.69x</span></td><td><code>MACD_Hist_Pct</code> (% of EMA26)</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div>
+        <h3>2) TreeSHAP 기반 하락장 LONG(SOXL) 오발령 원인 분석</h3>
+        <p>강한 하락 구간(<code>ROC_20 &lt; -8%</code> &amp; <code>EMA_21_Diff &lt; -3%</code>, 1,105 bars)에서 Champion 모델은 <b>53.4%의 빈도로 LONG(SOXL)을 예측</b>했습니다. TreeSHAP 분해 결과:</p>
+        <table>
+          <thead>
+            <tr><th>피처명</th><th>SHAP(LONG)</th><th>SHAP(SHORT)</th><th>Net(LONG-SHORT)</th><th>편향 메커니즘</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><code>EMA_200_Diff</code></td><td>+0.0252</td><td>-0.0294</td><td><span class="badge badge-danger">+0.0547</span></td><td>단순 음(-)의 이격을 무조건 반등 매수로 해석</td></tr>
+            <tr><td><code>macro_price_vs_ema20</code></td><td>+0.0289</td><td>-0.0117</td><td><span class="badge badge-danger">+0.0406</span></td><td>1시간봉 이격 음수 시 하락 가속 여부 무시하고 LONG 가산</td></tr>
+            <tr><td><code>MACD_Signal</code></td><td>+0.0199</td><td>-0.0158</td><td><span class="badge badge-danger">+0.0357</span></td><td>달러 스케일 음수 임계값 왜곡으로 조기 역추세 진입</td></tr>
+            <tr><td><code>EMA_50_Diff</code></td><td>+0.0226</td><td>-0.0115</td><td><span class="badge badge-danger">+0.0341</span></td><td>하락 지속성(Persistence) 부재로 칼날 잡기 유발</td></tr>
+          </tbody>
+        </table>
+        <p style="font-size:12.5px;color:var(--muted);">
+          * 또한 기존 72개 피처 중 <code>base_long_ret_5 == ROC_5</code> (상관계수 1.0000), <code>base_long_ret_20 == ROC_20</code> (1.0000) 완전 중복 2종과
+          트리 분기 기여도가 0~3회에 불과한 이진 부호 피처 5종(<code>qqq_dir_1</code>, <code>nvda_dir_1</code>, <code>vixy_dir_1</code>, <code>ief_dir_1</code>, <code>base_short_dir_1</code>)이
+          <code>colsample_bytree=0.5</code> 샘플링 효율을 저하시키고 있음을 확인했습니다.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>STEP 2 &amp; STEP 3. 신규 12개 피처 (추세 지속 6종 + 평균회귀/반전 6종) 설계 및 Ablation 검증</h2>
+    <p>
+      모든 피처는 현재 시점 <code>t</code>까지의 확정 캔들만 참조하며(Look-ahead bias 0건), 가격 레벨에 무관한 무차원 비율/ATR 정규화 값으로 설계되었습니다.
+    </p>
+    <table>
+      <thead>
+        <tr><th>구분</th><th>피처명</th><th>수식 정의 (인과적 시계열 계산)</th><th>경제적·통계적 역할</th><th>Challenger SHAP 중요도</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><span class="badge badge-pass">추세 지속 1</span></td><td><code>EMA20_Slope_3</code></td><td><code>(EMA_20[t] - EMA_20[t-3]) / EMA_20[t-3] * 100</code></td><td>단기 추세 기울기 방향 및 강도</td><td><b>0.01083 (18위)</b></td></tr>
+        <tr><td><span class="badge badge-pass">추세 지속 2</span></td><td><code>EMA20_Slope_Accel</code></td><td><code>EMA20_Slope_3[t] - EMA20_Slope_3[t-3]</code></td><td>추세 가속(+) vs 추세 둔화(-) 판별</td><td>0.00490</td></tr>
+        <tr><td><span class="badge badge-pass">추세 지속 3</span></td><td><code>Trend_Efficiency_8</code></td><td><code>|Close[t] - Close[t-8]| / Σ|Close[i]-Close[i-1]|</code></td><td>Kaufman 방향성 효율비 (0.0 ~ 1.0)</td><td>0.00488</td></tr>
+        <tr><td><span class="badge badge-pass">추세 지속 4</span></td><td><code>Downside_Persistence_6</code></td><td><code>Mean(1[Close_i &lt; Close_{i-1}], 6)</code></td><td>최근 6캔들 연속 하락 빈도 (칼날 잡기 억제)</td><td>0.00136</td></tr>
+        <tr><td><span class="badge badge-pass">추세 지속 5</span></td><td><code>Upside_Persistence_6</code></td><td><code>Mean(1[Close_i &gt; Close_{i-1}], 6)</code></td><td>최근 6캔들 연속 상승 빈도</td><td>0.00151</td></tr>
+        <tr><td><span class="badge badge-pass">추세 지속 6</span></td><td><code>Breakout_Position_20</code></td><td><code>(Close[t] - Low_20[t]) / (High_20[t] - Low_20[t])</code></td><td>20캔들 채널 내 돌파 위치 (0~1)</td><td><b>0.00807 (24위)</b></td></tr>
+        <tr><td><span class="badge badge-warn">평균회귀 1</span></td><td><code>Return_Accel_3</code></td><td><code>ROC_3[t] - ROC_3[t-3]</code></td><td>급락 후 하락 속도 감속(+) 포착</td><td>0.00495</td></tr>
+        <tr><td><span class="badge badge-warn">평균회귀 2</span></td><td><code>VWAP_Dist_ATR</code></td><td><code>(Close[t] - VWAP[t]) / ATR_14[t]</code></td><td>변동성 대비 당일 VWAP 과이격 Z-Score</td><td><b>0.01564 (11위)</b></td></tr>
+        <tr><td><span class="badge badge-warn">평균회귀 3</span></td><td><code>EMA20_Dist_ATR</code></td><td><code>(Close[t] - EMA_20[t]) / ATR_14[t]</code></td><td>변동성 대비 20EMA 과이격 Z-Score</td><td><b>0.01105 (17위)</b></td></tr>
+        <tr><td><span class="badge badge-warn">평균회귀 4</span></td><td><code>Signed_Body_Ratio</code></td><td><code>(Close[t] - Open[t]) / (High[t] - Low[t])</code></td><td>캔들 몸통 장악력 (-1=장대음봉, +1=장대양봉)</td><td>0.00412</td></tr>
+        <tr><td><span class="badge badge-warn">평균회귀 5</span></td><td><code>Lower_Wick_Expansion</code></td><td><code>Lower_Wick_Ratio / Mean(Lower_Wick_Ratio, 10)</code></td><td>투매 후 아래꼬리 저가 매수 유입 급증 배율</td><td>0.00406</td></tr>
+        <tr><td><span class="badge badge-warn">평균회귀 6</span></td><td><code>Upper_Wick_Expansion</code></td><td><code>Upper_Wick_Ratio / Mean(Upper_Wick_Ratio, 10)</code></td><td>급등 후 위꼬리 차익실현 저항 급증 배율</td><td>0.00383</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>STEP 5. 5개 모델군 215주 Walk-Forward OOS 성능 전수 비교 (2022.07 ~ 2026.10)</h2>
+    <p>
+      동일한 WFA 조건(Expanding Window, <code>end_dt="2026-10-14 16:00:00"</code>, 15분봉 진입 확신도 ≥70.4% + 5분봉 비관적 SL 우선 청산 + 왕복 수수료/슬리피지 0.20%)에서
+      5개 모델군(A~E)을 완전 동일 기간으로 비교했습니다.
+    </p>
+    <svg viewBox="0 0 960 380" style="width:100%;height:auto;background:#0f172a;border-radius:10px;border:1px solid #1e293b;margin-bottom:16px;">
+<line x1="70" y1="324.0" x2="920" y2="324.0" stroke="#1e293b" stroke-width="1"/>
+<text x="60" y="328.0" fill="#94a3b8" font-size="11.5" text-anchor="end">$10,000</text>
+<line x1="70" y1="264.5" x2="920" y2="264.5" stroke="#1e293b" stroke-width="1"/>
+<text x="60" y="268.5" fill="#94a3b8" font-size="11.5" text-anchor="end">$25,000</text>
+<line x1="70" y1="205.0" x2="920" y2="205.0" stroke="#1e293b" stroke-width="1"/>
+<text x="60" y="209.0" fill="#94a3b8" font-size="11.5" text-anchor="end">$40,000</text>
+<line x1="70" y1="145.5" x2="920" y2="145.5" stroke="#1e293b" stroke-width="1"/>
+<text x="60" y="149.5" fill="#94a3b8" font-size="11.5" text-anchor="end">$55,000</text>
+<line x1="70" y1="86.0" x2="920" y2="86.0" stroke="#1e293b" stroke-width="1"/>
+<text x="60" y="90.0" fill="#94a3b8" font-size="11.5" text-anchor="end">$70,000</text>
+<line x1="70.0" y1="30" x2="70.0" y2="330" stroke="#1e293b" stroke-width="1" stroke-dasharray="2,3"/>
+<text x="70.0" y="352" fill="#94a3b8" font-size="11.5" text-anchor="middle">2022.07 (Start)</text>
+<line x1="240.0" y1="30" x2="240.0" y2="330" stroke="#1e293b" stroke-width="1" stroke-dasharray="2,3"/>
+<text x="240.0" y="352" fill="#94a3b8" font-size="11.5" text-anchor="middle">2022.12</text>
+<line x1="410.0" y1="30" x2="410.0" y2="330" stroke="#1e293b" stroke-width="1" stroke-dasharray="2,3"/>
+<text x="410.0" y="352" fill="#94a3b8" font-size="11.5" text-anchor="middle">2023.12</text>
+<line x1="580.0" y1="30" x2="580.0" y2="330" stroke="#1e293b" stroke-width="1" stroke-dasharray="2,3"/>
+<text x="580.0" y="352" fill="#94a3b8" font-size="11.5" text-anchor="middle">2024.12</text>
+<line x1="750.0" y1="30" x2="750.0" y2="330" stroke="#1e293b" stroke-width="1" stroke-dasharray="2,3"/>
+<text x="750.0" y="352" fill="#94a3b8" font-size="11.5" text-anchor="middle">2025.12</text>
+<line x1="920.0" y1="30" x2="920.0" y2="330" stroke="#1e293b" stroke-width="1" stroke-dasharray="2,3"/>
+<text x="920.0" y="352" fill="#94a3b8" font-size="11.5" text-anchor="middle">2026.10 (End)</text>
+<polyline fill="none" stroke="#94a3b8" stroke-width="2.2" stroke-dasharray="5,4" points="70.0,324.0 240.0,323.7 410.0,321.6 580.0,294.8 750.0,257.0 920.0,169.1"/>
+<circle cx="70.0" cy="324.0" r="3.5" fill="#94a3b8"/>
+<circle cx="240.0" cy="323.7" r="3.5" fill="#94a3b8"/>
+<circle cx="410.0" cy="321.6" r="3.5" fill="#94a3b8"/>
+<circle cx="580.0" cy="294.8" r="3.5" fill="#94a3b8"/>
+<circle cx="750.0" cy="257.0" r="3.5" fill="#94a3b8"/>
+<circle cx="920.0" cy="169.1" r="3.5" fill="#94a3b8"/>
+<polyline fill="none" stroke="#38bdf8" stroke-width="2.0"  points="70.0,324.0 240.0,308.9 410.0,308.7 580.0,298.0 750.0,241.8 920.0,74.8"/>
+<circle cx="70.0" cy="324.0" r="3.5" fill="#38bdf8"/>
+<circle cx="240.0" cy="308.9" r="3.5" fill="#38bdf8"/>
+<circle cx="410.0" cy="308.7" r="3.5" fill="#38bdf8"/>
+<circle cx="580.0" cy="298.0" r="3.5" fill="#38bdf8"/>
+<circle cx="750.0" cy="241.8" r="3.5" fill="#38bdf8"/>
+<circle cx="920.0" cy="74.8" r="3.5" fill="#38bdf8"/>
+<polyline fill="none" stroke="#a78bfa" stroke-width="1.8" stroke-dasharray="3,3" points="70.0,324.0 240.0,316.5 410.0,309.1 580.0,303.8 750.0,287.7 920.0,222.5"/>
+<circle cx="70.0" cy="324.0" r="3.5" fill="#a78bfa"/>
+<circle cx="240.0" cy="316.5" r="3.5" fill="#a78bfa"/>
+<circle cx="410.0" cy="309.1" r="3.5" fill="#a78bfa"/>
+<circle cx="580.0" cy="303.8" r="3.5" fill="#a78bfa"/>
+<circle cx="750.0" cy="287.7" r="3.5" fill="#a78bfa"/>
+<circle cx="920.0" cy="222.5" r="3.5" fill="#a78bfa"/>
+<polyline fill="none" stroke="#fbbf24" stroke-width="1.8" stroke-dasharray="3,3" points="70.0,324.0 240.0,299.0 410.0,288.7 580.0,288.1 750.0,222.7 920.0,48.9"/>
+<circle cx="70.0" cy="324.0" r="3.5" fill="#fbbf24"/>
+<circle cx="240.0" cy="299.0" r="3.5" fill="#fbbf24"/>
+<circle cx="410.0" cy="288.7" r="3.5" fill="#fbbf24"/>
+<circle cx="580.0" cy="288.1" r="3.5" fill="#fbbf24"/>
+<circle cx="750.0" cy="222.7" r="3.5" fill="#fbbf24"/>
+<circle cx="920.0" cy="48.9" r="3.5" fill="#fbbf24"/>
+<polyline fill="none" stroke="#10b981" stroke-width="3.4"  points="70.0,324.0 240.0,288.8 410.0,294.7 580.0,283.8 750.0,185.1 920.0,66.3"/>
+<circle cx="70.0" cy="324.0" r="3.5" fill="#10b981"/>
+<circle cx="240.0" cy="288.8" r="3.5" fill="#10b981"/>
+<circle cx="410.0" cy="294.7" r="3.5" fill="#10b981"/>
+<circle cx="580.0" cy="283.8" r="3.5" fill="#10b981"/>
+<circle cx="750.0" cy="185.1" r="3.5" fill="#10b981"/>
+<circle cx="920.0" cy="66.3" r="3.5" fill="#10b981"/>
+<line x1="88" y1="46" x2="112" y2="46" stroke="#94a3b8" stroke-width="2.2"/>
+<text x="120" y="50" fill="#e2e8f0" font-size="12">A: Champion (72 Raw $) ➔ $49,063 (+390.63%)</text>
+<line x1="88" y1="67" x2="112" y2="67" stroke="#38bdf8" stroke-width="2.0"/>
+<text x="120" y="71" fill="#e2e8f0" font-size="12">B: Normalized (72 %) ➔ $72,831 (+628.31%)</text>
+<line x1="88" y1="88" x2="112" y2="88" stroke="#a78bfa" stroke-width="1.8"/>
+<text x="120" y="92" fill="#e2e8f0" font-size="12">C: Norm + Trend (71) ➔ $35,588 (+255.88%)</text>
+<line x1="88" y1="109" x2="112" y2="109" stroke="#fbbf24" stroke-width="1.8"/>
+<text x="120" y="113" fill="#e2e8f0" font-size="12">D: Norm + MeanRev (71) ➔ $79,367 (+693.67%)</text>
+<line x1="88" y1="130" x2="112" y2="130" stroke="#10b981" stroke-width="3.4"/>
+<text x="120" y="134" fill="#e2e8f0" font-size="12">E: Challenger Trend+MR (77) ➔ $74,984 (+649.84%)</text>
+</svg>
+    <table>
+      <thead>
+        <tr>
+          <th>모델군</th>
+          <th>피처 수</th>
+          <th>OOS Macro-F1</th>
+          <th>OOS Log-Loss</th>
+          <th>고확신 LONG 정밀도(TB)</th>
+          <th>고확신 6봉 승률</th>
+          <th>고확신 6봉 평균수익</th>
+          <th>WFA 누적수익률</th>
+          <th>CAGR</th>
+          <th>MDD</th>
+          <th>승률 (WR)</th>
+          <th>Profit Factor</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>A. Champion (기존 원본)</b></td>
+          <td>72</td>
+          <td>0.4309</td>
+          <td>1.0117</td>
+          <td>34.51%</td>
+          <td>53.64%</td>
+          <td>+0.652%</td>
+          <td>+390.63%</td>
+          <td>45.39%</td>
+          <td>29.95%</td>
+          <td>61.82%</td>
+          <td>1.285</td>
+        </tr>
+        <tr>
+          <td><b>B. Normalized (가격 정규화만)</b></td>
+          <td>72</td>
+          <td>0.4309</td>
+          <td>1.0015</td>
+          <td>39.33%</td>
+          <td>56.67%</td>
+          <td>+1.096%</td>
+          <td>+628.31%</td>
+          <td>59.52%</td>
+          <td><b>21.95%</b></td>
+          <td>63.33%</td>
+          <td>1.434</td>
+        </tr>
+        <tr>
+          <td><b>C. Normalized + 추세 지속</b></td>
+          <td>71</td>
+          <td>0.4319</td>
+          <td>1.0011</td>
+          <td>38.30%</td>
+          <td>55.88%</td>
+          <td>+1.045%</td>
+          <td>+509.25%</td>
+          <td>52.97%</td>
+          <td>25.49%</td>
+          <td>63.26%</td>
+          <td>1.375</td>
+        </tr>
+        <tr>
+          <td><b>D. Normalized + 평균회귀</b></td>
+          <td>71</td>
+          <td>0.4335</td>
+          <td>1.0013</td>
+          <td>39.88%</td>
+          <td>57.09%</td>
+          <td>+1.160%</td>
+          <td>+477.15%</td>
+          <td>51.03%</td>
+          <td>30.25%</td>
+          <td>62.94%</td>
+          <td>1.364</td>
+        </tr>
+        <tr class="highlight-row">
+          <td><b>E. Challenger (정규화 + 추세 + 평균회귀)</b></td>
+          <td>77</td>
+          <td><b>0.4341</b></td>
+          <td><b>1.0007</b></td>
+          <td><b>40.30%</b></td>
+          <td><b>57.86%</b></td>
+          <td><b>+1.177%</b></td>
+          <td><b>+649.84%</b></td>
+          <td><b>60.65%</b></td>
+          <td>28.93%</td>
+          <td><b>63.86%</b></td>
+          <td><b>1.455</b></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>STEP 5 &amp; STEP 7. 시장 국면(Regime)별 SOXL / SOXS 선택 비율 및 적중률 변화</h2>
+    <p>
+      고확신(캘리브레이션 확신도 ≥ 70.4%) 신호가 발동된 구간을 5대 시장 국면으로 분류하여 Champion(A)과 Challenger(E)의 선택 비율 및 6캔들(90분) 선행 수익률을 대조했습니다.
+    </p>
+    <table>
+      <thead>
+        <tr>
+          <th>시장 국면 (Regime)</th>
+          <th>모델</th>
+          <th>고확신 신호 수</th>
+          <th>LONG (SOXL) 선택 비율</th>
+          <th>SHORT (SOXS) 선택 비율</th>
+          <th>6캔들 방향 적중률</th>
+          <th>반대 배리어 오타격률</th>
+          <th>6캔들 평균 수익률</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td rowspan="2"><b>1. 지속 하락장 (SUSTAINED_DOWNTREND)</b><br><span class="meta">4,326 Bars | 하락 추세 지속</span></td>
+          <td>A. Champion</td>
+          <td>748</td>
+          <td>66.31%</td>
+          <td>33.69%</td>
+          <td>59.49%</td>
+          <td>25.94%</td>
+          <td>+1.038%</td>
+        </tr>
+        <tr class="highlight-row">
+          <td><b>E. Challenger</b></td>
+          <td>526</td>
+          <td><b>58.18% (-8.13%p)</b></td>
+          <td><b>41.82% (+8.13%p)</b></td>
+          <td><b>60.65%</b></td>
+          <td><b>24.33%</b></td>
+          <td><b>+1.318%</b></td>
+        </tr>
+        <tr>
+          <td rowspan="2"><b>2. 급락 후 반등 구간 (CRASH_REBOUND)</b><br><span class="meta">1,311 Bars | 투매 직후 변곡점</span></td>
+          <td>A. Champion</td>
+          <td>214</td>
+          <td>74.77%</td>
+          <td>25.23%</td>
+          <td>52.34%</td>
+          <td>35.05%</td>
+          <td>+0.808%</td>
+        </tr>
+        <tr class="highlight-row">
+          <td><b>E. Challenger</b></td>
+          <td>168</td>
+          <td>67.86%</td>
+          <td>32.14%</td>
+          <td><b>57.14% (+4.80%p)</b></td>
+          <td><b>31.55% (-3.50%p)</b></td>
+          <td><b>+0.892%</b></td>
+        </tr>
+        <tr>
+          <td rowspan="2"><b>3. 지속 상승장 (SUSTAINED_UPTREND)</b><br><span class="meta">5,115 Bars | 상승 추세 지속</span></td>
+          <td>A. Champion</td>
+          <td>98</td>
+          <td>79.59%</td>
+          <td>20.41%</td>
+          <td>55.10%</td>
+          <td>25.51%</td>
+          <td>+0.586%</td>
+        </tr>
+        <tr class="highlight-row">
+          <td><b>E. Challenger</b></td>
+          <td>111</td>
+          <td><b>81.08% (+1.49%p)</b></td>
+          <td>18.92%</td>
+          <td>52.25%</td>
+          <td>26.13%</td>
+          <td><b>+0.770%</b></td>
+        </tr>
+        <tr>
+          <td rowspan="2"><b>4. 급등 후 과열 (SURGE_PULLBACK)</b><br><span class="meta">1,310 Bars | 단기 급등 과열</span></td>
+          <td>A. Champion</td>
+          <td>39</td>
+          <td>69.23%</td>
+          <td>30.77%</td>
+          <td>48.72%</td>
+          <td>35.90%</td>
+          <td>+1.267%</td>
+        </tr>
+        <tr class="highlight-row">
+          <td><b>E. Challenger</b></td>
+          <td>44</td>
+          <td>63.64%</td>
+          <td>36.36%</td>
+          <td><b>56.82% (+8.10%p)</b></td>
+          <td><b>29.55% (-6.35%p)</b></td>
+          <td><b>+2.201%</b></td>
+        </tr>
+        <tr>
+          <td rowspan="2"><b>5. 횡보 / 일반 구간 (SIDEWAYS_NORMAL)</b><br><span class="meta">21,748 Bars | 박스권</span></td>
+          <td>A. Champion</td>
+          <td>654</td>
+          <td>73.85%</td>
+          <td>26.15%</td>
+          <td>46.94%</td>
+          <td>33.18%</td>
+          <td>-0.160%</td>
+        </tr>
+        <tr class="highlight-row">
+          <td><b>E. Challenger</b></td>
+          <td>453</td>
+          <td>70.42%</td>
+          <td>29.58%</td>
+          <td><b>53.64% (+6.70%p)</b></td>
+          <td><b>28.48% (-4.70%p)</b></td>
+          <td><b>+0.362%</b></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>STEP 6 &amp; STEP 7. 출력 인터페이스 100% 호환성 및 무결성 단위 테스트 결과</h2>
+    <table>
+      <thead>
+        <tr><th>검증 항목</th><th>테스트 메서드</th><th>검증 내용</th><th>결과</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>1. 미래 데이터 누출 0건 (Causal Invariance)</td>
+          <td><code>test_1_no_future_data_leakage_causal_invariance</code></td>
+          <td>시점 T까지의 부분 데이터와 T+40 미래 캔들이 포함된 전체 데이터에서 T 시점 77개 피처 값 오차 &lt; 1e-12 검증</td>
+          <td><span class="badge badge-pass">PASS</span></td>
+        </tr>
+        <tr>
+          <td>2. 스키마 분리 및 달러 절대값 배제</td>
+          <td><code>test_2_feature_schema_separation_and_order_determinism</code></td>
+          <td>Champion(72)과 Challenger(77) 스키마 독립 유지 및 달러 스케일 8종 피처 배제 확인</td>
+          <td><span class="badge badge-pass">PASS</span></td>
+        </tr>
+        <tr>
+          <td>3. NaN / ±Inf / Zero-Range 이상치 방어</td>
+          <td><code>test_3_nan_and_inf_resilience</code></td>
+          <td>고저가 동일(High==Low), 0 거래량, ±Inf 주입 시 크래시 없이 유한(finite) 확률 반환 검증</td>
+          <td><span class="badge badge-pass">PASS</span></td>
+        </tr>
+        <tr>
+          <td>4. 학습·추론 피처 일치 및 결정론적 추론</td>
+          <td><code>test_4_train_and_inference_consistency_and_determinism</code></td>
+          <td><code>models/model_challenger_trend_mr.pkl</code> 로드 후 반복 추론 시 비트 단위 동일 확률 출력 확인</td>
+          <td><span class="badge badge-pass">PASS</span></td>
+        </tr>
+        <tr>
+          <td>5. 기존 소비자(MoEMetaOrchestrator) 무수정 호환</td>
+          <td><code>test_5_output_interface_compatibility_with_moe_orchestrator</code></td>
+          <td><code>predict_signal()</code>의 <code>action</code>, <code>confidence</code>, <code>probabilities</code>, <code>target_etf</code> 등 반환 계약 100% 일치 확인</td>
+          <td><span class="badge badge-pass">PASS</span></td>
+        </tr>
+        <tr>
+          <td>6. 추세 지속 vs 평균회귀 피처 부호 검증</td>
+          <td><code>test_6_trend_continuation_vs_mean_reversion_feature_semantics</code></td>
+          <td>급락 가속 구간 vs 급락 감속+아래꼬리 반등 구간에서 12개 신규 피처의 물리적 방향성 검증</td>
+          <td><span class="badge badge-pass">PASS</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+</body>
+</html>

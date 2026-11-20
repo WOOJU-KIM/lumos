@@ -73,17 +73,18 @@ ROLLING_TRAINING_WEEKS = 520      # 모델 롤링 누적 확장 학습 최대 10
 
 # [V3 ?곹깭怨듦컙 紐⑤뜽 ?곸슜 癒몄떊?щ떇 ?뚮씪誘명꽣]
 GBDT_MAX_DEPTH = 4
+GBDT_FEATURE_GAIN_WEIGHTS = {"EMA_200_Diff": 0.3, "macro_trend_spread": 0.3}
 GBDT_N_ESTIMATORS = 120           # ?몃━ 媛쒖닔 源딄퀬 留롮씠 ?앹꽦 (湲곗〈 80)
 GBDT_LEARNING_RATE = 0.02         # ?숈뒿 ?띾룄 ?섑뼢 (湲곗〈 0.03)
 GBDT_FEATURE_FRACTION = 0.5       # 怨쇱쟻??諛⑹? (?꾩껜 ?쇱쿂 以?50%留??ъ슜)
 
 # 2. 由ъ뒪??愿?由?泥?궛 (Exit & Risk Management)
 SL_MIN_PCT = 0.02                 # 理쒖냼 ?먯젅 ?쇱씤 (2.0%)
-SL_MAX_PCT = 0.032                # 理쒕? ?먯젅 ?쇱씤 (3.2%)
+SL_MAX_PCT = 0.02                 # Fixed initial stop: same as SL_MIN_PCT (user approved 2026-10-20)
 SL_ATR_MULTIPLIER = 1.5           # ATR 湲곕컲 ?먯젅 諛곗닔
 MAX_TP_PCT = 0.10
 LABEL_TP_PCT = 0.03               # 라벨링 전용 목표 익절 라인 (3.0%)                 # 紐⑺몴 ?듭젅 ?쇱씤 (10.0%)
-TRAILING_TRIGGER_PCT = 0.015      # 트레일링 스탑 발동 조건 (+1.5%)
+TRAILING_TRIGGER_PCT = 0.01       # 트레일링 스탑 발동 조건 (+1.0%)
 TRAILING_DROP_PCT = 0.003       # 트레일링 스탑 청산 조건 (최고점 대비 -0.3%)
 TIME_STOP_MINUTES = 90           # 강제 타임 스탑 (90분)
 
@@ -120,6 +121,9 @@ CANCEL_ORDER_WAIT_TIME = 0.5
 MAIN_LOOP_TICK_OPEN = 3
 MAIN_LOOP_TICK_CLOSED = 15
 MAIN_LOOP_ERROR_WAIT = 1.0
+CANDLE_READY_RETRY_SECONDS = 1.0
+CANDLE_READY_TIMEOUT_SECONDS = 30.0
+ALPACA_BAR_REQUEST_TIMEOUT_SECONDS = 2.0
 
 
 # 7. 자동 학습 설정 (Auto Training Configuration)
@@ -130,3 +134,19 @@ FALLBACK_PRICE = 120.74
 CALIB_BASE = 0.50
 CALIB_PIVOT = 0.333
 CALIB_SCALE = 1.15
+
+# Approved live execution strategy: opposite ETF relay (2026-10-20).
+LIVE_EXECUTION_STRATEGY = "OPPOSITE_RELAY_V1"
+RELAY_INITIAL_ALLOCATION = 0.98
+RELAY_CHAIN_ALLOCATION = 0.0
+RELAY_CASH_BUFFER = 0.02
+RELAY_OPPOSITE_TRIGGER_PCT = 0.015
+RELAY_CHAIN_TRAILING_TRIGGER_PCT = 0.01
+RELAY_QUOTE_MAX_AGE_SECONDS = 3.0
+RELAY_LEDGER_REFRESH_SECONDS = 3.0
+RELAY_DECISION_INTERVAL_MINUTES = 15
+RELAY_STATE_DIRNAME = "opposite_relay_v1"
+RELAY_LEGACY_SHADOW_ID = "LEGACY_B72_SINGLE_98"
+RELAY_LEGACY_SHADOW_ENABLED = True
+RELAY_EXECUTION_COST_RESERVE = 0.002
+RELAY_MAX_CHAIN_COUNT = 100  # 사이클당 최대 연쇄 매수 횟수 (포지션 보유 중 조건 만족 시 최대 100회)

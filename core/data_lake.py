@@ -221,8 +221,10 @@ class MarketDataLake:
 
         return df
 
-    def harvest_symbol(self, symbol: str, timeframe: str, period: str = "60d") -> int:
-        """Alpaca IEX API로부터 지정된 심볼/타임프레임 분봉 수집 및 적재 (야후 파이낸스 대체)"""
+    def harvest_symbol(self, symbol: str, timeframe: str, period: str = "60d", deadline: Optional[float] = None) -> int:
+        """Collect Alpaca IEX bars, optionally within a monotonic retry budget."""
+        if deadline is not None and time.monotonic() >= deadline:
+            return 0
         from dotenv import load_dotenv
         load_dotenv(PROJECT_ROOT / ".env")
 
@@ -252,6 +254,9 @@ class MarketDataLake:
         page_token = None
 
         while True:
+            remaining = None if deadline is None else deadline - time.monotonic()
+            if remaining is not None and remaining <= 0:
+                return 0
             url = (f"{base_url}?symbols={sym}&timeframe={alpaca_tf}"
                    f"&start={start_str}&end={end_str}"
                    f"&feed=iex&adjustment=split&limit=10000")
@@ -264,7 +269,10 @@ class MarketDataLake:
                 "Accept": "application/json"
             })
             try:
-                with urllib.request.urlopen(req, timeout=2) as resp:
+                timeout = config.ALPACA_BAR_REQUEST_TIMEOUT_SECONDS
+                if remaining is not None:
+                    timeout = min(timeout, remaining)
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
                 if "bars" in data and sym in data["bars"]:
                     all_bars.extend(data["bars"][sym])
@@ -285,7 +293,13 @@ class MarketDataLake:
         df["datetime"] = (pd.to_datetime(df["datetime"])
                           .dt.tz_convert("America/New_York")
                           .dt.strftime("%Y-%m-%d %H:%M:%S"))
+        time_part = df["datetime"].astype(str).str.slice(11, 19)
+        df = df[(time_part >= "09:30:00") & (time_part < "16:00:00")]
+        if df.empty:
+            return 0
         df = df[["datetime", "Open", "High", "Low", "Close", "Volume"]].drop_duplicates(subset=["datetime"]).sort_values("datetime")
+        if deadline is not None and time.monotonic() >= deadline:
+            return 0
         return self.insert_candles(sym, tf, df)
 
     def harvest_all_7_symbols_max(self) -> Dict[str, Any]:
@@ -309,7 +323,7 @@ class MarketDataLake:
         results["total_candles_inserted"] = total_inserted
         return results
 
-    def sync_live_intraday_candles(self, symbols: Optional[List[str]] = None) -> int:
+    def sync_live_intraday_candles(self, symbols: Optional[List[str]] = None, deadline: Optional[float] = None) -> int:
         """장중 실시간 5분봉/15분봉 최신 데이터 동기화 (최근 1일치 병렬 초고속 수집)"""
         import concurrent.futures
         target_syms = symbols or config.ALL_SYMBOLS
@@ -318,8 +332,11 @@ class MarketDataLake:
         def _fetch(item):
             sym, tf = item
             try:
+                if deadline is not None:
+                    return self.harvest_symbol(sym, tf, period="1d", deadline=deadline)
                 return self.harvest_symbol(sym, tf, period="1d")
-            except Exception:
+            except Exception as error:
+                logger.warning("Candle collection failed: %s %s %s", sym, tf, type(error).__name__)
                 return 0
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
@@ -438,9 +455,12 @@ class DailyAutoPipeline:
             return {"ok": False, "msg": "데이터 부족으로 재학습 취소"}
 
         # 1. Track 1: LightGBM 최신화 롤링 재학습
-        ml_engine = MLFeatureEngine(confidence_threshold=0.40)
-        long_feat = ml_engine.extract_features(long_15m)
-        trained_model, top_10, _ = ml_engine.train_and_select_top_features(long_feat)
+        ml_engine = MLFeatureEngine(confidence_threshold=0.40, feature_schema="B_normalized")
+        trained_model, top_10, _ = ml_engine.train_and_select_top_features(
+            long_15m,
+            schema="B_normalized",
+            exclude_unconfirmed_tail=True
+        )
 
         refresh_path = BASE_DIR / "models" / "model_main_data_refresh.pkl"
         joblib.dump(trained_model, refresh_path)
@@ -457,7 +477,7 @@ class DailyAutoPipeline:
             total_return=20.15,
             mdd=4.15,
             top_features=top_10,
-            notes="최근 {config.ROLLING_TRAINING_WEEKS * 5} 거래일(2년) 고정 롤링 윈도우 데이터 최신화 모델 (Track 1)"
+            notes="최근 {config.ROLLING_TRAINING_WEEKS * 5} 거래일(최대 10년) 롤링 윈도우 데이터 최신화 모델 (Track 1, B_normalized)"
         )
 
         return {
@@ -477,9 +497,12 @@ class DailyAutoPipeline:
         if len(long_15m) < 100:
             return {"ok": False, "msg": "데이터 부족으로 재학습 취소"}
 
-        ml_engine = MLFeatureEngine(confidence_threshold=0.40)
-        long_feat = ml_engine.extract_features(long_15m)
-        trained_model, top_10, _ = ml_engine.train_and_select_top_features(long_feat)
+        ml_engine = MLFeatureEngine(confidence_threshold=0.40, feature_schema="B_normalized")
+        trained_model, top_10, _ = ml_engine.train_and_select_top_features(
+            long_15m,
+            schema="B_normalized",
+            exclude_unconfirmed_tail=True
+        )
 
         refresh_path = BASE_DIR / "models" / "model_main_data_refresh.pkl"
         joblib.dump(trained_model, refresh_path)
@@ -554,7 +577,7 @@ class DailyAutoPipeline:
             pnl_sign = "+" if realized_pnl >= 0 else ""
             pnl_krw_sign = "+" if tdy_pl_krw >= 0 else ""
             exec_lines = [
-                f"  • **[원장 실체결 완료]** `SQQQ 등 당일 포지션 진입 및 100% 전량 청산 완료`",
+                f"  • **[원장 실체결 완료]** `{config.BASE_ASSET_LONG}/{config.BASE_ASSET_SHORT} 당일 포지션 진입 및 100% 전량 청산 완료`",
                 f"  • **당일 매수 약정금액:** `${tdy_book_usd:,.2f} USD` (`₩{tdy_book_krw:,}원`)",
                 f"  • **당일 확정 실현손익:** `{pnl_sign}${realized_pnl:.2f} USD` (`{pnl_krw_sign}₩{tdy_pl_krw:,}원` / `{pnl_sign}{realized_rate:.2f}%`)"
             ]
@@ -562,14 +585,14 @@ class DailyAutoPipeline:
         elif executions:
             exec_lines = []
             for ex in executions[:5]:
-                sym = ex.get("symb", "") or ex.get("pdno", "")
-                side = "매수" if ex.get("ord_dv") in ["BUY", "02"] else "매도"
-                qty = ex.get("ord_qty") or ex.get("ft_ccld_qty") or 0
-                px = ex.get("ord_unpr") or ex.get("ft_ccld_unpr3") or 0.0
-                exec_lines.append(f"  • **[{sym} {side}]** `{qty}주` @ `${float(px):.2f}`")
+                sym = ex.get("symb", "") or ex.get("pdno", "") or ex.get("stk_cd", "")
+                side = ex.get("slby_tp_nm") or ("매수" if ex.get("ord_dv") in ["BUY", "02"] else "매도")
+                qty = ex.get("cntr_qty") or ex.get("ord_qty") or ex.get("ft_ccld_qty") or 0
+                px = ex.get("cntr_uv") or ex.get("ord_unpr") or ex.get("ft_ccld_unpr3") or 0.0
+                exec_lines.append(f"  • **[{sym} {side}]** `{int(float(str(qty).replace(',', '') or 0))}주` @ `${float(str(px).replace(',', '') or 0.0):.4f}`")
             exec_block = "\n".join(exec_lines)
         else:
-            exec_block = "  • **매매 내역:** `금일 체결 없음 (GBDT 확신도 65% 미달로 100% 현금 보존)`"
+            exec_block = f"  • **매매 내역:** `금일 체결 없음 (GBDT 확신도 {config.GBDT_CONFIDENCE_THRESHOLD*100:.1f}% 미달로 100% 현금 보존)`"
 
         import sqlite3
         import os
@@ -591,19 +614,38 @@ class DailyAutoPipeline:
         except Exception:
             pass # fallback to realized_rate from broker
 
-        pnl_sign = "+" if realized_rate >= 0 else ""
+        pnl_sign = "+" if realized_pnl >= 0 else ""
+        rate_sign = "+" if realized_rate >= 0 else ""
         if realized_pnl != 0.0 or realized_rate != 0.0:
-            pnl_str = f"{pnl_sign}${realized_pnl:.2f} USD (포트폴리오 수익률: {pnl_sign}{realized_rate:.2f}%)"
+            pnl_str = f"{pnl_sign}${realized_pnl:.2f} USD (포트폴리오 수익률: {rate_sign}{realized_rate:.2f}%)"
         else:
             pnl_str = "$0.00 USD (오버나잇 0% 현금화)"
 
 
         from zoneinfo import ZoneInfo
         from datetime import datetime
+        from core.ml_engine import MLFeatureEngine
+        active_info = MLFeatureEngine().get_active_model_info()
+        m_id = active_info.get("active_model_id", "B_Normalized_72")
+        m_schema = active_info.get("feature_schema") or active_info.get("active_model_schema", "B_normalized")
+        m_feats = active_info.get("num_features") or active_info.get("active_model_num_features", 72)
+        m_ver = active_info.get("model_version", "unknown")
+        max_w = getattr(config, "MAX_TRAINING_WEEKS", 520)
+        max_d = getattr(config, "TRAINING_LOOKBACK_DAYS", 3640)
         if datetime.now().astimezone(ZoneInfo('Asia/Seoul')).weekday() == 5:
-            retrain_text = "🧠 **[2. AI 모델 최신 기간 롤링 재학습 완료]**\n• **재학습 모델:** `GBDT 롤링 최신화 모델 (Rolling Retrained)`\n• **최신 데이터 반영:** `금일 정규장 마감 캔들까지 전량 학습 반영 완료`"
+            retrain_text = (
+                f"🧠 **[2. AI 모델 최신 기간 롤링 재학습 완료]**\n"
+                f"• **활성 모델:** `{m_id}` (`{m_schema}`, `{m_feats}개 피처`, `{m_ver}`)\n"
+                f"• **학습 윈도우 상한:** `최대 {max_w}주 ({max_d}일 / 10년 상한)`\n"
+                f"• **최신 데이터 반영:** `금일 정규장 마감 캔들까지 전량 학습 반영 완료`"
+            )
         else:
-            retrain_text = "🧠 **[2. AI 모델 최신 기간 롤링 재학습 대기]**\n• **상태:** `평일 데이터 적재 완료 (재학습 미수행)`\n• **안내:** `과적합 방지를 위해 재학습은 매주 주말(토) 1회만 일괄 수행됩니다.`"
+            retrain_text = (
+                f"🧠 **[2. AI 모델 최신 기간 롤링 재학습 대기]**\n"
+                f"• **현재 활성 모델:** `{m_id}` (`{m_schema}`, `{m_feats}개 피처`, `{m_ver}`)\n"
+                f"• **상태:** `평일 데이터 적재 완료 (재학습 미수행)`\n"
+                f"• **안내:** `과적합 방지를 위해 재학습은 매주 주말(토) 1회만 일괄 수행됩니다 (상한 {max_w}주/{max_d}일).`"
+            )
 
         # 3️⃣ [3. 장 마감 후 데이터 백업, 최신 재학습, 거래 요약 일일 결산 보고서]
         msg = f"""🌙 **[Lumos 정규장 마감 EOD 일일 종합 결산 보고서]**

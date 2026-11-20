@@ -2,6 +2,8 @@ import sys
 import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import unittest
+import tempfile
+from pathlib import Path
 import pandas as pd
 import numpy as np
 from unittest.mock import patch, MagicMock
@@ -14,6 +16,17 @@ from core.kiwoom_broker import KiwoomBroker
 class TestSystemIntegrity(unittest.TestCase):
     
     def setUp(self):
+        # Pending-order recovery is intentionally persistent. Each synthetic
+        # scenario must own its position/journal paths instead of inheriting a
+        # prior test's unresolved order or touching the operational journal.
+        isolated = os.environ.get("LUMOS_SHADOW_FEED_ISOLATED") == "1"
+        temporary = tempfile.TemporaryDirectory(
+            dir=str(Path(__file__).resolve().parents[1] / "data") if isolated else None)
+        self.addCleanup(temporary.cleanup)
+        position_path = Path(temporary.name) / "position.json"
+        paths = patch.object(KiwoomLiveRunner, "_resolve_pos_file", lambda runner: position_path)
+        paths.start()
+        self.addCleanup(paths.stop)
         self.moe = MoEMetaOrchestrator(
             confidence_threshold=config.GBDT_CONFIDENCE_THRESHOLD, 
             gbdt_threshold=config.GBDT_CONFIDENCE_THRESHOLD, 
@@ -64,6 +77,7 @@ class TestSystemIntegrity(unittest.TestCase):
         runner = KiwoomLiveRunner(is_simulation=True)
         runner.dispatcher.send_telegram_message = MagicMock()
         runner.notifier._send_http_request = MagicMock()
+        runner.experience_logger = MagicMock()
         
         runner.daily_stoploss_count = 3
         runner.daily_circuit_breaker_triggered = True

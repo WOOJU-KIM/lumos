@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "reason": "User approved live opposite-relay strategy, 49/49 budget, INITIAL 1.5% and CHAIN 1% trailing; preserve legacy B72 as shadow; user approved B72 feature gain weights 0.5 for EMA_200_Diff and macro_trend_spread on 2026-10-21; frozen shadow models unchanged; user approved 1-second bar retries within a 30-second budget on 2026-10-22; model and frozen training policy preserved",
+  "source_policy_sha256": "d28275bf5aa214824ce84904cdba309e6e05787c26a79111e3c6f068a241cf3a",
+  "frozen_config_sha256": "c19b470a5e4db73fb3c2ffc3789d329925a34badc3ccc44f8c1ca88e2317c3ca",
+  "approved_config_sha256": "77e48f84468e106e5ffec79752392b36ee2ccfaec5fd420c62e99eb5657367c4",
+  "frozen_config_ast_sha256": "8d5d4265a4bb238a43571afae2f487d306efe165d15cb2753867f9d1e33183cc",
+  "overrides": {
+    "SL_MAX_PCT": 0.02,
+    "TRAILING_TRIGGER_PCT": 0.01
+  },
+  "additional_config": {
+    "LIVE_EXECUTION_STRATEGY": "OPPOSITE_RELAY_V1",
+    "RELAY_INITIAL_ALLOCATION": 0.98,
+    "RELAY_CHAIN_ALLOCATION": 0.0,
+    "RELAY_CASH_BUFFER": 0.02,
+    "RELAY_OPPOSITE_TRIGGER_PCT": 0.015,
+    "RELAY_CHAIN_TRAILING_TRIGGER_PCT": 0.01,
+    "RELAY_QUOTE_MAX_AGE_SECONDS": 3.0,
+    "RELAY_LEDGER_REFRESH_SECONDS": 3.0,
+    "RELAY_DECISION_INTERVAL_MINUTES": 15,
+    "RELAY_STATE_DIRNAME": "opposite_relay_v1",
+    "RELAY_LEGACY_SHADOW_ID": "LEGACY_B72_SINGLE_98",
+    "RELAY_LEGACY_SHADOW_ENABLED": true,
+    "RELAY_EXECUTION_COST_RESERVE": 0.002,
+    "GBDT_FEATURE_GAIN_WEIGHTS": {
+      "EMA_200_Diff": 0.3,
+      "macro_trend_spread": 0.3
+    },
+    "CANDLE_READY_RETRY_SECONDS": 1.0,
+    "CANDLE_READY_TIMEOUT_SECONDS": 30.0,
+    "ALPACA_BAR_REQUEST_TIMEOUT_SECONDS": 2.0,
+    "RELAY_MAX_CHAIN_COUNT": 100
+  }
+}

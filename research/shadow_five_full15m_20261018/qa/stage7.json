@@ -1,0 +1,17 @@
+{
+  "stage": 7,
+  "status": "PASS",
+  "lastweek_inputs": 120,
+  "model_evaluations": 600,
+  "deterministic_repeat": true,
+  "errors": [],
+  "classification": "IN_SAMPLE_INFERENCE_AND_STORAGE_QA_ONLY_NOT_A_BACKTEST",
+  "performance_metrics_computed": false,
+  "protected_changes": [
+    "core/kiwoom_ws_streamer.py",
+    "core/live_experience_logger.py",
+    "core/live_runner.py",
+    "core/ml_engine.py",
+    "core/moe_orchestrator.py"
+  ]
+}

@@ -1,0 +1,59 @@
+{
+  "status": "TRAINED_NOT_CONNECTED",
+  "runtime_enabled": false,
+  "cutoff": "2026-10-16 23:59:59",
+  "policy_sha256": "d28275bf5aa214824ce84904cdba309e6e05787c26a79111e3c6f068a241cf3a",
+  "models": {
+    "NET_GBDT": {
+      "path": "NET_GBDT.pkl",
+      "artifact_sha256": "5a44f1044024038528d89b2abbd78c266796c38768e85c3791acb0e8b5589269",
+      "training_rows_per_side": [
+        13206,
+        24405
+      ],
+      "threshold": 0.0
+    },
+    "NET_LAG_GBDT": {
+      "path": "NET_LAG_GBDT.pkl",
+      "artifact_sha256": "6af5ed492a57a8f4e42fa5f7ce09f22e2dbbb9013d9f73a7f5bf96d56cb37c20",
+      "training_rows_per_side": [
+        13206,
+        24402
+      ],
+      "threshold": 0.0
+    },
+    "NET_TCN": {
+      "path": "NET_TCN.pkl",
+      "artifact_sha256": "a465d9e7e8d46d68abfb8225b66425204f36d6ae3655726381eb24f8e0e3fb08",
+      "training_rows_per_side": [
+        13206,
+        24402
+      ],
+      "threshold": 0.0
+    },
+    "FULL_COND_PAYOFF_F1.0": {
+      "path": "FULL_COND_PAYOFF_F1.0__all_labels_v3.pkl",
+      "artifact_sha256": "4ab2ad7c0d201dba8a3af0b14e449c705cd079716e187c66bbb2a1a11927477e",
+      "training_rows_per_side": [
+        13206,
+        24405
+      ],
+      "threshold": 0.0,
+      "target_calibration_trades": 58,
+      "calibration_trades": 0,
+      "training_strategy_prefilter": false
+    },
+    "FULL_HIST_PAYOFF_F1.0": {
+      "path": "FULL_HIST_PAYOFF_F1.0__all_labels_v3.pkl",
+      "artifact_sha256": "e308225e2eb4768e9e3fd0144c5488923fa5a702c8b818856aab160f975397a7",
+      "training_rows_per_side": [
+        13206,
+        24405
+      ],
+      "threshold": 0.0,
+      "target_calibration_trades": 58,
+      "calibration_trades": 2,
+      "training_strategy_prefilter": false
+    }
+  }
+}

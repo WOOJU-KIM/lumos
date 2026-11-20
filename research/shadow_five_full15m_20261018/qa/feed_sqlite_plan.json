@@ -1,0 +1,1 @@
+[[7, 0, 0, "SEARCH market_candles USING INDEX idx_market_candles_query (symbol=? AND timeframe=? AND datetime<?)"]]

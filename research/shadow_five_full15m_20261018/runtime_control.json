@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "enabled": true,
+  "start_date_ny": "2026-10-19",
+  "end_date_ny": null,
+  "operation": "FOLLOW_LIVE_RUNNER",
+  "scope": "SHADOW_ONLY",
+  "real_orders_allowed": false
+}

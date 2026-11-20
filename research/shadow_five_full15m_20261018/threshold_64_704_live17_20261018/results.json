@@ -1,0 +1,130 @@
+{
+  "status": "PASS",
+  "method": "FIXED_ACTIVATED_POST_LIVE17_MODEL_IN_SAMPLE_REPLAY",
+  "distinction": "Exact current production artifact evaluated on dates used in its training; NOT OOS and NOT WFA",
+  "start": "2026-07-27",
+  "end": "2026-10-16",
+  "source_model_family": "B_Normalized_72",
+  "thresholds": [
+    0.64,
+    0.704
+  ],
+  "raw_probability_equivalents": [
+    0.45473913043478265,
+    0.5103913043478261
+  ],
+  "fee_roundtrip": 0.002,
+  "allocation": 0.98,
+  "folds": [],
+  "total_sessions": 59,
+  "eligible_sessions": 55,
+  "excluded_sessions": [
+    "2026-08-14",
+    "2026-08-24",
+    "2026-09-10",
+    "2026-10-06"
+  ],
+  "evaluation_rows": 1416,
+  "eligible_rows": 1320,
+  "results": [
+    {
+      "period": "2026-07-27 ~ 2026-10-16",
+      "threshold": 0.64,
+      "trades": 51,
+      "weekly_trades": 4.25,
+      "return_pct": 57.91935195714284,
+      "CAGR_pct": 665.3926751026431,
+      "MDD_pct": -4.345945115707783,
+      "win_rate_pct": 76.47058823529412,
+      "profit_factor": 2.828670259198983,
+      "avg_trade_net_pct": 0.9415447082880832,
+      "SOXL": 33,
+      "SOXS": 18,
+      "average_hold_minutes": 19.313725490196077,
+      "exits": {
+        "TRAIL": 43,
+        "SL": 8
+      }
+    },
+    {
+      "period": "2026-07-27 ~ 2026-10-16",
+      "threshold": 0.704,
+      "trades": 16,
+      "weekly_trades": 1.3333333333333333,
+      "return_pct": 17.961086014285677,
+      "CAGR_pct": 108.71020951649757,
+      "MDD_pct": -3.3966136902657262,
+      "win_rate_pct": 81.25,
+      "profit_factor": 4.25031595661669,
+      "avg_trade_net_pct": 1.0759265458385034,
+      "SOXL": 14,
+      "SOXS": 2,
+      "average_hold_minutes": 15.9375,
+      "exits": {
+        "TRAIL": 14,
+        "SL": 2
+      }
+    },
+    {
+      "period": "2026-10-12 ~ 2026-10-16",
+      "threshold": 0.64,
+      "trades": 10,
+      "weekly_trades": 10.0,
+      "return_pct": 13.123986395798104,
+      "CAGR_pct": 816803.7709416063,
+      "MDD_pct": -3.968074123652632,
+      "win_rate_pct": 90.0,
+      "profit_factor": 6.544213315904163,
+      "avg_trade_net_pct": 1.2841350581862743,
+      "SOXL": 9,
+      "SOXS": 1,
+      "average_hold_minutes": 20.0,
+      "exits": {
+        "TRAIL": 9,
+        "SL": 1
+      }
+    },
+    {
+      "period": "2026-10-12 ~ 2026-10-16",
+      "threshold": 0.704,
+      "trades": 3,
+      "weekly_trades": 3.0,
+      "return_pct": 3.8648879294906457,
+      "CAGR_pct": 1496.0360147971032,
+      "MDD_pct": -1.2064572904490256,
+      "win_rate_pct": 100.0,
+      "profit_factor": null,
+      "avg_trade_net_pct": 1.3031011493637537,
+      "SOXL": 3,
+      "SOXS": 0,
+      "average_hold_minutes": 28.333333333333332,
+      "exits": {
+        "TRAIL": 3
+      }
+    }
+  ],
+  "broker_api_calls": 0,
+  "real_orders": 0,
+  "protected_files": 196,
+  "protected_changes": [],
+  "MDD_definition": "5m close mark-to-market plus realized exit points",
+  "limitations": [
+    "IN_SAMPLE: model trained through Oct16, including these evaluation dates and 17 actual outcomes; cannot infer future performance",
+    "5m OHLC execution proxy differs from live tick/quotes; no claim of live return parity",
+    "Four complete-session exclusions applied identically before threshold comparison",
+    "Annualized return from 12 weeks or one week is descriptive, not a forecast",
+    "Prices at first 5m open after completed15m decision; actual inference latency and spread approximated by cost reserve"
+  ],
+  "active_artifact_sha256": "0deb9282eab7e1bf1a5b2d694878f13534ea0cc2632f9b57676d46d906b24932",
+  "active_manifest_sha256": "3a5958d3c1199f39592e52ef46e9d71ea1cef17cde62610fcdac961640a42a4d",
+  "active_artifact_path": "models/versions/model_normalized_72_live17_20261016_0deb9282eab7.pkl",
+  "active_candidate_id": "B_Normalized_72_Live17_20261016_CANDIDATE_v2",
+  "live_training_rows": 17,
+  "live_training_weight": 2.5,
+  "training_cutoff": "2026-10-16T16:00:00-04:00",
+  "training_rows": 44256,
+  "retraining_performed": false,
+  "training_overlap": true,
+  "approved_as_performance_evidence": false,
+  "simulator_sha256": "054b3d3e1f93c0be35a8395b226b1e954feb7ed02f84735ac534c565899eef85"
+}

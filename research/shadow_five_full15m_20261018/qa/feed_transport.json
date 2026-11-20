@@ -1,0 +1,38 @@
+{
+  "status": "PASS",
+  "checks": {
+    "stalled_consumer_publish_completes": true,
+    "overflow_quarantined": true,
+    "numeric_market_roundtrip": true,
+    "secrets_never_serialized": true,
+    "busy_producer_lock_drops_without_wait": true,
+    "producer_lock_drop_detected": true,
+    "dead_worker_fast_noop": true,
+    "duplicate_consumer_blocked": true,
+    "unbound_research_source_ignored": true,
+    "simulation_cannot_bind": true,
+    "wrong_streamer_ignored": true,
+    "bound_streamer_publishes": true,
+    "observed_ws_frame_decodes": true,
+    "rest_poll_never_pretends_to_be_tick": true,
+    "feature_transport_kind": true,
+    "exact_unrounded_last72": true,
+    "actual_db_packet_accepted": true,
+    "all_five_models_consume_captured_input": true,
+    "input_frame_not_mutated": true
+  },
+  "latency": {
+    "samples": 10000,
+    "tick_p50_us": 1.9,
+    "tick_p99_us": 2.9,
+    "tick_max_us": 52.1,
+    "feature_capture_max_us": 825.9,
+    "busy_lock_us": 3.3
+  },
+  "packet_rejections": {},
+  "real_orders": 0,
+  "broker_api_calls": 0,
+  "fixture_market_events_not_performance": true,
+  "actual_live_session_validation": "PENDING_NEXT_SESSION",
+  "live_ready": false
+}

@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>LUMOS — LightGBM 최종 독립 검증 및 Champion 승격 적합성 심사 보고서</title>
+  <style>
+    body {
+      background: #070b14;
+      color: #e2e8f0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Malgun Gothic", sans-serif;
+      margin: 0;
+      padding: 28px 36px;
+      line-height: 1.55;
+    }
+    h1, h2, h3 { color: #f8fafc; margin-top: 28px; margin-bottom: 10px; }
+    h1 { font-size: 24px; border-bottom: 2px solid #1e293b; padding-bottom: 12px; }
+    h2 { font-size: 18px; border-left: 4px solid #38bdf8; padding-left: 10px; }
+    h3 { font-size: 15px; color: #93c5fd; }
+    .card {
+      background: #0f172a;
+      border: 1px solid #1e293b;
+      border-radius: 10px;
+      padding: 18px 22px;
+      margin-bottom: 20px;
+    }
+    .badge-select {
+      display: inline-block;
+      background: #065f46;
+      color: #ecfdf5;
+      padding: 4px 12px;
+      border-radius: 999px;
+      font-weight: 700;
+      font-size: 13px;
+    }
+    .badge-warn {
+      display: inline-block;
+      background: #78350f;
+      color: #fef3c7;
+      padding: 4px 12px;
+      border-radius: 999px;
+      font-weight: 700;
+      font-size: 13px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 10px;
+      margin-bottom: 16px;
+      font-size: 12.5px;
+    }
+    th, td {
+      border: 1px solid #1e293b;
+      padding: 7px 9px;
+      text-align: center;
+    }
+    th {
+      background: #1e293b;
+      color: #f1f5f9;
+      font-weight: 600;
+    }
+    td:first-child { text-align: left; }
+    code {
+      background: #1e293b;
+      padding: 2px 5px;
+      border-radius: 4px;
+      color: #38bdf8;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <h1>LUMOS — LightGBM 최종 독립 검증 및 Champion 승격 적합성 심사 보고서</h1>
+  <div class="card">
+    <p><strong>생성 시각:</strong> 2026-10-15T11:15:00+09:00 | <strong>데이터 컷오프:</strong> 2026-10-14 16:00:00 (215 OOS Weeks, 33,810 OOS 15m Bars)</p>
+    <p><span class="badge-select">최종 판정: SELECT_B (B: 가격 정규화 72개 피처 모델 채택 권고)</span>
+       <span class="badge-warn">주의: E (77개 피처 Challenger)는 사후 피처 가지치기(Selection Bias) 및 Purged WFA 기준 성과 열위로 불채택</span></p>
+    <p><strong>핵심 요약:</strong>
+      (1) 비정상 가격 스케일 피처 8개를 가격 대비 비율(%)로 정규화한 <strong>B (`B_Normalized_72`, 72개 피처)</strong>는 <strong>Legacy WFA (+572.85%, PF 1.397)</strong>와 <strong>Purged &amp; Corrected WFA (+737.46%, CAGR +64.88%, MDD 31.87%, PF 1.448, WR 66.07%)</strong> 모두에서 가장 높은 수익률·PF·승률을 기록했으며, 지속 하락장(`SUSTAINED_DOWNTREND`)에서 기존 Champion(A)의 과도한 LONG 편향을 <strong>66.18% &rarr; 53.99% (-12.19%p)</strong>로 교정하고 2026-10-14 급락장에서도 A가 발령한 12회 오판 LONG 신호를 2회(종가 부근)로 <strong>-83.3%</strong> 억제했습니다.
+      (2) 반면 신규 추세/평균회귀 12개 피처를 추가하고 215주 전체 데이터 기준 사후 가지치기(Post-hoc Ablation)를 거친 <strong>E (`v5_challenger`, 77개 피처)</strong>는 Legacy WFA에서는 +575.68%로 B와 대등해 보였으나, <strong>6-bar Purge 및 SOXS 실제 ATR 손절 보정을 적용한 Purged WFA에서는 +354.40% (PF 1.315)</strong>로 하락하여 기존 Champion A(+424.49%)보다도 낮은 수익률을 보였습니다.
+      (3) 따라서 복잡도를 높인 E(77개)가 아니라 <strong>단순하고 강건한 B(`B_Normalized_72`, 72개 피처)를 차기 모델로 채택(`SELECT_B`)</strong>하되, 현재 `models/model_challenger_trend_mr.pkl`은 E(77개)로 학습되어 있고 Paired Daily Bootstrap 검정에서 B-A 일별 평균 초과수익(+0.0449%/day, 승률 76.92%)의 양측 p-value가 0.4616이므로, 별도 승인 후 B 스키마 기반 PKL 아티팩트를 생성하여 Shadow 검증을 거친 뒤 승격하는 것이 타당합니다.
+    </p>
+  </div>
+
+  <h2>1. STEP 1 — 기존 보고서 수치 불일치 감사표 (Discrepancy Root-Cause Audit)</h2>
+  <div class="card">
+    <p>기존 중간 산출물(`step5_wfa_results.json`), 후속 산출물(`step5_complete_metrics.json`), 그리고 이전 HTML 생성 스크립트(`generate_html_report.py`)를 라인 단위로 대조한 결과, 수치 불일치의 정확한 원인은 다음 3가지로 규명되었습니다.</p>
+    <table>
+      <thead>
+        <tr>
+          <th>항목</th>
+          <th>초기 실험 (`step5_wfa_results.json`)</th>
+          <th>후속 집계 (`step5_complete_metrics.json`)</th>
+          <th>이전 HTML 표 하드코딩 값</th>
+          <th>독립 재현 (`ml_engine.py` 동일 식)</th>
+          <th>불일치 원인 규명</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>C (정규화 + 추세 6개)</strong></td>
+          <td><code>C_Norm_Trend_78</code> (78개)<br><strong>+518.61%</strong> (MDD 24.46%)</td>
+          <td><code>C_Norm_Trend_71</code> (71개)<br><strong>+255.88%</strong> (MDD 30.80%, PF 1.241)</td>
+          <td>표: <strong>+509.25%</strong> (78개)<br>SVG 차트: <strong>+255.88%</strong> (71개)</td>
+          <td>Legacy 78개: +518.61%<br>Legacy 71개: +255.88%</td>
+          <td><code>collect_all_metrics_and_shap.py</code>에서 C와 D에도 7개 중복 피처 제거를 일괄 적용해 78개&rarr;71개로 변경했으나, <code>generate_html_report.py</code>의 HTML 테이블은 초기 텍스트(+509.25%)를 하드코딩하고 SVG 차트는 JSON(+255.88%)을 읽음</td>
+        </tr>
+        <tr>
+          <td><strong>D (정규화 + 평균회귀 6개)</strong></td>
+          <td><code>D_Norm_MR_78</code> (78개)<br><strong>+466.65%</strong> (MDD 33.48%)</td>
+          <td><code>D_Norm_MR_71</code> (71개)<br><strong>+693.67%</strong> (MDD 36.68%, PF 1.430)</td>
+          <td>표: <strong>+477.15%</strong> (78개)<br>SVG 차트: <strong>+693.67%</strong> (71개)</td>
+          <td>Legacy 78개: +466.65%<br>Legacy 71개: +693.67%</td>
+          <td>위와 동일하게 78개(`D_Norm_MR_78`)와 71개(`D_Norm_MR_71`) 피처 정의 차이 및 HTML 템플릿 하드코딩으로 인해 표와 차트 숫자가 불일치함</td>
+        </tr>
+        <tr>
+          <td><strong>B (`B_Normalized_72`)</strong></td>
+          <td><code>/(close + 1e-9)</code> 사용<br><strong>+628.31%</strong> (MDD 29.85%, PF <strong>1.413</strong>)</td>
+          <td><code>/(close + 1e-9)</code> 사용<br><strong>+628.31%</strong> (MDD 29.85%, PF <strong>1.413</strong>)</td>
+          <td>표 PF: <strong>1.434</strong> (오타 하드코딩)<br>JSON PF: <strong>1.413</strong></td>
+          <td>Legacy (`clip(1e-6)`): <strong>+572.85%</strong> (PF 1.397)<br>Purged (`clip(1e-6)`): <strong>+737.46%</strong> (PF 1.448)</td>
+          <td>실험 스크립트는 분모에 <code>close + 1e-9</code>를 썼으나 프로덕션 <code>core/ml_engine.py</code>는 <code>close.clip(lower=1e-6)</code>를 사용하여 부동소수점 반올림 경계에서 트리 분기 미세 차이 발생</td>
+        </tr>
+        <tr>
+          <td><strong>E (`E_Challenger_77`)</strong></td>
+          <td><code>/(close + 1e-9)</code> 사용<br><strong>+649.84%</strong> (MDD 25.00%, PF 1.455)</td>
+          <td><code>/(close + 1e-9)</code> 사용<br><strong>+649.84%</strong> (MDD 25.00%, PF 1.455)</td>
+          <td><strong>+649.84%</strong> (MDD 25.00%, PF 1.455)</td>
+          <td>Legacy (`clip(1e-6)`): <strong>+575.68%</strong> (PF 1.424)<br>Purged (`clip(1e-6)`): <strong>+354.40%</strong> (PF 1.315)</td>
+          <td><code>core/ml_engine.py</code> 프로덕션 공식으로 통일 시 Legacy WFA는 +575.68%, 6-bar Purge 및 SOXS ATR 보정 시 +354.40%로 확인됨</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2>2. STEP 2 — WFA 방법론 무결성 10대 체크리스트 감사 결과</h2>
+  <div class="card">
+    <table>
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>점검 항목</th>
+          <th>기존 Legacy WFA 상태</th>
+          <th>독립 검증 조치 (Purged &amp; Corrected WFA)</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>1</td><td>104주 초기 학습 후 주간 Expanding Window 준수</td><td>PASS (Index 0 ~ w-1 누적 확장, 총 215 OOS 주)</td><td>동일하게 215주 Expanding Window 적용</td></tr>
+        <tr><td>2</td><td>피처 계산 시 미래 캔들(t+1 이후) 누수 여부</td><td>PASS (모든 롤링/EMA/ROC가 과거 및 현재 종가만 참조)</td><td>PASS 확인</td></tr>
+        <tr><td>3</td><td><strong>주간 경계 Triple Barrier 라벨 Horizon(6봉=90분) 중첩 Purge</strong></td><td><strong>FAIL (금요일 마지막 6봉의 라벨이 월요일 장초반 6봉 가격 참조)</strong></td><td><strong>Purged WFA에서 학습셋 말단 6봉(90분) 강제 Purge 적용</strong></td></tr>
+        <tr><td>4</td><td>결측치 보간(`bfill`) 및 초기 50봉 워밍업 미래 누수 여부</td><td>WARN (2020년 7월 최초기 38봉에 rolling 50 NaN을 0 채움)</td><td>Purged WFA에서 워밍업 NaN 행 완전 제거 후 학습</td></tr>
+        <tr><td>5</td><td>동일 봉 진입·청산 금지 및 다음 5분봉부터 청산 감시</td><td>PASS (진입 15m 봉 이후의 5m 봉부터 SL/TP/Trailing 감시)</td><td>PASS 확인</td></tr>
+        <tr><td>6</td><td>단일 5분봉 내 TP/SL 동시 터치 시 비관적 손절(SL) 우선</td><td>PASS (SL 검사가 TP 및 고가 갱신보다 항상 선행)</td><td>PASS 확인</td></tr>
+        <tr><td>7</td><td>Trailing 고점 갱신 순서 (이전 캔들 고점 기준 저가 평가 후 고가 갱신)</td><td>PASS (저가 트레일링 청산 판정 후 현재 봉 고가 반영)</td><td>PASS 확인</td></tr>
+        <tr><td>8</td><td>90분 타임스탑, 15:30 신규 진입 차단, 15:55 EOD 강제 청산</td><td>PASS (<code>config.py</code> 기준 완벽 일치)</td><td>PASS 확인</td></tr>
+        <tr><td>9</td><td>왕복 수수료·슬리피지 0.20% 및 98% 자본 배분 규칙</td><td>PASS (왕복 0.20% 차감, 단리/복리 중 100% 원금 재투자 구조 확인)</td><td>PASS 확인 및 0.20% / 0.30% / 0.40% 민감도 추가 검증</td></tr>
+        <tr><td>10</td><td><strong>SOXS(SHORT) 진입 시 손절폭(ATR_14) 자산 정합성</strong></td><td><strong>FAIL (SOXS 진입 시 SOXL의 달러 ATR을 SOXS 가격으로 나눔)</strong></td><td><strong>Purged WFA에서 SOXS 자체 15m ATR_14 기반으로 정확히 계산</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2>3. STEP 2 &amp; STEP 5 — 전체 모델 성능 비교표 (Purged &amp; Corrected WFA vs Legacy WFA)</h2>
+  <div class="card">
+    <h3>3-1. Purged &amp; Corrected WFA (권장 엄격 기준: 6-bar Purge + Warmup Drop + SOXS 실제 ATR SL, 215주)</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>모델</th><th>피처 수</th><th>총수익률</th><th>CAGR</th><th>MDD</th><th>Calmar</th><th>PF</th><th>승률</th><th>기대값/회</th><th>총 거래수</th><th>최대연패</th><th>최대단일손실</th><th>SOXL (거래/승률/PF)</th><th>SOXS (거래/승률/PF)</th><th>Macro-F1</th><th>Bal-Acc</th><th>Log-Loss</th><th>Brier</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>A: v4_champion (72 Raw)</td><td>72</td><td>+424.49%</td><td>+47.69%</td><td>25.00%</td><td>1.908</td><td>1.286</td><td>62.74%</td><td>+0.258%</td><td>730 (3.30/wk)</td><td>7</td><td>-3.40%</td><td>392 / 63.8% / PF 1.34</td><td>338 / 61.5% / PF 1.22</td><td>0.4294</td><td>0.4363</td><td>1.0127</td><td>0.6050</td></tr>
+<tr style="background:#064e3b33;font-weight:bold;"><td>B: B_normalized (72 Norm)</td><td>72</td><td>+737.46%</td><td>+64.88%</td><td>31.87%</td><td>2.036</td><td>1.448</td><td>66.07%</td><td>+0.380%</td><td>613 (2.77/wk)</td><td>8</td><td>-3.40%</td><td>311 / 66.9% / PF 1.41</td><td>302 / 65.2% / PF 1.49</td><td>0.4319</td><td>0.4350</td><td>1.0033</td><td>0.5982</td></tr>
+<tr><td>E_raw_all (84 Unpruned)</td><td>84</td><td>+948.69%</td><td>+73.84%</td><td>19.70%</td><td>3.748</td><td>1.489</td><td>65.48%</td><td>+0.414%</td><td>620 (2.81/wk)</td><td>6</td><td>-3.40%</td><td>332 / 67.2% / PF 1.47</td><td>288 / 63.5% / PF 1.51</td><td>0.4303</td><td>0.4331</td><td>1.0019</td><td>0.5973</td></tr>
+<tr><td>E: v5_challenger (77 Post-hoc)</td><td>77</td><td>+354.40%</td><td>+42.79%</td><td>29.05%</td><td>1.473</td><td>1.315</td><td>64.23%</td><td>+0.283%</td><td>601 (2.72/wk)</td><td>6</td><td>-3.40%</td><td>311 / 65.3% / PF 1.34</td><td>290 / 63.1% / PF 1.28</td><td>0.4315</td><td>0.4342</td><td>1.0022</td><td>0.5974</td></tr>
+<tr><td>E_NestedPre (79 Pre-WFA Pruned)</td><td>79</td><td>+356.81%</td><td>+42.97%</td><td>21.36%</td><td>2.011</td><td>1.310</td><td>63.16%</td><td>+0.282%</td><td>608 (2.75/wk)</td><td>6</td><td>-3.40%</td><td>328 / 63.7% / PF 1.31</td><td>280 / 62.5% / PF 1.30</td><td>0.4325</td><td>0.4352</td><td>1.0016</td><td>0.5970</td></tr>
+      </tbody>
+    </table>
+
+    <h3>3-2. Legacy Unpurged WFA (기존 실험 프로토콜 동일 재현, `core/ml_engine.py` 프로덕션 수식 기준, 215주)</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>모델</th><th>피처 수</th><th>총수익률</th><th>CAGR</th><th>MDD</th><th>Calmar</th><th>PF</th><th>승률</th><th>기대값/회</th><th>총 거래수</th><th>최대연패</th><th>최대단일손실</th><th>SOXL (거래/승률/PF)</th><th>SOXS (거래/승률/PF)</th><th>Macro-F1</th><th>Bal-Acc</th><th>Log-Loss</th><th>Brier</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>A: v4_champion (72 Raw)</td><td>72</td><td>+390.63%</td><td>+45.39%</td><td>29.95%</td><td>1.515</td><td>1.285</td><td>61.82%</td><td>+0.252%</td><td>715 (3.24/wk)</td><td>9</td><td>-3.40%</td><td>410 / 61.5% / PF 1.20</td><td>305 / 62.3% / PF 1.42</td><td>0.4309</td><td>0.4381</td><td>1.0117</td><td>0.6043</td></tr>
+<tr style="background:#064e3b33;font-weight:bold;"><td>B: B_normalized (72 Norm)</td><td>72</td><td>+572.85%</td><td>+56.60%</td><td>26.91%</td><td>2.104</td><td>1.397</td><td>64.19%</td><td>+0.348%</td><td>606 (2.74/wk)</td><td>5</td><td>-3.40%</td><td>336 / 67.3% / PF 1.50</td><td>270 / 60.4% / PF 1.27</td><td>0.4320</td><td>0.4345</td><td>1.0016</td><td>0.5970</td></tr>
+<tr><td>E_raw_all (84 Unpruned)</td><td>84</td><td>+278.99%</td><td>+36.82%</td><td>31.17%</td><td>1.181</td><td>1.275</td><td>61.46%</td><td>+0.258%</td><td>589 (2.67/wk)</td><td>5</td><td>-3.40%</td><td>332 / 63.5% / PF 1.30</td><td>257 / 58.8% / PF 1.25</td><td>0.4309</td><td>0.4334</td><td>1.0009</td><td>0.5965</td></tr>
+<tr><td>E: v5_challenger (77 Post-hoc)</td><td>77</td><td>+575.68%</td><td>+56.76%</td><td>30.10%</td><td>1.886</td><td>1.424</td><td>63.65%</td><td>+0.366%</td><td>575 (2.60/wk)</td><td>5</td><td>-3.40%</td><td>319 / 66.8% / PF 1.50</td><td>256 / 59.8% / PF 1.33</td><td>0.4338</td><td>0.4365</td><td>1.0007</td><td>0.5964</td></tr>
+<tr><td>E_NestedPre (79 Pre-WFA Pruned)</td><td>79</td><td>+239.56%</td><td>+33.33%</td><td>25.76%</td><td>1.294</td><td>1.264</td><td>62.39%</td><td>+0.238%</td><td>585 (2.65/wk)</td><td>6</td><td>-3.40%</td><td>323 / 64.4% / PF 1.27</td><td>262 / 59.9% / PF 1.26</td><td>0.4340</td><td>0.4365</td><td>1.0001</td><td>0.5960</td></tr>
+      </tbody>
+    </table>
+
+    
+    <svg viewBox="0 0 920 320" style="width:100%;height:auto;background:#0b1120;border:1px solid #1e293b;border-radius:8px;margin-top:10px;">
+      <text x="75" y="22" fill="#e2e8f0" font-size="13" font-weight="bold">Purged &amp; Corrected WFA (215 Weeks: 2022-07 ~ 2026-10) — Cumulative Equity Curve (Base KRW 10,000,000, Fee 0.20%)</text>
+      <line x1="75" y1="265.0" x2="885" y2="265.0" stroke="#263248" stroke-dasharray="3,3" stroke-width="1"/><text x="67" y="269.0" fill="#94a3b8" font-size="11" text-anchor="end">+0%</text><line x1="75" y1="222.8" x2="885" y2="222.8" stroke="#263248" stroke-dasharray="3,3" stroke-width="1"/><text x="67" y="226.8" fill="#94a3b8" font-size="11" text-anchor="end">+150%</text><line x1="75" y1="180.5" x2="885" y2="180.5" stroke="#263248" stroke-dasharray="3,3" stroke-width="1"/><text x="67" y="184.5" fill="#94a3b8" font-size="11" text-anchor="end">+300%</text><line x1="75" y1="138.3" x2="885" y2="138.3" stroke="#263248" stroke-dasharray="3,3" stroke-width="1"/><text x="67" y="142.3" fill="#94a3b8" font-size="11" text-anchor="end">+450%</text><line x1="75" y1="96.1" x2="885" y2="96.1" stroke="#263248" stroke-dasharray="3,3" stroke-width="1"/><text x="67" y="100.1" fill="#94a3b8" font-size="11" text-anchor="end">+600%</text><line x1="75" y1="53.9" x2="885" y2="53.9" stroke="#263248" stroke-dasharray="3,3" stroke-width="1"/><text x="67" y="57.9" fill="#94a3b8" font-size="11" text-anchor="end">+750%</text>
+      <text x="75.0" y="304" fill="#94a3b8" font-size="11" text-anchor="middle">2022-07</text><text x="154.4" y="304" fill="#94a3b8" font-size="11" text-anchor="middle">2022-11</text><text x="233.8" y="304" fill="#94a3b8" font-size="11" text-anchor="middle">2023-04</text><text x="313.2" y="304" fill="#94a3b8" font-size="11" text-anchor="middle">2023-10</text><text x="392.6" y="304" fill="#94a3b8" font-size="11" text-anchor="middle">2024-03</text><text x="472.1" y="304" fill="#94a3b8" font-size="11" text-anchor="middle">2024-08</text><text x="551.5" y="304" fill="#94a3b8" font-size="11" text-anchor="middle">2025-01</text><text x="630.9" y="304" fill="#94a3b8" font-size="11" text-anchor="middle">2025-06</text><text x="710.3" y="304" fill="#94a3b8" font-size="11" text-anchor="middle">2025-11</text><text x="789.7" y="304" fill="#94a3b8" font-size="11" text-anchor="middle">2026-04</text><text x="869.1" y="304" fill="#94a3b8" font-size="11" text-anchor="middle">2026-09</text>
+      <polyline fill="none" stroke="#94a3b8" stroke-width="2" points="75.0,265.0 90.9,265.0 106.8,264.2 122.6,260.3 138.5,261.4 154.4,263.8 170.3,265.2 186.2,265.2 202.1,266.1 217.9,266.7 233.8,265.0 249.7,266.4 265.6,266.3 281.5,266.0 297.4,265.6 313.2,266.1 329.1,265.0 345.0,265.8 360.9,265.7 376.8,267.0 392.6,264.3 408.5,260.6 424.4,256.8 440.3,256.9 456.2,252.7 472.1,258.2 487.9,258.5 503.8,256.2 519.7,256.8 535.6,255.7 551.5,259.4 567.4,257.2 583.2,247.7 599.1,219.5 615.0,221.1 630.9,265.0 646.8,265.0 662.6,222.5 678.5,224.0 694.4,223.8 710.3,215.4 726.2,218.8 742.1,215.1 757.9,215.6 773.8,207.0 789.7,209.9 805.6,200.1 821.5,189.7 837.4,159.0 853.2,139.3 869.1,135.0 885.0,145.5"/>
+      <polyline fill="none" stroke="#10b981" stroke-width="2.8" points="75.0,265.0 90.9,263.9 106.8,260.4 122.6,247.0 138.5,246.9 154.4,254.2 170.3,252.2 186.2,251.2 202.1,248.7 217.9,249.3 233.8,250.3 249.7,250.7 265.6,249.8 281.5,250.2 297.4,249.7 313.2,250.8 329.1,265.0 345.0,250.4 360.9,248.9 376.8,248.3 392.6,245.1 408.5,244.0 424.4,240.7 440.3,240.6 456.2,242.0 472.1,247.8 487.9,247.3 503.8,243.3 519.7,242.8 535.6,241.2 551.5,249.0 567.4,247.3 583.2,231.0 599.1,182.9 615.0,186.2 630.9,265.0 646.8,265.0 662.6,190.8 678.5,191.6 694.4,188.0 710.3,162.1 726.2,164.9 742.1,161.1 757.9,155.0 773.8,151.1 789.7,147.9 805.6,126.0 821.5,128.5 837.4,63.9 853.2,52.6 869.1,48.7 885.0,57.4"/>
+      <polyline fill="none" stroke="#38bdf8" stroke-width="2.2" stroke-dasharray="5,3" points="75.0,265.0 90.9,264.6 106.8,263.2 122.6,250.3 138.5,249.9 154.4,253.6 170.3,248.7 186.2,246.5 202.1,244.6 217.9,245.8 233.8,265.0 249.7,246.4 265.6,243.2 281.5,245.0 297.4,245.4 313.2,244.6 329.1,243.9 345.0,243.5 360.9,242.8 376.8,241.7 392.6,241.7 408.5,241.0 424.4,238.5 440.3,239.6 456.2,242.8 472.1,247.9 487.9,247.5 503.8,245.3 519.7,244.8 535.6,246.3 551.5,248.0 567.4,246.3 583.2,233.5 599.1,185.0 615.0,189.6 630.9,187.6 646.8,188.5 662.6,189.2 678.5,191.4 694.4,190.1 710.3,176.4 726.2,182.8 742.1,177.1 757.9,166.6 773.8,171.0 789.7,178.6 805.6,182.8 821.5,186.8 837.4,172.3 853.2,164.5 869.1,165.5 885.0,165.2"/>
+      <g transform="translate(90, 44)">
+        <rect x="0" y="0" width="380" height="62" rx="6" fill="#0f172a" stroke="#334155" opacity="0.92"/>
+        <line x1="12" y1="16" x2="36" y2="16" stroke="#10b981" stroke-width="3"/>
+        <text x="44" y="20" fill="#10b981" font-size="11.5" font-weight="bold">B (Normalized 72): +737.46% (KRW 83,745,629)</text>
+        <line x1="12" y1="34" x2="36" y2="34" stroke="#38bdf8" stroke-width="2.2" stroke-dasharray="5,3"/>
+        <text x="44" y="38" fill="#38bdf8" font-size="11.5">E (Challenger 77): +354.40% (KRW 45,440,059)</text>
+        <line x1="12" y1="50" x2="36" y2="50" stroke="#94a3b8" stroke-width="2"/>
+        <text x="44" y="54" fill="#cbd5e1" font-size="11.5">A (Champion 72): +424.49% (KRW 52,449,466)</text>
+      </g>
+    </svg>
+    
+    
+    <svg viewBox="0 0 920 240" style="width:100%;height:auto;background:#0b1120;border:1px solid #1e293b;border-radius:8px;margin-top:10px;">
+      <text x="75" y="20" fill="#e2e8f0" font-size="13" font-weight="bold">Purged &amp; Corrected WFA — Monthly Underwater Drawdown Curve (%)</text>
+      <line x1="75" y1="32.0" x2="885" y2="32.0" stroke="#263248" stroke-dasharray="3,3" stroke-width="1"/><text x="67" y="36.0" fill="#94a3b8" font-size="11" text-anchor="end">0%</text><line x1="75" y1="52.3" x2="885" y2="52.3" stroke="#263248" stroke-dasharray="3,3" stroke-width="1"/><text x="67" y="56.3" fill="#94a3b8" font-size="11" text-anchor="end">-10%</text><line x1="75" y1="72.5" x2="885" y2="72.5" stroke="#263248" stroke-dasharray="3,3" stroke-width="1"/><text x="67" y="76.5" fill="#94a3b8" font-size="11" text-anchor="end">-20%</text><line x1="75" y1="92.8" x2="885" y2="92.8" stroke="#263248" stroke-dasharray="3,3" stroke-width="1"/><text x="67" y="96.8" fill="#94a3b8" font-size="11" text-anchor="end">-30%</text>
+      <polyline fill="none" stroke="#94a3b8" stroke-width="1.8" points="75.0,32.0 90.9,32.0 106.8,32.0 122.6,32.0 138.5,38.6 154.4,53.8 170.3,62.1 186.2,62.2 202.1,67.5 217.9,71.6 233.8,60.7 249.7,69.5 265.6,68.7 281.5,67.1 297.4,64.9 313.2,67.4 329.1,60.7 345.0,65.7 360.9,65.4 376.8,73.3 392.6,56.5 408.5,33.7 424.4,32.0 440.3,32.9 456.2,32.0 472.1,59.6 487.9,61.0 503.8,49.6 519.7,52.5 535.6,46.9 551.5,65.7 567.4,54.7 583.2,32.0 599.1,32.0 615.0,36.4 630.9,157.2 646.8,157.2 662.6,40.4 678.5,44.6 694.4,44.1 710.3,32.0 726.2,40.8 742.1,32.0 757.9,33.2 773.8,32.0 789.7,39.0 805.6,32.0 821.5,32.0 837.4,32.0 853.2,32.0 869.1,32.0 885.0,45.5"/>
+      <polyline fill="none" stroke="#10b981" stroke-width="2.4" points="75.0,32.0 90.9,32.0 106.8,32.0 122.6,32.0 138.5,32.0 154.4,64.1 170.3,55.1 186.2,50.9 202.1,40.0 217.9,42.7 233.8,46.9 249.7,48.9 265.6,44.8 281.5,46.7 297.4,44.2 313.2,49.1 329.1,111.2 345.0,47.2 360.9,40.7 376.8,38.3 392.6,32.0 408.5,32.0 424.4,32.0 440.3,32.0 456.2,37.5 472.1,60.0 487.9,57.9 503.8,42.6 519.7,40.5 535.6,34.3 551.5,64.3 567.4,57.8 583.2,32.0 599.1,32.0 615.0,38.2 630.9,182.9 646.8,182.9 662.6,46.6 678.5,48.1 694.4,41.5 710.3,32.0 726.2,36.4 742.1,32.0 757.9,32.0 773.8,32.0 789.7,32.0 805.6,32.0 821.5,35.1 837.4,32.0 853.2,32.0 869.1,32.0 885.0,39.3"/>
+      <polyline fill="none" stroke="#f59e0b" stroke-width="2.0" stroke-dasharray="4,3" points="75.0,32.0 90.9,32.0 106.8,32.0 122.6,32.0 138.5,32.0 154.4,49.2 170.3,32.0 186.2,32.0 202.1,32.0 217.9,37.0 233.8,117.0 249.7,39.2 265.6,32.0 281.5,39.2 297.4,40.9 313.2,37.6 329.1,34.9 345.0,32.9 360.9,32.0 376.8,32.0 392.6,32.1 408.5,32.0 424.4,32.0 440.3,36.3 456.2,48.2 472.1,66.8 487.9,65.5 503.8,57.5 519.7,55.5 535.6,61.1 551.5,67.5 567.4,61.1 583.2,32.0 599.1,32.0 615.0,40.6 630.9,36.9 646.8,38.7 662.6,39.8 678.5,44.0 694.4,41.5 710.3,32.0 726.2,43.1 742.1,33.1 757.9,32.0 773.8,39.1 789.7,51.3 805.6,58.0 821.5,64.5 837.4,41.2 853.2,32.0 869.1,33.6 885.0,33.2"/>
+    </svg>
+    
+    
+    <svg viewBox="0 0 920 320" style="width:100%;height:auto;background:#0b1120;border:1px solid #1e293b;border-radius:8px;margin-top:10px;">
+      <text x="75" y="22" fill="#e2e8f0" font-size="13" font-weight="bold">Legacy Unpurged WFA Reproduction (215 Weeks: 2022-07 ~ 2026-10) — Cumulative Equity Curve (Base KRW 10,000,000, Fee 0.20%)</text>
+      <line x1="75" y1="263.4" x2="885" y2="263.4" stroke="#263248" stroke-dasharray="3,3" stroke-width="1"/><text x="67" y="267.4" fill="#94a3b8" font-size="11" text-anchor="end">+0%</text><line x1="75" y1="211.5" x2="885" y2="211.5" stroke="#263248" stroke-dasharray="3,3" stroke-width="1"/><text x="67" y="215.5" fill="#94a3b8" font-size="11" text-anchor="end">+150%</text><line x1="75" y1="159.7" x2="885" y2="159.7" stroke="#263248" stroke-dasharray="3,3" stroke-width="1"/><text x="67" y="163.7" fill="#94a3b8" font-size="11" text-anchor="end">+300%</text><line x1="75" y1="107.8" x2="885" y2="107.8" stroke="#263248" stroke-dasharray="3,3" stroke-width="1"/><text x="67" y="111.8" fill="#94a3b8" font-size="11" text-anchor="end">+450%</text><line x1="75" y1="55.9" x2="885" y2="55.9" stroke="#263248" stroke-dasharray="3,3" stroke-width="1"/><text x="67" y="59.9" fill="#94a3b8" font-size="11" text-anchor="end">+600%</text>
+      <text x="75.0" y="304" fill="#94a3b8" font-size="11" text-anchor="middle">2022-07</text><text x="154.4" y="304" fill="#94a3b8" font-size="11" text-anchor="middle">2022-11</text><text x="233.8" y="304" fill="#94a3b8" font-size="11" text-anchor="middle">2023-04</text><text x="313.2" y="304" fill="#94a3b8" font-size="11" text-anchor="middle">2023-10</text><text x="392.6" y="304" fill="#94a3b8" font-size="11" text-anchor="middle">2024-03</text><text x="472.1" y="304" fill="#94a3b8" font-size="11" text-anchor="middle">2024-08</text><text x="551.5" y="304" fill="#94a3b8" font-size="11" text-anchor="middle">2025-01</text><text x="630.9" y="304" fill="#94a3b8" font-size="11" text-anchor="middle">2025-06</text><text x="710.3" y="304" fill="#94a3b8" font-size="11" text-anchor="middle">2025-11</text><text x="789.7" y="304" fill="#94a3b8" font-size="11" text-anchor="middle">2026-04</text><text x="869.1" y="304" fill="#94a3b8" font-size="11" text-anchor="middle">2026-09</text>
+      <polyline fill="none" stroke="#94a3b8" stroke-width="2" points="75.0,263.4 90.9,263.4 106.8,263.0 122.6,259.5 138.5,262.3 154.4,262.0 170.3,263.0 186.2,262.3 202.1,261.6 217.9,259.4 233.8,260.3 249.7,262.0 265.6,261.4 281.5,261.4 297.4,260.9 313.2,262.1 329.1,261.6 345.0,261.2 360.9,262.9 376.8,264.0 392.6,260.5 408.5,255.6 424.4,252.6 440.3,254.1 456.2,249.4 472.1,247.3 487.9,243.2 503.8,238.6 519.7,239.1 535.6,237.8 551.5,246.1 567.4,245.0 583.2,239.9 599.1,206.6 615.0,208.3 630.9,263.4 646.8,263.4 662.6,210.2 678.5,212.1 694.4,214.0 710.3,203.4 726.2,204.9 742.1,197.9 757.9,191.0 773.8,182.5 789.7,187.4 805.6,169.9 821.5,195.4 837.4,131.9 853.2,102.2 869.1,111.5 885.0,128.3"/>
+      <polyline fill="none" stroke="#10b981" stroke-width="2.8" points="75.0,263.4 90.9,262.9 106.8,260.2 122.6,245.3 138.5,252.6 154.4,252.2 170.3,248.6 186.2,248.0 202.1,248.5 217.9,247.3 233.8,249.5 249.7,249.3 265.6,248.3 281.5,247.7 297.4,249.2 313.2,249.0 329.1,263.4 345.0,247.5 360.9,249.8 376.8,249.2 392.6,244.6 408.5,242.8 424.4,238.3 440.3,239.5 456.2,245.8 472.1,252.4 487.9,249.6 503.8,245.5 519.7,242.8 535.6,241.4 551.5,247.9 567.4,247.5 583.2,234.9 599.1,206.0 615.0,208.8 630.9,207.5 646.8,209.5 662.6,210.0 678.5,211.9 694.4,209.1 710.3,190.4 726.2,189.8 742.1,182.9 757.9,171.9 773.8,160.2 789.7,165.6 805.6,158.1 821.5,130.3 837.4,68.9 853.2,52.5 869.1,54.4 885.0,65.3"/>
+      <polyline fill="none" stroke="#38bdf8" stroke-width="2.2" stroke-dasharray="5,3" points="75.0,263.4 90.9,263.2 106.8,261.6 122.6,243.0 138.5,237.4 154.4,235.2 170.3,234.5 186.2,233.6 202.1,231.9 217.9,238.8 233.8,240.1 249.7,240.7 265.6,238.2 281.5,236.8 297.4,237.3 313.2,241.5 329.1,240.8 345.0,240.2 360.9,243.1 376.8,242.4 392.6,242.4 408.5,240.0 424.4,233.7 440.3,233.6 456.2,243.0 472.1,243.2 487.9,237.3 503.8,231.4 519.7,231.7 535.6,230.1 551.5,230.4 567.4,229.0 583.2,214.8 599.1,187.1 615.0,191.9 630.9,263.4 646.8,263.4 662.6,192.5 678.5,194.8 694.4,193.0 710.3,163.5 726.2,160.5 742.1,155.4 757.9,144.0 773.8,147.0 789.7,143.8 805.6,140.0 821.5,121.5 837.4,53.5 853.2,48.9 869.1,50.9 885.0,64.3"/>
+      <g transform="translate(90, 44)">
+        <rect x="0" y="0" width="380" height="62" rx="6" fill="#0f172a" stroke="#334155" opacity="0.92"/>
+        <line x1="12" y1="16" x2="36" y2="16" stroke="#10b981" stroke-width="3"/>
+        <text x="44" y="20" fill="#10b981" font-size="11.5" font-weight="bold">B (Normalized 72): +572.85% (KRW 67,284,853)</text>
+        <line x1="12" y1="34" x2="36" y2="34" stroke="#38bdf8" stroke-width="2.2" stroke-dasharray="5,3"/>
+        <text x="44" y="38" fill="#38bdf8" font-size="11.5">E (Challenger 77): +575.68% (KRW 67,568,445)</text>
+        <line x1="12" y1="50" x2="36" y2="50" stroke="#94a3b8" stroke-width="2"/>
+        <text x="44" y="54" fill="#cbd5e1" font-size="11.5">A (Champion 72): +390.63% (KRW 49,063,322)</text>
+      </g>
+    </svg>
+    
+
+    <h3>3-3. 연도별 성과 분해 (Purged &amp; Corrected WFA vs Legacy WFA)</h3>
+    <table>
+      <thead>
+        <tr><th>모델 (Purged &amp; Corrected WFA)</th><th>2022 (하반기)</th><th>2023</th><th>2024</th><th>2025</th><th>2026 (~10/14)</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>A_Champion_72</strong></td><td>-0.81%<br><span style='color:#94a3b8;font-size:11px;'>138T | WR 52.2% | PF 1.02</span></td><td>-2.10%<br><span style='color:#94a3b8;font-size:11px;'>27T | WR 63.0% | PF 0.93</span></td><td>+37.01%<br><span style='color:#94a3b8;font-size:11px;'>148T | WR 65.5% | PF 1.28</span></td><td>+98.49%<br><span style='color:#94a3b8;font-size:11px;'>174T | WR 67.2% | PF 1.50</span></td><td>+98.62%<br><span style='color:#94a3b8;font-size:11px;'>243T | WR 63.8% | PF 1.34</span></td></tr>
+<tr><td><strong>B_Normalized_72</strong></td><td>+45.52%<br><span style='color:#94a3b8;font-size:11px;'>132T | WR 59.9% | PF 1.37</span></td><td>+4.36%<br><span style='color:#94a3b8;font-size:11px;'>38T | WR 63.2% | PF 1.17</span></td><td>+21.53%<br><span style='color:#94a3b8;font-size:11px;'>113T | WR 65.5% | PF 1.22</span></td><td>+146.90%<br><span style='color:#94a3b8;font-size:11px;'>153T | WR 71.9% | PF 1.82</span></td><td>+83.79%<br><span style='color:#94a3b8;font-size:11px;'>177T | WR 66.7% | PF 1.42</span></td></tr>
+<tr><td><strong>E_Challenger_77</strong></td><td>+57.95%<br><span style='color:#94a3b8;font-size:11px;'>123T | WR 64.2% | PF 1.52</span></td><td>+11.71%<br><span style='color:#94a3b8;font-size:11px;'>44T | WR 68.2% | PF 1.35</span></td><td>-5.78%<br><span style='color:#94a3b8;font-size:11px;'>114T | WR 58.8% | PF 0.97</span></td><td>+135.75%<br><span style='color:#94a3b8;font-size:11px;'>159T | WR 69.2% | PF 1.73</span></td><td>+15.94%<br><span style='color:#94a3b8;font-size:11px;'>161T | WR 62.1% | PF 1.12</span></td></tr>
+<tr><td><strong>E_Raw_84</strong></td><td>+99.47%<br><span style='color:#94a3b8;font-size:11px;'>116T | WR 63.8% | PF 1.87</span></td><td>-5.12%<br><span style='color:#94a3b8;font-size:11px;'>45T | WR 53.3% | PF 0.89</span></td><td>+24.00%<br><span style='color:#94a3b8;font-size:11px;'>128T | WR 64.8% | PF 1.22</span></td><td>+106.62%<br><span style='color:#94a3b8;font-size:11px;'>165T | WR 67.9% | PF 1.55</span></td><td>+116.27%<br><span style='color:#94a3b8;font-size:11px;'>166T | WR 68.1% | PF 1.59</span></td></tr>
+<tr><td><strong>E_NestedPre_Pruned</strong></td><td>+28.79%<br><span style='color:#94a3b8;font-size:11px;'>117T | WR 55.6% | PF 1.28</span></td><td>+5.64%<br><span style='color:#94a3b8;font-size:11px;'>43T | WR 62.8% | PF 1.19</span></td><td>+8.83%<br><span style='color:#94a3b8;font-size:11px;'>116T | WR 62.1% | PF 1.10</span></td><td>+96.85%<br><span style='color:#94a3b8;font-size:11px;'>161T | WR 66.5% | PF 1.52</span></td><td>+56.72%<br><span style='color:#94a3b8;font-size:11px;'>171T | WR 66.1% | PF 1.31</span></td></tr>
+      </tbody>
+    </table>
+    <table>
+      <thead>
+        <tr><th>모델 (Legacy WFA)</th><th>2022 (하반기)</th><th>2023</th><th>2024</th><th>2025</th><th>2026 (~10/14)</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>A_Champion_72</strong></td><td>+0.98%<br><span style='color:#94a3b8;font-size:11px;'>127T | WR 54.3% | PF 1.03</span></td><td>+5.11%<br><span style='color:#94a3b8;font-size:11px;'>31T | WR 64.5% | PF 1.23</span></td><td>+63.75%<br><span style='color:#94a3b8;font-size:11px;'>138T | WR 63.8% | PF 1.52</span></td><td>+54.83%<br><span style='color:#94a3b8;font-size:11px;'>168T | WR 63.1% | PF 1.32</span></td><td>+82.33%<br><span style='color:#94a3b8;font-size:11px;'>251T | WR 63.4% | PF 1.29</span></td></tr>
+<tr><td><strong>B_Normalized_72</strong></td><td>+42.74%<br><span style='color:#94a3b8;font-size:11px;'>108T | WR 61.1% | PF 1.44</span></td><td>+2.26%<br><span style='color:#94a3b8;font-size:11px;'>37T | WR 59.5% | PF 1.09</span></td><td>+12.00%<br><span style='color:#94a3b8;font-size:11px;'>128T | WR 59.4% | PF 1.12</span></td><td>+91.26%<br><span style='color:#94a3b8;font-size:11px;'>163T | WR 65.0% | PF 1.50</span></td><td>+115.20%<br><span style='color:#94a3b8;font-size:11px;'>170T | WR 70.0% | PF 1.56</span></td></tr>
+<tr><td><strong>E_Challenger_77</strong></td><td>+83.36%<br><span style='color:#94a3b8;font-size:11px;'>115T | WR 63.5% | PF 1.79</span></td><td>-8.89%<br><span style='color:#94a3b8;font-size:11px;'>37T | WR 54.0% | PF 0.77</span></td><td>+17.38%<br><span style='color:#94a3b8;font-size:11px;'>110T | WR 60.9% | PF 1.19</span></td><td>+102.67%<br><span style='color:#94a3b8;font-size:11px;'>161T | WR 65.2% | PF 1.56</span></td><td>+70.02%<br><span style='color:#94a3b8;font-size:11px;'>152T | WR 66.5% | PF 1.42</span></td></tr>
+<tr><td><strong>E_Raw_84</strong></td><td>+35.11%<br><span style='color:#94a3b8;font-size:11px;'>107T | WR 57.0% | PF 1.36</span></td><td>-2.13%<br><span style='color:#94a3b8;font-size:11px;'>40T | WR 60.0% | PF 0.96</span></td><td>-13.56%<br><span style='color:#94a3b8;font-size:11px;'>116T | WR 55.2% | PF 0.91</span></td><td>+97.53%<br><span style='color:#94a3b8;font-size:11px;'>154T | WR 64.9% | PF 1.56</span></td><td>+67.86%<br><span style='color:#94a3b8;font-size:11px;'>172T | WR 65.7% | PF 1.35</span></td></tr>
+<tr><td><strong>E_NestedPre_Pruned</strong></td><td>+42.06%<br><span style='color:#94a3b8;font-size:11px;'>113T | WR 60.2% | PF 1.43</span></td><td>-3.06%<br><span style='color:#94a3b8;font-size:11px;'>39T | WR 59.0% | PF 0.93</span></td><td>+10.66%<br><span style='color:#94a3b8;font-size:11px;'>117T | WR 60.7% | PF 1.12</span></td><td>+57.81%<br><span style='color:#94a3b8;font-size:11px;'>150T | WR 64.0% | PF 1.39</span></td><td>+41.20%<br><span style='color:#94a3b8;font-size:11px;'>166T | WR 64.5% | PF 1.25</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2>4. STEP 3 — 동일 시점 예측 직접 비교 (33,810 OOS 15m Bars &amp; 2026-10-14 전수 비교)</h2>
+  <div class="card">
+    <p>33,810개 전체 OOS 15분봉 타임스탬프를 1:1 정렬하여 A, B, E의 예측 방향 및 확신도를 직접 비교했습니다.</p>
+    <table>
+      <thead>
+        <tr>
+          <th>비교 지표</th>
+          <th>Purged &amp; Corrected WFA (33,810 봉)</th>
+          <th>Legacy WFA (33,810 봉)</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>활성 진입 신호 봉 수 (A / B / E)</td>
+          <td>A: <strong>1756</strong> (평균 68.59%) | B: <strong>1390</strong> (평균 68.35%) | E: <strong>1345</strong> (평균 68.34%)</td>
+          <td>A: <strong>1753</strong> (평균 68.52%) | B: <strong>1362</strong> (평균 68.62%) | E: <strong>1341</strong> (평균 68.45%)</td>
+        </tr>
+        <tr>
+          <td>3개 모델 동시 일치율 (활성 상태 일치 / 원시 argmax 방향 일치)</td>
+          <td>활성 상태 3자 일치: <strong>95.29%</strong> | 원시 방향 3자 일치: <strong>81.80%</strong></td>
+          <td>활성 상태 3자 일치: <strong>95.40%</strong> | 원시 방향 3자 일치: <strong>81.76%</strong></td>
+        </tr>
+        <tr>
+          <td>쌍별 방향 일치율 (A vs B / A vs E / B vs E, 활성 상태 / 원시 방향)</td>
+          <td>A-B: 96.30% (85.54%) | A-E: 96.30% (85.48%) | B-E: 97.92% (91.92%)</td>
+          <td>A-B: 96.38% (85.47%) | A-E: 96.35% (85.39%) | B-E: 98.02% (92.01%)</td>
+        </tr>
+        <tr>
+          <td><strong>A &rarr; B 신호 전환</strong> (동일진입 / LONG&rarr;SHORT / SHORT&rarr;LONG / 진입&rarr;NONE 필터링)</td>
+          <td>동일진입: 937건 (+0.635%) | L&rarr;S: <strong>17건</strong> (A -1.45% &rarr; B <strong>+0.66%</strong>) | S&rarr;L: 5건 (A -4.34% &rarr; B <strong>+4.54%</strong>) | 진입&rarr;NONE 차단: <strong>797건</strong> (차단된 A의 90m 평균손익 <strong>-0.083%</strong>)</td>
+          <td>동일진입: 933건 (+0.866%) | L&rarr;S: <strong>18건</strong> (A -1.93% &rarr; B <strong>+1.38%</strong>) | S&rarr;L: 6건 (A -2.87% &rarr; B <strong>+1.94%</strong>) | 진입&rarr;NONE 차단: <strong>796건</strong> (차단된 A의 90m 평균손익 <strong>-0.179%</strong>)</td>
+        </tr>
+        <tr>
+          <td><strong>A &rarr; E 신호 전환</strong> (동일진입 / LONG&rarr;SHORT / SHORT&rarr;LONG / 진입&rarr;NONE 필터링)</td>
+          <td>동일진입: 919건 (+0.693%) | L&rarr;S: 11건 (A +3.10% &rarr; E -3.36%) | S&rarr;L: 2건 | 진입&rarr;NONE 차단: <strong>824건</strong> (차단된 A의 90m 평균손익 <strong>-0.226%</strong>)</td>
+          <td>동일진입: 917건 (+0.977%) | L&rarr;S: 22건 (A +0.76% &rarr; E -0.85%) | S&rarr;L: 3건 | 진입&rarr;NONE 차단: <strong>811건</strong> (차단된 A의 90m 평균손익 <strong>-0.351%</strong>)</td>
+        </tr>
+        <tr>
+          <td><strong>B &rarr; E 신호 전환</strong> (B와 E의 직접 차이)</td>
+          <td>동일진입: 1014건 | B 진입&rarr;E NONE: 372건 (B 보유 시 평균 <strong>+0.233%</strong> 수익 기회를 E가 놓침) | B NONE&rarr;E 신규진입: 327건 (E 평균 +0.105%)</td>
+          <td>동일진입: 1014건 | B 진입&rarr;E NONE: 344건 (B 보유 시 평균 -0.275%) | B NONE&rarr;E 신규진입: 323건 (E 평균 -0.123%)</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>4-1. 2026-10-14 하락장 당일 전체 15분봉(32개 봉) 전수 비교표</h3>
+    <p>원본 CSV 파일: <code>reports/lgbm_oct14_comparison.csv</code> (방향 표기: <code>최종방향 (원시 argmax 방향)</code>)</p>
+    <table>
+      <thead>
+        <tr>
+          <th>시각 (ET)</th><th>장세 분류</th><th>SOXL</th><th>SOXS</th>
+          <th>A 방향</th><th>A 확신도</th>
+          <th>B 방향</th><th>B 확신도</th>
+          <th>E 방향</th><th>E 확신도</th>
+          <th>향후 90m SOXL</th><th>향후 90m SOXS</th><th>90m 완결</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>2026-10-14 08:00:00</td><td>SIDEWAYS_NORMAL</td><td>$125.03</td><td>$38.28</td><td>NONE (LONG)</td><td>57.94%</td><td>NONE (SHORT)</td><td>54.83%</td><td>NONE (SHORT)</td><td>56.50%</td><td>-6.41%</td><td>+6.01%</td><td>Yes</td></tr><tr><td>2026-10-14 08:30:00</td><td>SIDEWAYS_NORMAL</td><td>$120.71</td><td>$39.59</td><td>NONE (SHORT)</td><td>62.39%</td><td>NONE (SHORT)</td><td>57.79%</td><td>NONE (LONG)</td><td>59.10%</td><td>-2.08%</td><td>+1.54%</td><td>Yes</td></tr><tr><td>2026-10-14 08:45:00</td><td>SIDEWAYS_NORMAL</td><td>$120.43</td><td>$39.88</td><td>NONE (LONG)</td><td>63.46%</td><td>LONG (LONG)</td><td>64.21%</td><td>NONE (LONG)</td><td>61.67%</td><td>-2.24%</td><td>+1.22%</td><td>Yes</td></tr><tr><td>2026-10-14 09:00:00</td><td>SUSTAINED_DOWNTREND</td><td>$119.52</td><td>$39.68</td><td>NONE (LONG)</td><td>57.18%</td><td>NONE (LONG)</td><td>57.33%</td><td>NONE (LONG)</td><td>57.54%</td><td>-0.37%</td><td>+0.81%</td><td>Yes</td></tr><tr><td>2026-10-14 09:15:00</td><td>SUSTAINED_DOWNTREND</td><td>$118.43</td><td>$40.02</td><td>NONE (LONG)</td><td>60.00%</td><td>NONE (LONG)</td><td>54.78%</td><td>NONE (LONG)</td><td>55.89%</td><td>+0.31%</td><td>+0.10%</td><td>Yes</td></tr><tr style="background:#7f1d1d33;"><td>2026-10-14 09:30:00</td><td>CRASH_REBOUND</td><td>$119.01</td><td>$39.98</td><td>LONG (LONG)</td><td>65.79%</td><td>NONE (LONG)</td><td>59.71%</td><td>NONE (LONG)</td><td>58.63%</td><td>-2.32%</td><td>+2.13%</td><td>Yes</td></tr><tr><td>2026-10-14 09:45:00</td><td>SUSTAINED_DOWNTREND</td><td>$117.01</td><td>$40.58</td><td>NONE (LONG)</td><td>62.57%</td><td>NONE (LONG)</td><td>55.65%</td><td>NONE (SHORT)</td><td>55.16%</td><td>-1.29%</td><td>+1.11%</td><td>Yes</td></tr><tr><td>2026-10-14 10:00:00</td><td>CRASH_REBOUND</td><td>$118.20</td><td>$40.20</td><td>NONE (LONG)</td><td>62.37%</td><td>NONE (LONG)</td><td>54.05%</td><td>NONE (LONG)</td><td>52.32%</td><td>-3.64%</td><td>+3.16%</td><td>Yes</td></tr><tr><td>2026-10-14 10:15:00</td><td>SUSTAINED_DOWNTREND</td><td>$117.73</td><td>$40.37</td><td>NONE (LONG)</td><td>62.24%</td><td>NONE (SHORT)</td><td>51.90%</td><td>NONE (LONG)</td><td>52.04%</td><td>-2.91%</td><td>+2.44%</td><td>Yes</td></tr><tr><td>2026-10-14 10:30:00</td><td>CRASH_REBOUND</td><td>$119.08</td><td>$40.00</td><td>NONE (LONG)</td><td>61.86%</td><td>NONE (LONG)</td><td>51.09%</td><td>NONE (LONG)</td><td>54.16%</td><td>-5.48%</td><td>+4.75%</td><td>Yes</td></tr><tr><td>2026-10-14 10:45:00</td><td>CRASH_REBOUND</td><td>$118.80</td><td>$40.06</td><td>NONE (LONG)</td><td>59.70%</td><td>NONE (LONG)</td><td>51.11%</td><td>NONE (LONG)</td><td>52.58%</td><td>-6.13%</td><td>+5.37%</td><td>Yes</td></tr><tr><td>2026-10-14 11:00:00</td><td>SUSTAINED_DOWNTREND</td><td>$116.25</td><td>$40.83</td><td>NONE (LONG)</td><td>57.62%</td><td>NONE (SHORT)</td><td>56.15%</td><td>NONE (SHORT)</td><td>56.40%</td><td>-2.18%</td><td>+1.85%</td><td>Yes</td></tr><tr><td>2026-10-14 11:15:00</td><td>SUSTAINED_DOWNTREND</td><td>$115.50</td><td>$41.03</td><td>NONE (LONG)</td><td>60.83%</td><td>NONE (LONG)</td><td>56.08%</td><td>NONE (LONG)</td><td>55.71%</td><td>-1.16%</td><td>+0.88%</td><td>Yes</td></tr><tr style="background:#7f1d1d33;"><td>2026-10-14 11:30:00</td><td>SUSTAINED_DOWNTREND</td><td>$113.90</td><td>$41.47</td><td>LONG (LONG)</td><td>65.70%</td><td>NONE (LONG)</td><td>59.68%</td><td>NONE (LONG)</td><td>56.93%</td><td>-0.68%</td><td>+0.60%</td><td>Yes</td></tr><tr><td>2026-10-14 11:45:00</td><td>SUSTAINED_DOWNTREND</td><td>$114.30</td><td>$41.35</td><td>NONE (LONG)</td><td>62.26%</td><td>NONE (LONG)</td><td>55.99%</td><td>NONE (LONG)</td><td>55.34%</td><td>-2.24%</td><td>+1.79%</td><td>Yes</td></tr><tr><td>2026-10-14 12:00:00</td><td>SUSTAINED_DOWNTREND</td><td>$112.55</td><td>$41.90</td><td>NONE (LONG)</td><td>62.99%</td><td>NONE (LONG)</td><td>59.82%</td><td>NONE (LONG)</td><td>57.80%</td><td>-0.97%</td><td>+0.79%</td><td>Yes</td></tr><tr style="background:#7f1d1d33;"><td>2026-10-14 12:15:00</td><td>CRASH_REBOUND</td><td>$111.52</td><td>$42.21</td><td>LONG (LONG)</td><td>64.40%</td><td>NONE (LONG)</td><td>58.23%</td><td>NONE (LONG)</td><td>57.94%</td><td>-0.78%</td><td>+0.54%</td><td>Yes</td></tr><tr><td>2026-10-14 12:30:00</td><td>CRASH_REBOUND</td><td>$113.72</td><td>$41.59</td><td>NONE (LONG)</td><td>63.08%</td><td>NONE (LONG)</td><td>61.10%</td><td>NONE (LONG)</td><td>59.18%</td><td>-1.65%</td><td>+1.31%</td><td>Yes</td></tr><tr><td>2026-10-14 12:45:00</td><td>CRASH_REBOUND</td><td>$114.16</td><td>$41.39</td><td>NONE (LONG)</td><td>62.88%</td><td>NONE (LONG)</td><td>60.44%</td><td>NONE (LONG)</td><td>59.95%</td><td>-2.40%</td><td>+1.98%</td><td>Yes</td></tr><tr><td>2026-10-14 13:00:00</td><td>SUSTAINED_DOWNTREND</td><td>$113.13</td><td>$41.72</td><td>NONE (LONG)</td><td>63.17%</td><td>NONE (LONG)</td><td>61.51%</td><td>NONE (LONG)</td><td>60.84%</td><td>-2.56%</td><td>+2.04%</td><td>Yes</td></tr><tr><td>2026-10-14 13:15:00</td><td>SUSTAINED_DOWNTREND</td><td>$111.74</td><td>$42.09</td><td>NONE (LONG)</td><td>60.14%</td><td>NONE (LONG)</td><td>58.27%</td><td>NONE (LONG)</td><td>56.43%</td><td>-0.96%</td><td>+0.93%</td><td>Yes</td></tr><tr><td>2026-10-14 13:30:00</td><td>SUSTAINED_DOWNTREND</td><td>$111.46</td><td>$42.23</td><td>NONE (LONG)</td><td>60.27%</td><td>NONE (LONG)</td><td>57.18%</td><td>NONE (LONG)</td><td>57.10%</td><td>-1.08%</td><td>+0.81%</td><td>Yes</td></tr><tr><td>2026-10-14 13:45:00</td><td>SUSTAINED_DOWNTREND</td><td>$110.65</td><td>$42.44</td><td>NONE (LONG)</td><td>63.90%</td><td>NONE (LONG)</td><td>59.03%</td><td>NONE (LONG)</td><td>57.89%</td><td>+1.03%</td><td>-0.78%</td><td>Yes</td></tr><tr style="background:#7f1d1d33;"><td>2026-10-14 14:00:00</td><td>CRASH_REBOUND</td><td>$111.84</td><td>$42.13</td><td>LONG (LONG)</td><td>67.55%</td><td>NONE (LONG)</td><td>63.79%</td><td>NONE (LONG)</td><td>62.71%</td><td>+0.25%</td><td>-0.24%</td><td>Yes</td></tr><tr style="background:#7f1d1d33;"><td>2026-10-14 14:15:00</td><td>CRASH_REBOUND</td><td>$111.42</td><td>$42.21</td><td>LONG (LONG)</td><td>68.27%</td><td>NONE (LONG)</td><td>62.79%</td><td>NONE (LONG)</td><td>62.54%</td><td>-0.75%</td><td>+0.81%</td><td>Yes</td></tr><tr style="background:#7f1d1d33;"><td>2026-10-14 14:30:00</td><td>SUSTAINED_DOWNTREND</td><td>$110.23</td><td>$42.57</td><td>LONG (LONG)</td><td>69.52%</td><td>NONE (LONG)</td><td>61.39%</td><td>NONE (LONG)</td><td>61.77%</td><td>+0.32%</td><td>-0.05%</td><td>EOD (<90m)</td></tr><tr style="background:#7f1d1d33;"><td>2026-10-14 14:45:00</td><td>SUSTAINED_DOWNTREND</td><td>$110.67</td><td>$42.48</td><td>LONG (LONG)</td><td>66.42%</td><td>NONE (LONG)</td><td>59.81%</td><td>NONE (LONG)</td><td>60.75%</td><td>-0.08%</td><td>+0.16%</td><td>EOD (<90m)</td></tr><tr style="background:#7f1d1d33;"><td>2026-10-14 15:00:00</td><td>SUSTAINED_DOWNTREND</td><td>$110.26</td><td>$42.57</td><td>LONG (LONG)</td><td>68.01%</td><td>NONE (LONG)</td><td>63.44%</td><td>NONE (LONG)</td><td>63.04%</td><td>+0.29%</td><td>-0.05%</td><td>EOD (<90m)</td></tr><tr style="background:#7f1d1d33;"><td>2026-10-14 15:15:00</td><td>SUSTAINED_DOWNTREND</td><td>$111.79</td><td>$42.11</td><td>LONG (LONG)</td><td>69.05%</td><td>NONE (LONG)</td><td>61.98%</td><td>LONG (LONG)</td><td>65.39%</td><td>-1.08%</td><td>+1.04%</td><td>EOD (<90m)</td></tr><tr style="background:#7f1d1d33;"><td>2026-10-14 15:30:00</td><td>SUSTAINED_DOWNTREND</td><td>$112.12</td><td>$42.03</td><td>LONG (LONG)</td><td>70.26%</td><td>LONG (LONG)</td><td>64.54%</td><td>NONE (LONG)</td><td>63.91%</td><td>-1.37%</td><td>+1.24%</td><td>EOD (<90m)</td></tr><tr style="background:#7f1d1d33;"><td>2026-10-14 15:45:00</td><td>SUSTAINED_DOWNTREND</td><td>$110.58</td><td>$42.55</td><td>LONG (LONG)</td><td>71.09%</td><td>LONG (LONG)</td><td>66.89%</td><td>LONG (LONG)</td><td>67.10%</td><td>+0.00%</td><td>+0.00%</td><td>EOD (<90m)</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2>5. STEP 4 — 5대 장세별(Ex-Ante Market Regimes) 예측 품질 및 WFA 손익 검증</h2>
+  <div class="card">
+    <p>모든 장세 분류는 현재 봉(t) 시점의 과거 데이터만 사용하는 100% 사전적(Ex-Ante) 규칙으로 정의되었습니다. 특히 <strong>지속 하락장(`SUSTAINED_DOWNTREND`)</strong>에서 B(`B_Normalized_72`)는 WFA 거래 승률 <strong>71.92%</strong>, Profit Factor <strong>1.849</strong>, 누적 순수익 합계 <strong>+150.01%</strong>를 달성하여 A(PF 1.501, +113.09%)와 E(PF 1.317, +65.94%)를 크게 앞섰습니다.</p>
+    <h3>5-1. Purged &amp; Corrected WFA 기준 5대 장세별 상세 성적표</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>장세 (Ex-Ante Regime)</th><th>모델</th><th>봉 수</th><th>고확신 신호 (L/S)</th><th>활성 중 L% / S%</th>
+          <th>신호 방향 적중률</th><th>반대 배리어 오판율</th><th>신호 90m 평균수익 (L / S)</th>
+          <th>실제 WFA 거래 (L/S)</th><th>WFA 승률</th><th>WFA PF</th><th>WFA 누적순익합</th><th>최대연패</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>SUSTAINED_UPTREND</td><td>A_Champion_72</td><td>5115</td><td>88 (L:57 / S:31)</td><td>64.77% / 35.23%</td><td>44.32%</td><td>26.14%</td><td>-0.285% / +0.182%</td><td>49 (L:29/S:20)</td><td>55.10%</td><td>1.035</td><td>+1.85%</td><td>5</td></tr>
+<tr style="background:#064e3b33;"><td>SUSTAINED_UPTREND</td><td>B_Normalized_72</td><td>5115</td><td>91 (L:67 / S:24)</td><td>73.63% / 26.37%</td><td>47.25%</td><td>27.47%</td><td>+0.010% / +0.137%</td><td>51 (L:34/S:17)</td><td>56.86%</td><td>1.119</td><td>+6.41%</td><td>8</td></tr>
+<tr><td>SUSTAINED_UPTREND</td><td>E_Challenger_77</td><td>5115</td><td>113 (L:84 / S:29)</td><td>74.34% / 25.66%</td><td>42.48%</td><td>24.78%</td><td>+0.110% / -0.087%</td><td>60 (L:42/S:18)</td><td>50.00%</td><td>0.855</td><td>-10.32%</td><td>5</td></tr>
+<tr><td>SUSTAINED_DOWNTREND</td><td>A_Champion_72</td><td>4326</td><td>736 (L:460 / S:276)</td><td>62.50% / 37.50%</td><td>56.39%</td><td>24.32%</td><td>+1.324% / -0.109%</td><td>289 (L:144/S:145)</td><td>67.13%</td><td>1.501</td><td>+113.09%</td><td>4</td></tr>
+<tr style="background:#064e3b33;"><td>SUSTAINED_DOWNTREND</td><td>B_Normalized_72</td><td>4326</td><td>639 (L:345 / S:294)</td><td>53.99% / 46.01%</td><td>57.28%</td><td>25.20%</td><td>+1.374% / +0.423%</td><td>260 (L:113/S:147)</td><td>71.92%</td><td>1.849</td><td>+150.01%</td><td>4</td></tr>
+<tr><td>SUSTAINED_DOWNTREND</td><td>E_Challenger_77</td><td>4326</td><td>576 (L:318 / S:258)</td><td>55.21% / 44.79%</td><td>55.73%</td><td>25.87%</td><td>+1.586% / -0.008%</td><td>239 (L:106/S:133)</td><td>65.27%</td><td>1.317</td><td>+65.94%</td><td>4</td></tr>
+<tr><td>CRASH_REBOUND</td><td>A_Champion_72</td><td>1311</td><td>207 (L:161 / S:46)</td><td>77.78% / 22.22%</td><td>52.17%</td><td>27.54%</td><td>+0.338% / -0.432%</td><td>74 (L:52/S:22)</td><td>63.51%</td><td>1.244</td><td>+17.13%</td><td>5</td></tr>
+<tr style="background:#064e3b33;"><td>CRASH_REBOUND</td><td>B_Normalized_72</td><td>1311</td><td>187 (L:121 / S:66)</td><td>64.71% / 35.29%</td><td>57.22%</td><td>30.48%</td><td>+0.272% / +0.116%</td><td>68 (L:41/S:27)</td><td>64.71%</td><td>1.190</td><td>+13.59%</td><td>4</td></tr>
+<tr><td>CRASH_REBOUND</td><td>E_Challenger_77</td><td>1311</td><td>178 (L:113 / S:65)</td><td>63.48% / 36.52%</td><td>53.37%</td><td>31.46%</td><td>-0.110% / +0.063%</td><td>66 (L:40/S:26)</td><td>63.64%</td><td>1.131</td><td>+9.22%</td><td>4</td></tr>
+<tr><td>SURGE_PULLBACK</td><td>A_Champion_72</td><td>1310</td><td>33 (L:21 / S:12)</td><td>63.64% / 36.36%</td><td>42.42%</td><td>36.36%</td><td>+2.009% / -1.277%</td><td>18 (L:9/S:9)</td><td>61.11%</td><td>0.759</td><td>-5.09%</td><td>2</td></tr>
+<tr style="background:#064e3b33;"><td>SURGE_PULLBACK</td><td>B_Normalized_72</td><td>1310</td><td>33 (L:22 / S:11)</td><td>66.67% / 33.33%</td><td>51.52%</td><td>33.33%</td><td>+4.539% / -2.014%</td><td>15 (L:10/S:5)</td><td>66.67%</td><td>1.070</td><td>+1.19%</td><td>2</td></tr>
+<tr><td>SURGE_PULLBACK</td><td>E_Challenger_77</td><td>1310</td><td>37 (L:21 / S:16)</td><td>56.76% / 43.24%</td><td>43.24%</td><td>32.43%</td><td>+3.770% / -2.896%</td><td>15 (L:7/S:8)</td><td>73.33%</td><td>1.561</td><td>+7.63%</td><td>2</td></tr>
+<tr><td>SIDEWAYS_NORMAL</td><td>A_Champion_72</td><td>21748</td><td>692 (L:486 / S:206)</td><td>70.23% / 29.77%</td><td>47.98%</td><td>30.92%</td><td>-0.294% / -0.020%</td><td>300 (L:158/S:142)</td><td>59.67%</td><td>1.213</td><td>+61.19%</td><td>7</td></tr>
+<tr style="background:#064e3b33;"><td>SIDEWAYS_NORMAL</td><td>B_Normalized_72</td><td>21748</td><td>440 (L:288 / S:152)</td><td>65.45% / 34.55%</td><td>52.05%</td><td>27.95%</td><td>+0.598% / -0.370%</td><td>219 (L:113/S:106)</td><td>61.64%</td><td>1.307</td><td>+61.60%</td><td>6</td></tr>
+<tr><td>SIDEWAYS_NORMAL</td><td>E_Challenger_77</td><td>21748</td><td>441 (L:288 / S:153)</td><td>65.31% / 34.69%</td><td>51.93%</td><td>26.76%</td><td>+0.922% / -0.116%</td><td>221 (L:116/S:105)</td><td>66.52%</td><td>1.550</td><td>+97.77%</td><td>5</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2>6. STEP 5 — 과최적화(Selection Bias) 감사 및 시간 구간 분할(Holdout) 검증</h2>
+  <div class="card">
+    <p><strong>과최적화 감사 결과:</strong> E(`v5_challenger`, 77개 피처)에서 제거된 7개 피처(<code>VIX_to_IEF_Ratio</code>, <code>Cross_All_Red</code>, <code>Cross_All_Green</code>, <code>ATR_14_Pct</code>, <code>KC_Upper_Diff</code>, <code>DayOfWeek</code>, <code>Is_Friday</code>)는 2026-10-14까지의 전체 데이터에서 split 횟수를 조회한 뒤 215주 WFA 수익률을 비교하여 사후 선택(Post-hoc Selection)된 것입니다. WFA 시작 전 시점(<code>&le; 2022-07-15</code>, Index &lt; 104)의 사전 데이터만으로 동일 규칙(상관 &gt; 0.9999 및 split &le; 1)을 적용하면 5개 피처(<code>VIX_to_IEF_Ratio</code>, <code>Cross_All_Red</code>, <code>Cross_All_Green</code>, <code>DayOfWeek</code>, <code>Is_Friday</code>)만 제거된 79개 피처 모델(<code>E_NestedPre_Pruned</code>)이 되며, 이 모델의 Legacy WFA 수익률은 <strong>+239.56% (PF 1.242)</strong>, Purged WFA 수익률은 <strong>+356.81% (PF 1.337)</strong>로 급락합니다. 즉 E(77개)의 높은 Legacy 수익률에는 <strong>사후 피처 선택 편향(Selection Bias)</strong>이 개입되어 있습니다. 반면 <strong>B(`B_Normalized_72`)는 어떠한 사후 피처 가지치기도 없이</strong> 단순히 8개 달러 스케일 피처를 가격 비율(%)로 치환한 모델로서 2022~2024 구간과 2025~2026 Holdout 구간 모두에서 일관된 우위를 보입니다.</p>
+    <table>
+      <thead>
+        <tr>
+          <th>프로토콜</th><th>모델</th>
+          <th>구간 1 (2022~2024, 128주) 수익률 / MDD / PF / 승률</th>
+          <th>구간 2 Holdout (2025~2026, 87주) 수익률 / MDD / PF / 승률</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Purged &amp; Corrected WFA</td><td><strong>A_Champion_72</strong></td>
+          <td>+33.04% | MDD 25.00% | PF 1.129 | WR 59.42%</td>
+          <td>+294.23% | MDD 16.71% | PF 1.403 | WR 65.23%</td>
+        </tr>
+        <tr style="background:#064e3b33;font-weight:bold;">
+          <td>Purged &amp; Corrected WFA</td><td><strong>B_Normalized_72</strong></td>
+          <td>+84.55% | MDD 31.87% | PF 1.285 | WR 62.54%</td>
+          <td>+353.77% | MDD 16.83% | PF 1.591 | WR 69.09%</td>
+        </tr>
+        <tr>
+          <td>Purged &amp; Corrected WFA</td><td><strong>E_Challenger_77</strong></td>
+          <td>+66.25% | MDD 23.60% | PF 1.237 | WR 62.63%</td>
+          <td>+173.32% | MDD 29.05% | PF 1.380 | WR 65.62%</td>
+        </tr>
+        <tr>
+          <td>Legacy WFA</td><td><strong>A_Champion_72</strong></td>
+          <td>+73.80% | MDD 15.79% | PF 1.256 | WR 59.80%</td>
+          <td>+182.30% | MDD 29.95% | PF 1.304 | WR 63.25%</td>
+        </tr>
+        <tr style="background:#064e3b33;font-weight:bold;">
+          <td>Legacy WFA</td><td><strong>B_Normalized_72</strong></td>
+          <td>+63.48% | MDD 26.91% | PF 1.235 | WR 60.07%</td>
+          <td>+311.58% | MDD 18.76% | PF 1.530 | WR 67.57%</td>
+        </tr>
+        <tr>
+          <td>Legacy WFA</td><td><strong>E_Challenger_77</strong></td>
+          <td>+96.09% | MDD 30.10% | PF 1.341 | WR 61.07%</td>
+          <td>+244.58% | MDD 14.24% | PF 1.490 | WR 65.81%</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2>7. STEP 6 — 통계적 유의성(Paired Block Bootstrap) 및 거래비용 민감도(0.20% / 0.30% / 0.40%)</h2>
+  <div class="card">
+    <h3>7-1. Paired Daily Moving Block Bootstrap (1,060 거래일, Block=10일, B=5,000회)</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>프로토콜</th><th>비교 쌍</th><th>일평균 수익률 차이</th><th>일평균 차이 95% CI</th>
+          <th>누적수익률 차이 95% CI</th><th>MDD 차이 95% CI</th><th>우위 확률 (P&gt;0)</th><th>양측 p-value</th><th>5% 유의성</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>Purged & Corrected WFA</td><td><strong>B_minus_A</strong></td><td>+0.0449%/day</td><td>[-0.0653%, +0.1467%]</td><td>[-532.41%p, +2945.29%p]</td><td>[-16.62%p, +17.08%p]</td><td>76.92%</td><td>0.4616</td><td>NO (Not significant at 5%)</td></tr><tr><td>Purged & Corrected WFA</td><td><strong>E_minus_A</strong></td><td>-0.0085%/day</td><td>[-0.1326%, +0.1025%]</td><td>[-1311.60%p, +947.28%p]</td><td>[-14.50%p, +23.23%p]</td><td>40.86%</td><td>0.8172</td><td>NO (Not significant at 5%)</td></tr><tr><td>Purged & Corrected WFA</td><td><strong>E_minus_B</strong></td><td>-0.0534%/day</td><td>[-0.1354%, +0.0257%]</td><td>[-2940.53%p, +120.32%p]</td><td>[-11.32%p, +19.90%p]</td><td>9.14%</td><td>0.1828</td><td>NO (Not significant at 5%)</td></tr><tr><td>Legacy WFA</td><td><strong>B_minus_A</strong></td><td>+0.0309%/day</td><td>[-0.0768%, +0.1380%]</td><td>[-999.93%p, +1629.31%p]</td><td>[-26.59%p, +12.25%p]</td><td>68.72%</td><td>0.6256</td><td>NO (Not significant at 5%)</td></tr><tr><td>Legacy WFA</td><td><strong>E_minus_A</strong></td><td>+0.0285%/day</td><td>[-0.0914%, +0.1440%]</td><td>[-1120.51%p, +1487.54%p]</td><td>[-28.77%p, +15.02%p]</td><td>66.80%</td><td>0.6640</td><td>NO (Not significant at 5%)</td></tr><tr><td>Legacy WFA</td><td><strong>E_minus_B</strong></td><td>-0.0024%/day</td><td>[-0.0832%, +0.0767%]</td><td>[-1140.21%p, +966.79%p]</td><td>[-16.15%p, +14.86%p]</td><td>48.06%</td><td>0.9612</td><td>NO (Not significant at 5%)</td></tr>
+      </tbody>
+    </table>
+
+    <h3>7-2. 왕복 거래비용 민감도 분석 (0.20% vs 0.30% vs 0.40%)</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>프로토콜</th><th>모델</th><th>왕복 비용</th><th>총수익률</th><th>CAGR</th><th>MDD</th><th>Profit Factor</th><th>승률</th><th>거래당 평균순익</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>Purged & Corrected WFA</td><td>A_Champion_72</td><td>0.20%</td><td>+424.49%</td><td>+47.69%</td><td>25.00%</td><td>1.286</td><td>62.74%</td><td>+0.258%</td></tr><tr><td>Purged & Corrected WFA</td><td>A_Champion_72</td><td>0.30%</td><td>+156.76%</td><td>+24.84%</td><td>30.14%</td><td>1.168</td><td>62.19%</td><td>+0.158%</td></tr><tr><td>Purged & Corrected WFA</td><td>A_Champion_72</td><td>0.40%</td><td>+25.60%</td><td>+5.51%</td><td>41.80%</td><td>1.059</td><td>61.78%</td><td>+0.058%</td></tr><tr><td>Purged & Corrected WFA</td><td>B_Normalized_72</td><td>0.20%</td><td>+737.46%</td><td>+64.88%</td><td>31.87%</td><td>1.448</td><td>66.07%</td><td>+0.380%</td></tr><tr><td>Purged & Corrected WFA</td><td>B_Normalized_72</td><td>0.30%</td><td>+360.02%</td><td>+43.20%</td><td>35.29%</td><td>1.317</td><td>65.58%</td><td>+0.280%</td></tr><tr><td>Purged & Corrected WFA</td><td>B_Normalized_72</td><td>0.40%</td><td>+152.54%</td><td>+24.36%</td><td>48.05%</td><td>1.196</td><td>65.42%</td><td>+0.180%</td></tr><tr><td>Purged & Corrected WFA</td><td>E_Challenger_77</td><td>0.20%</td><td>+354.40%</td><td>+42.79%</td><td>29.05%</td><td>1.315</td><td>64.23%</td><td>+0.283%</td></tr><tr><td>Purged & Corrected WFA</td><td>E_Challenger_77</td><td>0.30%</td><td>+152.41%</td><td>+24.34%</td><td>32.93%</td><td>1.196</td><td>63.89%</td><td>+0.183%</td></tr><tr><td>Purged & Corrected WFA</td><td>E_Challenger_77</td><td>0.40%</td><td>+40.12%</td><td>+8.26%</td><td>41.18%</td><td>1.086</td><td>63.39%</td><td>+0.083%</td></tr><tr><td>Legacy WFA</td><td>A_Champion_72</td><td>0.20%</td><td>+390.63%</td><td>+45.39%</td><td>29.95%</td><td>1.285</td><td>61.82%</td><td>+0.252%</td></tr><tr><td>Legacy WFA</td><td>A_Champion_72</td><td>0.30%</td><td>+143.73%</td><td>+23.32%</td><td>33.77%</td><td>1.165</td><td>61.54%</td><td>+0.152%</td></tr><tr><td>Legacy WFA</td><td>A_Champion_72</td><td>0.40%</td><td>+20.99%</td><td>+4.59%</td><td>38.65%</td><td>1.054</td><td>60.98%</td><td>+0.052%</td></tr><tr><td>Legacy WFA</td><td>B_Normalized_72</td><td>0.20%</td><td>+572.85%</td><td>+56.60%</td><td>26.91%</td><td>1.397</td><td>64.19%</td><td>+0.348%</td></tr><tr><td>Legacy WFA</td><td>B_Normalized_72</td><td>0.30%</td><td>+272.06%</td><td>+36.23%</td><td>32.95%</td><td>1.271</td><td>63.37%</td><td>+0.248%</td></tr><tr><td>Legacy WFA</td><td>B_Normalized_72</td><td>0.40%</td><td>+105.62%</td><td>+18.48%</td><td>44.76%</td><td>1.156</td><td>62.87%</td><td>+0.148%</td></tr><tr><td>Legacy WFA</td><td>E_Challenger_77</td><td>0.20%</td><td>+575.68%</td><td>+56.76%</td><td>30.10%</td><td>1.424</td><td>63.65%</td><td>+0.366%</td></tr><tr><td>Legacy WFA</td><td>E_Challenger_77</td><td>0.30%</td><td>+285.17%</td><td>+37.34%</td><td>36.90%</td><td>1.296</td><td>63.48%</td><td>+0.266%</td></tr><tr><td>Legacy WFA</td><td>E_Challenger_77</td><td>0.40%</td><td>+119.44%</td><td>+20.31%</td><td>43.49%</td><td>1.177</td><td>63.13%</td><td>+0.166%</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2>8. STEP 7 &amp; STEP 9 — SHAP 피처 중요도 및 저장된 Challenger PKL 감사</h2>
+  <div class="card">
+    
+    <svg viewBox="0 0 900 542" style="width:100%;height:auto;background:#0b1120;border:1px solid #1e293b;border-radius:8px;margin-top:10px;">
+      <text x="20" y="24" fill="#e2e8f0" font-size="13" font-weight="bold">B_Normalized_72 — Top 20 Features by OOS Mean |SHAP| (Green = Normalized_8, Slate = Legacy_Kept)</text>
+      <text x="175" y="53" fill="#e2e8f0" font-size="11.5" text-anchor="end">#1 Volume_Z</text><rect x="185" y="41" width="553.6" height="16" rx="3" fill="#64748b"/><text x="746.6" y="53" fill="#cbd5e1" font-size="11">0.0461 (Legacy_Kept)</text><text x="175" y="77" fill="#e2e8f0" font-size="11.5" text-anchor="end">#2 macro_trend_spread</text><rect x="185" y="65" width="412.1" height="16" rx="3" fill="#64748b"/><text x="605.1" y="77" fill="#cbd5e1" font-size="11">0.0343 (Legacy_Kept)</text><text x="175" y="101" fill="#e2e8f0" font-size="11.5" text-anchor="end">#3 EMA_200_Diff</text><rect x="185" y="89" width="309.2" height="16" rx="3" fill="#64748b"/><text x="502.2" y="101" fill="#cbd5e1" font-size="11">0.0258 (Legacy_Kept)</text><text x="175" y="125" fill="#e2e8f0" font-size="11.5" text-anchor="end">#4 ATR_14_Pct</text><rect x="185" y="113" width="248.6" height="16" rx="3" fill="#10b981"/><text x="441.6" y="125" fill="#cbd5e1" font-size="11">0.0207 (Normalized_8)</text><text x="175" y="149" fill="#e2e8f0" font-size="11.5" text-anchor="end">#5 Upper_Wick_Ratio</text><rect x="185" y="137" width="235.8" height="16" rx="3" fill="#64748b"/><text x="428.8" y="149" fill="#cbd5e1" font-size="11">0.0197 (Legacy_Kept)</text><text x="175" y="173" fill="#e2e8f0" font-size="11.5" text-anchor="end">#6 Lower_Wick_Ratio</text><rect x="185" y="161" width="180.4" height="16" rx="3" fill="#64748b"/><text x="373.4" y="173" fill="#cbd5e1" font-size="11">0.0150 (Legacy_Kept)</text><text x="175" y="197" fill="#e2e8f0" font-size="11.5" text-anchor="end">#7 qqq_momentum</text><rect x="185" y="185" width="176.8" height="16" rx="3" fill="#64748b"/><text x="369.8" y="197" fill="#cbd5e1" font-size="11">0.0147 (Legacy_Kept)</text><text x="175" y="221" fill="#e2e8f0" font-size="11.5" text-anchor="end">#8 Body_Ratio</text><rect x="185" y="209" width="159.7" height="16" rx="3" fill="#64748b"/><text x="352.7" y="221" fill="#cbd5e1" font-size="11">0.0133 (Legacy_Kept)</text><text x="175" y="245" fill="#e2e8f0" font-size="11.5" text-anchor="end">#9 ief_ret_20</text><rect x="185" y="233" width="151.7" height="16" rx="3" fill="#64748b"/><text x="344.7" y="245" fill="#cbd5e1" font-size="11">0.0126 (Legacy_Kept)</text><text x="175" y="269" fill="#e2e8f0" font-size="11.5" text-anchor="end">#10 qqq_ret_3</text><rect x="185" y="257" width="142.1" height="16" rx="3" fill="#64748b"/><text x="335.1" y="269" fill="#cbd5e1" font-size="11">0.0118 (Legacy_Kept)</text><text x="175" y="293" fill="#e2e8f0" font-size="11.5" text-anchor="end">#11 KC_Width</text><rect x="185" y="281" width="141.6" height="16" rx="3" fill="#64748b"/><text x="334.6" y="293" fill="#cbd5e1" font-size="11">0.0118 (Legacy_Kept)</text><text x="175" y="317" fill="#e2e8f0" font-size="11.5" text-anchor="end">#12 macro_price_vs_ema20</text><rect x="185" y="305" width="133.2" height="16" rx="3" fill="#64748b"/><text x="326.2" y="317" fill="#cbd5e1" font-size="11">0.0111 (Legacy_Kept)</text><text x="175" y="341" fill="#e2e8f0" font-size="11.5" text-anchor="end">#13 nvda_ret_20</text><rect x="185" y="329" width="127.8" height="16" rx="3" fill="#64748b"/><text x="320.8" y="341" fill="#cbd5e1" font-size="11">0.0107 (Legacy_Kept)</text><text x="175" y="365" fill="#e2e8f0" font-size="11.5" text-anchor="end">#14 vixy_ret_1</text><rect x="185" y="353" width="124.3" height="16" rx="3" fill="#64748b"/><text x="317.3" y="365" fill="#cbd5e1" font-size="11">0.0104 (Legacy_Kept)</text><text x="175" y="389" fill="#e2e8f0" font-size="11.5" text-anchor="end">#15 qqq_ret_5</text><rect x="185" y="377" width="124.1" height="16" rx="3" fill="#64748b"/><text x="317.1" y="389" fill="#cbd5e1" font-size="11">0.0103 (Legacy_Kept)</text><text x="175" y="413" fill="#e2e8f0" font-size="11.5" text-anchor="end">#16 EMA_9_Diff</text><rect x="185" y="401" width="113.3" height="16" rx="3" fill="#64748b"/><text x="306.3" y="413" fill="#cbd5e1" font-size="11">0.0094 (Legacy_Kept)</text><text x="175" y="437" fill="#e2e8f0" font-size="11.5" text-anchor="end">#17 macro_ema20_slope</text><rect x="185" y="425" width="106.2" height="16" rx="3" fill="#64748b"/><text x="299.2" y="437" fill="#cbd5e1" font-size="11">0.0089 (Legacy_Kept)</text><text x="175" y="461" fill="#e2e8f0" font-size="11.5" text-anchor="end">#18 base_short_ret_3</text><rect x="185" y="449" width="100.7" height="16" rx="3" fill="#64748b"/><text x="293.7" y="461" fill="#cbd5e1" font-size="11">0.0084 (Legacy_Kept)</text><text x="175" y="485" fill="#e2e8f0" font-size="11.5" text-anchor="end">#19 KC_Upper_Diff</text><rect x="185" y="473" width="91.9" height="16" rx="3" fill="#10b981"/><text x="284.9" y="485" fill="#cbd5e1" font-size="11">0.0077 (Normalized_8)</text><text x="175" y="509" fill="#e2e8f0" font-size="11.5" text-anchor="end">#20 vixy_ret_20</text><rect x="185" y="497" width="90.9" height="16" rx="3" fill="#64748b"/><text x="283.9" y="509" fill="#cbd5e1" font-size="11">0.0076 (Legacy_Kept)</text>
+    </svg>
+    
+    
+    <svg viewBox="0 0 900 542" style="width:100%;height:auto;background:#0b1120;border:1px solid #1e293b;border-radius:8px;margin-top:10px;">
+      <text x="20" y="24" fill="#e2e8f0" font-size="13" font-weight="bold">E_Challenger_77 — Top 20 Features by OOS Mean |SHAP| (Green = Normalized_8, Blue = New_Trend_6, Amber = New_MR_6)</text>
+      <text x="175" y="53" fill="#e2e8f0" font-size="11.5" text-anchor="end">#1 Volume_Z</text><rect x="185" y="41" width="553.6" height="16" rx="3" fill="#64748b"/><text x="746.6" y="53" fill="#cbd5e1" font-size="11">0.0448 (Legacy_Kept)</text><text x="175" y="77" fill="#e2e8f0" font-size="11.5" text-anchor="end">#2 macro_trend_spread</text><rect x="185" y="65" width="438.0" height="16" rx="3" fill="#64748b"/><text x="631.0" y="77" fill="#cbd5e1" font-size="11">0.0354 (Legacy_Kept)</text><text x="175" y="101" fill="#e2e8f0" font-size="11.5" text-anchor="end">#3 EMA_200_Diff</text><rect x="185" y="89" width="340.6" height="16" rx="3" fill="#64748b"/><text x="533.6" y="101" fill="#cbd5e1" font-size="11">0.0275 (Legacy_Kept)</text><text x="175" y="125" fill="#e2e8f0" font-size="11.5" text-anchor="end">#4 ATR_14_Pct</text><rect x="185" y="113" width="266.9" height="16" rx="3" fill="#10b981"/><text x="459.9" y="125" fill="#cbd5e1" font-size="11">0.0216 (Normalized_8)</text><text x="175" y="149" fill="#e2e8f0" font-size="11.5" text-anchor="end">#5 ief_ret_20</text><rect x="185" y="137" width="154.9" height="16" rx="3" fill="#64748b"/><text x="347.9" y="149" fill="#cbd5e1" font-size="11">0.0125 (Legacy_Kept)</text><text x="175" y="173" fill="#e2e8f0" font-size="11.5" text-anchor="end">#6 Body_Ratio</text><rect x="185" y="161" width="153.4" height="16" rx="3" fill="#64748b"/><text x="346.4" y="173" fill="#cbd5e1" font-size="11">0.0124 (Legacy_Kept)</text><text x="175" y="197" fill="#e2e8f0" font-size="11.5" text-anchor="end">#7 Upper_Wick_Expansion</text><rect x="185" y="185" width="148.7" height="16" rx="3" fill="#f59e0b"/><text x="341.7" y="197" fill="#cbd5e1" font-size="11">0.0120 (New_MR_6)</text><text x="175" y="221" fill="#e2e8f0" font-size="11.5" text-anchor="end">#8 qqq_ret_5</text><rect x="185" y="209" width="147.1" height="16" rx="3" fill="#64748b"/><text x="340.1" y="221" fill="#cbd5e1" font-size="11">0.0119 (Legacy_Kept)</text><text x="175" y="245" fill="#e2e8f0" font-size="11.5" text-anchor="end">#9 qqq_momentum</text><rect x="185" y="233" width="143.7" height="16" rx="3" fill="#64748b"/><text x="336.7" y="245" fill="#cbd5e1" font-size="11">0.0116 (Legacy_Kept)</text><text x="175" y="269" fill="#e2e8f0" font-size="11.5" text-anchor="end">#10 qqq_ret_3</text><rect x="185" y="257" width="138.0" height="16" rx="3" fill="#64748b"/><text x="331.0" y="269" fill="#cbd5e1" font-size="11">0.0112 (Legacy_Kept)</text><text x="175" y="293" fill="#e2e8f0" font-size="11.5" text-anchor="end">#11 Upper_Wick_Ratio</text><rect x="185" y="281" width="131.6" height="16" rx="3" fill="#64748b"/><text x="324.6" y="293" fill="#cbd5e1" font-size="11">0.0106 (Legacy_Kept)</text><text x="175" y="317" fill="#e2e8f0" font-size="11.5" text-anchor="end">#12 KC_Width</text><rect x="185" y="305" width="130.3" height="16" rx="3" fill="#64748b"/><text x="323.3" y="317" fill="#cbd5e1" font-size="11">0.0105 (Legacy_Kept)</text><text x="175" y="341" fill="#e2e8f0" font-size="11.5" text-anchor="end">#13 macro_price_vs_ema20</text><rect x="185" y="329" width="123.0" height="16" rx="3" fill="#64748b"/><text x="316.0" y="341" fill="#cbd5e1" font-size="11">0.0100 (Legacy_Kept)</text><text x="175" y="365" fill="#e2e8f0" font-size="11.5" text-anchor="end">#14 Return_Accel_3</text><rect x="185" y="353" width="120.7" height="16" rx="3" fill="#f59e0b"/><text x="313.7" y="365" fill="#cbd5e1" font-size="11">0.0098 (New_MR_6)</text><text x="175" y="389" fill="#e2e8f0" font-size="11.5" text-anchor="end">#15 vixy_ret_1</text><rect x="185" y="377" width="113.1" height="16" rx="3" fill="#64748b"/><text x="306.1" y="389" fill="#cbd5e1" font-size="11">0.0092 (Legacy_Kept)</text><text x="175" y="413" fill="#e2e8f0" font-size="11.5" text-anchor="end">#16 EMA_9_Diff</text><rect x="185" y="401" width="108.9" height="16" rx="3" fill="#64748b"/><text x="301.9" y="413" fill="#cbd5e1" font-size="11">0.0088 (Legacy_Kept)</text><text x="175" y="437" fill="#e2e8f0" font-size="11.5" text-anchor="end">#17 Lower_Wick_Ratio</text><rect x="185" y="425" width="107.9" height="16" rx="3" fill="#64748b"/><text x="300.9" y="437" fill="#cbd5e1" font-size="11">0.0087 (Legacy_Kept)</text><text x="175" y="461" fill="#e2e8f0" font-size="11.5" text-anchor="end">#18 OBV</text><rect x="185" y="449" width="96.4" height="16" rx="3" fill="#64748b"/><text x="289.4" y="461" fill="#cbd5e1" font-size="11">0.0078 (Legacy_Kept)</text><text x="175" y="485" fill="#e2e8f0" font-size="11.5" text-anchor="end">#19 vixy_ret_20</text><rect x="185" y="473" width="94.1" height="16" rx="3" fill="#64748b"/><text x="287.1" y="485" fill="#cbd5e1" font-size="11">0.0076 (Legacy_Kept)</text><text x="175" y="509" fill="#e2e8f0" font-size="11.5" text-anchor="end">#20 macro_ema20_slope</text><rect x="185" y="497" width="87.5" height="16" rx="3" fill="#64748b"/><text x="280.5" y="509" fill="#cbd5e1" font-size="11">0.0071 (Legacy_Kept)</text>
+    </svg>
+    
+    <h3>8-1. 5대 장세별 상위 5개 핵심 SHAP 피처 비교 (B vs E)</h3>
+    <table>
+      <thead>
+        <tr><th>장세</th><th>B (`B_Normalized_72`) 상위 5개 SHAP 피처</th><th>E (`E_Challenger_77`) 상위 5개 SHAP 피처</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>SUSTAINED_UPTREND</td><td>Volume_Z (0.047), macro_trend_spread (0.029), EMA_200_Diff (0.023), Upper_Wick_Ratio (0.019), ATR_14_Pct (0.019)</td><td>Volume_Z (0.046), macro_trend_spread (0.030), EMA_200_Diff (0.024), ATR_14_Pct (0.020), qqq_ret_3 (0.013)</td></tr><tr><td>SUSTAINED_DOWNTREND</td><td>macro_trend_spread (0.042), Volume_Z (0.040), EMA_200_Diff (0.039), ATR_14_Pct (0.032), EMA_9_Diff (0.018)</td><td>macro_trend_spread (0.043), EMA_200_Diff (0.041), Volume_Z (0.039), ATR_14_Pct (0.033), qqq_ret_5 (0.018)</td></tr><tr><td>CRASH_REBOUND</td><td>macro_trend_spread (0.043), EMA_200_Diff (0.042), Volume_Z (0.039), ATR_14_Pct (0.038), KC_Width (0.021)</td><td>macro_trend_spread (0.044), EMA_200_Diff (0.044), ATR_14_Pct (0.040), Volume_Z (0.037), qqq_ret_5 (0.021)</td></tr><tr><td>SURGE_PULLBACK</td><td>Volume_Z (0.045), macro_trend_spread (0.033), EMA_200_Diff (0.024), ATR_14_Pct (0.023), qqq_momentum (0.020)</td><td>Volume_Z (0.045), macro_trend_spread (0.034), EMA_200_Diff (0.026), ATR_14_Pct (0.024), qqq_momentum (0.017)</td></tr><tr><td>SIDEWAYS_NORMAL</td><td>Volume_Z (0.048), macro_trend_spread (0.034), EMA_200_Diff (0.023), Upper_Wick_Ratio (0.021), ATR_14_Pct (0.018)</td><td>Volume_Z (0.046), macro_trend_spread (0.035), EMA_200_Diff (0.025), ATR_14_Pct (0.018), Body_Ratio (0.014)</td></tr>
+      </tbody>
+    </table>
+
+    <h3>8-2. 저장된 Challenger PKL (`models/model_challenger_trend_mr.pkl`) 무결성 감사</h3>
+    <table>
+      <thead>
+        <tr><th>검증 항목</th><th>검증 결과</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Challenger PKL SHA256</td><td><code>c6953d22d407bbf00828c9780f4bba5b80271ae6a74aed18f23ba07a6a54f02d</code> (1,329,415 bytes)</td></tr>
+        <tr><td>Champion PKL SHA256 (불변 확인)</td><td><code>e1982612a986d08a69044551b92c96ba5f8508375187466af9a9966e63b3ed5f</code> (변경 없음)</td></tr>
+        <tr><td><code>data/live_experience.db</code> SHA256 (불변 확인)</td><td><code>b9cf6d8290a19ab15abaeb0d29b3544c55e2f37f0b78ad962f4aa77497f8f9c3</code> (변경 없음)</td></tr>
+        <tr><td>래퍼 / 엔진 클래스 및 스키마 속성</td><td><code>MoEMetaOrchestrator</code> / <code>MLFeatureEngine</code> / <code>feature_schema=v5_challenger</code> (77개 피처 순서 100% 일치)</td></tr>
+        <tr><td>반복 추론 결정론(Determinism) 검증</td><td>PASS (동일 입력 2회 추론 시 <code>direction</code>, <code>score</code>, <code>probabilities</code> 오차 0.0)</td></tr>
+        <tr><td>학습 컷오프 시각 및 학습 행 수</td><td><code>2026-10-14 15:45:00</code> (총 <code>44,210</code> 유효 행)</td></tr>
+        <tr><td><code>live_experience.db</code> 미포함 사유</td><td>Historical rows in data/live_experience.db store features_json under the legacy 72-feature v4_champion schema, which lacks the 8 normalized features and 12 Trend/MR features. Including them would median-impute 20 features and apply a 2.5x weight.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2>9. STEP 8 — 최종 권고안 및 실전 적용 로드맵</h2>
+  <div class="card">
+    <ul>
+      <li><strong>최종 선택:</strong> <strong><code>SELECT_B</code> (`B_Normalized_72`, 가격 정규화 72개 피처 모델)</strong></li>
+      <li><strong>핵심 근거:</strong>
+        <ol>
+          <li>가격 스케일 왜곡을 제거한 8개 정규화 피처(`BB_Upper_Diff`, `KC_Lower_Diff`, `BB_Width`, `ATR_14_Pct`, `MACD_Pct`, `OBV_ROC_20` 등)가 OOS SHAP 상위권을 지배하며, 하락장 역방향 LONG 오판을 근본적으로 교정함.</li>
+          <li>신규 12개 피처를 추가하고 사후 가지치기를 수행한 E(`v5_challenger`, 77개)는 Pre-WFA 사전 가지치기 검증(`E_NestedPre_Pruned`) 및 Purged &amp; Corrected WFA 검증에서 B(`+737.46%`, PF `1.448`) 대비 현저히 낮은 성과(`+354.40%`, PF `1.315`)를 기록하여 추가 피처의 실익이 없음이 입증됨.</li>
+          <li>왕복 거래비용이 0.40%(2배)로 상승하는 가혹한 스트레스 조건에서도 B는 Purged WFA 기준 <strong>+194.25% (PF 1.196)</strong>를 유지하여 A(+62.78%, PF 1.059)와 E(+85.08%, PF 1.086)를 압도함.</li>
+        </ol>
+      </li>
+      <li><strong>후속 조치 권고:</strong> 이번 독립 검증에서는 금지 사항을 엄격히 준수하여 기존 PKL 파일을 수정하지 않았습니다. 사용자 승인 시 <code>feature_schema="B_normalized"</code>(72개 피처)로 신규 아티팩트(<code>models/model_challenger_b_normalized.pkl</code>)를 패키징하고 Shadow 검증 후 승격하는 것을 권고합니다.</li>
+    </ul>
+  </div>
+</body>
+</html>

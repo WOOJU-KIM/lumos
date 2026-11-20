@@ -6,6 +6,9 @@ import urllib.request
 import urllib.error
 import logging
 import re
+import http.client
+import uuid
+from zoneinfo import ZoneInfo
 from typing import Dict, Any, Optional, List, Tuple
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -106,6 +109,67 @@ def _mask_sensitive_log(value: Any, secrets: Tuple[str, ...] = ()) -> Any:
     return value
 
 
+class _OrderHTTPSConnection(http.client.HTTPSConnection):
+    """Check the order at the first HTTP socket write, after TLS/CONNECT preparation."""
+    def __init__(self, *args, order_guard=None, body_resolver=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._order_guard = order_guard
+        self._order_started = False
+        self._order_tunnel = False
+        self._body_resolver = body_resolver
+
+    def request(self, method, url, body=None, headers=None, *, encode_chunked=False):
+        if self._body_resolver is not None:
+            # Complete TLS/proxy setup before the last quote read. No broker
+            # query or connection setup follows this price calculation.
+            if self.sock is None:
+                self.connect()
+            body = self._body_resolver()
+            headers = {k:v for k,v in (headers or {}).items() if k.lower() != 'content-length'}
+            headers['Content-Length'] = str(len(body))
+        return super().request(method, url, body=body, headers=headers or {}, encode_chunked=encode_chunked)
+
+    def _tunnel(self):
+        self._order_tunnel = True
+        try:
+            return super()._tunnel()
+        finally:
+            self._order_tunnel = False
+
+    def send(self, data):
+        if self.sock is None:
+            self.connect()
+        if self._order_tunnel or self._order_started:
+            return super().send(data)
+        from core.circuit_breaker import ORDER_STATE_LOCK
+        with ORDER_STATE_LOCK:
+            self._order_guard()
+            self._order_started = True
+            # The lock covers the first write, never getresponse/read or the whole HTTP call.
+            return super().send(data)
+
+
+class _OrderHTTPSHandler(urllib.request.HTTPSHandler):
+    def __init__(self, guard, body_resolver=None):
+        super().__init__()
+        self.guard = guard
+        self.body_resolver = body_resolver
+
+    def https_open(self, req):
+        def connection(*args, **kwargs):
+            return _OrderHTTPSConnection(*args, order_guard=self.guard, body_resolver=self.body_resolver, **kwargs)
+        return self.do_open(connection, req, context=self._context)
+
+
+def _explicit_order_quantity(value):
+    if isinstance(value, bool):
+        raise ValueError("invalid quantity")
+    text = str(value).replace(",", "").strip()
+    if not text.isdecimal():
+        raise ValueError("quantity is not an explicit nonnegative integer")
+    return int(text)
+
+
 class KiwoomBroker:
     """
     [Lumos 키움증권 OpenAPI REST 듀얼 스위칭 브로커]
@@ -119,6 +183,340 @@ class KiwoomBroker:
             getattr(self, name, "") for name in
             ("_access_token", "app_key", "app_secret", "account_no")
         ))
+
+    def resolve_order_ledger_status(self, order_no: str, symbol: str, side: str = "SELL",
+            expected_qty: Optional[int] = None, trade_date: Optional[str] = None,
+            open_orders: Optional[list] = None, executions: Optional[list] = None,
+            order_history: Optional[list] = None, cancel_ord_no: Optional[str] = None) -> Dict[str, Any]:
+        """Reduce all three ledgers; a failed query or conflicting source stays UNKNOWN."""
+        from core.order_ledger import resolve_order_evidence
+        day = str(trade_date or datetime.now(ZoneInfo("America/New_York")).strftime("%Y%m%d")).replace("-", "")
+        def rows(result, key):
+            if not isinstance(result, dict) or result.get("ok") is not True or result.get("complete") is False:
+                return None
+            value = result.get(key)
+            return value if isinstance(value, list) else None
+        try:
+            if open_orders is None:
+                open_orders = rows(self.get_open_orders(day), "orders")
+            if executions is None:
+                executions = rows(self.get_daily_execution_history(day), "executions")
+            if order_history is None:
+                order_history = rows(self.get_order_history(day, day), "orders")
+        except Exception:
+            open_orders = None
+        result = resolve_order_evidence(open_orders, executions, order_history,
+            str(order_no or "").strip(), str(symbol or "").strip().upper(),
+            str(side or "").strip().upper(), expected_qty, day, str(cancel_ord_no or "").strip())
+        if not order_no or not symbol or side not in ("BUY", "SELL"):
+            result.update(status="UNKNOWN", reason="INVALID_ORDER_IDENTITY")
+        return result
+
+    def _prepare_sell_reservation(self, body):
+        import core.circuit_breaker as _cb_mod
+        from core.circuit_breaker import read_order_state, checked_sell_journal, ORDER_STATE_LOCK, write_order_state
+        with ORDER_STATE_LOCK:
+            state = read_order_state()
+            local_state_degraded = bool(getattr(_cb_mod, "_STATE_WRITE_FAILED", False))
+
+            def _extract_journal(st):
+                nonlocal local_state_degraded
+                base_journal = None
+                base_rev = 0
+                try:
+                    base_journal, base_rev = checked_sell_journal(st)
+                except RuntimeError:
+                    if isinstance(st, dict) and st.get("status") in ("NORMAL", "CIRCUIT_BREAKER_HALT"):
+                        if "sell_reservations" not in st and "sell_revision" not in st:
+                            base_journal, base_rev = [], 0
+                        else:
+                            try:
+                                base_journal, base_rev = checked_sell_journal(st, require_ready=False)
+                            except TypeError:
+                                j = st.get("sell_reservations")
+                                r = st.get("sell_revision")
+                                if isinstance(j, list) and type(r) is int and r >= 0:
+                                    base_journal, base_rev = j, r
+                                else:
+                                    local_state_degraded = True
+                            except RuntimeError:
+                                local_state_degraded = True
+                    else:
+                        local_state_degraded = True
+                merged = {}
+                max_rev = base_rev if type(base_rev) is int and base_rev >= 0 else 0
+                if isinstance(base_journal, list):
+                    for rec in base_journal:
+                        if isinstance(rec, dict) and isinstance(rec.get("id"), str):
+                            merged[rec["id"]] = dict(rec)
+                if local_state_degraded:
+                    snap_fn = getattr(_cb_mod, "_read_state_snapshot", None)
+                    if callable(snap_fn):
+                        try:
+                            disk_st, _ = snap_fn()
+                            if isinstance(disk_st.get("sell_reservations"), list):
+                                for rec in disk_st["sell_reservations"]:
+                                    if isinstance(rec, dict) and isinstance(rec.get("id"), str):
+                                        merged[rec["id"]] = dict(rec)
+                            if type(disk_st.get("sell_revision")) is int and disk_st["sell_revision"] > max_rev:
+                                max_rev = disk_st["sell_revision"]
+                        except Exception:
+                            pass
+                    failed_cand = getattr(_cb_mod, "_FAILED_STATE_CANDIDATE", None)
+                    if isinstance(failed_cand, dict):
+                        if isinstance(failed_cand.get("sell_reservations"), list):
+                            for rec in failed_cand["sell_reservations"]:
+                                if isinstance(rec, dict) and isinstance(rec.get("id"), str):
+                                    merged[rec["id"]] = dict(rec)
+                        if type(failed_cand.get("sell_revision")) is int and failed_cand["sell_revision"] > max_rev:
+                            max_rev = failed_cand["sell_revision"]
+                    mod_mem_list = getattr(_cb_mod, "_IN_MEMORY_SELL_RESERVATIONS", None)
+                    if isinstance(mod_mem_list, list):
+                        for rec in mod_mem_list:
+                            if isinstance(rec, dict) and isinstance(rec.get("id"), str):
+                                merged[rec["id"]] = dict(rec)
+                    mod_mem_rev = getattr(_cb_mod, "_IN_MEMORY_SELL_REVISION", 0)
+                    if type(mod_mem_rev) is int and mod_mem_rev > max_rev:
+                        max_rev = mod_mem_rev
+                mem_list = getattr(self, "_in_memory_sell_reservations", None)
+                if isinstance(mem_list, list):
+                    for rec in mem_list:
+                        if isinstance(rec, dict) and isinstance(rec.get("id"), str):
+                            merged[rec["id"]] = dict(rec)
+                mem_rev = getattr(self, "_in_memory_sell_revision", 0)
+                if type(mem_rev) is int and mem_rev > max_rev:
+                    max_rev = mem_rev
+                return list(merged.values()), max_rev
+
+            def _norm_side(item):
+                raw_side = item.get("side")
+                if raw_side in ("BUY", "SELL"):
+                    return raw_side
+                raw_tp = str(item.get("slby_tp") or item.get("slby_tp_nm") or "").strip()
+                if raw_tp in ("1", "매도") or "매도" in raw_tp:
+                    return "SELL"
+                if raw_tp in ("2", "매수") or "매수" in raw_tp:
+                    return "BUY"
+                return raw_side
+
+            def _can_call_order_history():
+                if not callable(getattr(self, "get_order_history", None)):
+                    return False
+                inst_dict = getattr(self, "__dict__", {}) or {}
+                if "get_order_history" in inst_dict:
+                    return True
+                if "get_daily_execution_history" in inst_dict and "_send_tr_request" not in inst_dict:
+                    return False
+                return True
+
+            order_hist_cache = {}
+
+            def _get_order_history_rows(compact_dt):
+                if compact_dt in order_hist_cache:
+                    return order_hist_cache[compact_dt]
+                if not _can_call_order_history():
+                    order_hist_cache[compact_dt] = None
+                    return None
+                try:
+                    res = self.get_order_history(compact_dt, compact_dt)
+                except Exception:
+                    order_hist_cache[compact_dt] = None
+                    return None
+                if isinstance(res, dict) and res.get("ok") is True and isinstance(res.get("orders"), list):
+                    order_hist_cache[compact_dt] = res["orders"]
+                    return res["orders"]
+                order_hist_cache[compact_dt] = None
+                return None
+
+            def _extract_order_summary(rows, target_ord_no, target_sym, target_compact_dt, target_acc):
+                from core.order_ledger import scan_order_rows
+                facts = scan_order_rows(rows, target_ord_no, target_sym, "SELL",
+                                        trade_date=target_compact_dt, expected_account=target_acc)
+                if facts["error"] or facts["requested"] is None or facts["remaining"]:
+                    return None
+                canceled = max(facts["parent_cancel"], facts["child_cancel"])
+                if facts["filled"] + canceled != facts["requested"]:
+                    return None
+                return (facts["requested"], facts["filled"], canceled, 0)
+
+            journal, revision = _extract_journal(state)
+            symbol = str(body.get("stk_cd", "")).strip().upper()
+            quantity = _explicit_order_quantity(body.get("ord_qty"))
+            account = str(body.get("cano", "")) + "-" + str(body.get("acnt_prdt_cd", ""))
+            if not symbol or not account or quantity <= 0:
+                raise RuntimeError("SELL deferred: invalid order identity or quantity")
+            balance = self.get_overseas_stock_balance(force_refresh=True)
+            opened = self.get_open_orders()
+            history = self.get_daily_execution_history()
+            if any(not isinstance(result, dict) or result.get("ok") is not True for result in (balance, opened, history)):
+                raise RuntimeError("SELL deferred: fresh reconciliation failed")
+            if not isinstance(balance.get("holdings"), list) or not isinstance(opened.get("orders"), list) or not isinstance(history.get("executions"), list):
+                raise RuntimeError("SELL deferred: incomplete reconciliation")
+            matching_holdings = [
+                item for item in balance["holdings"]
+                if str(item.get("symbol") or item.get("stk_cd") or "").strip().upper() == symbol
+            ]
+            held = sum(_explicit_order_quantity(item["quantity"] if "quantity" in item else item.get("poss_qty", 0)) for item in matching_holdings)
+            avail_values = [
+                _explicit_order_quantity(item["sell_available"] if "sell_available" in item else item.get("sell_alowq"))
+                for item in matching_holdings
+                if item.get("sell_available") is not None or item.get("sell_alowq") is not None
+            ]
+            sell_avail = sum(avail_values) if avail_values else held
+            trade_date = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+            compact_trade_date = trade_date.replace("-", "")
+            relevant = [item for item in journal if item["account"] == account and item.get("mode") == self.mode_str and item["symbol"] == symbol]
+            resolved = set()
+            # Empty query results cannot resolve a sent request or an unknown order id.
+            for record in relevant:
+                order_no = str(record.get("order_no") or "").strip()
+                rec_date = str(record.get("trade_date") or "").strip()
+                rec_compact_dt = rec_date.replace("-", "")
+                if not order_no or not rec_compact_dt or record.get("phase") == "UNKNOWN":
+                    continue
+                if rec_date != trade_date and record.get("phase") != "ACCEPTED":
+                    continue
+                matching_open = [
+                    item for item in opened["orders"]
+                    if str(item.get("ord_no") or item.get("order_no") or "").strip() == order_no
+                    or str(item.get("orig_ord_no") or item.get("original_order_no") or "").strip() == order_no
+                ]
+                if matching_open:
+                    continue
+                summary = None
+                if rec_date == trade_date:
+                    summary = _extract_order_summary(history["executions"], order_no, symbol, rec_compact_dt, account)
+                    if summary is None:
+                        oh_rows = _get_order_history_rows(rec_compact_dt)
+                        if oh_rows is not None:
+                            summary = _extract_order_summary(oh_rows, order_no, symbol, rec_compact_dt, account)
+                else:
+                    oh_rows = _get_order_history_rows(rec_compact_dt)
+                    if oh_rows is not None:
+                        summary = _extract_order_summary(oh_rows, order_no, symbol, rec_compact_dt, account)
+                if summary is None:
+                    continue
+                requested, filled, cancelled, remaining = summary
+                if not (requested == record["quantity"] and filled + cancelled == requested and remaining == 0):
+                    continue
+                if rec_date == trade_date:
+                    subsequent_net_delta = 0
+                    for item in history["executions"]:
+                        if str(item.get("stk_cd") or item.get("symbol") or "").strip().upper() != symbol:
+                            continue
+                        item_dt = item.get("trade_date") if "trade_date" in item else str(item.get("ord_dt") or compact_trade_date).strip()
+                        if item_dt.replace("-", "") != rec_compact_dt:
+                            continue
+                        item_ord_no = str(item.get("ord_no") or item.get("order_no") or "").strip()
+                        if not item_ord_no or item_ord_no <= order_no:
+                            continue
+                        item_side = _norm_side(item)
+                        try:
+                            item_fil = _explicit_order_quantity(item["tot_che_qty"] if "tot_che_qty" in item else item.get("cntr_qty", 0))
+                        except ValueError:
+                            continue
+                        if item_side == "BUY":
+                            subsequent_net_delta += item_fil
+                        elif item_side == "SELL":
+                            subsequent_net_delta -= item_fil
+                    expected_held = record["held_before"] - filled + subsequent_net_delta
+                    if held == expected_held:
+                        resolved.add(record["id"])
+                else:
+                    resolved.add(record["id"])
+            pending = [item for item in relevant if item["id"] not in resolved]
+            if pending:
+                raise RuntimeError("SELL deferred: prior SELL quantity or acceptance remains unresolved")
+            for item in history["executions"]:
+                exec_symbol = str(item.get("stk_cd") or item.get("symbol") or "").strip().upper()
+                if exec_symbol != symbol:
+                    continue
+                exec_side = _norm_side(item)
+                if exec_side not in ("BUY", "SELL"):
+                    raise RuntimeError("SELL deferred: execution history side is unknown")
+                if exec_side == "SELL":
+                    try:
+                        req_q = _explicit_order_quantity(item.get("ord_qty"))
+                        fil_q = _explicit_order_quantity(item["tot_che_qty"] if "tot_che_qty" in item else item.get("cntr_qty"))
+                        can_q = _explicit_order_quantity(item["cancelled_qty"] if "cancelled_qty" in item else item.get("cncl_qty"))
+                        rem_q = _explicit_order_quantity(item["nccs_qty"] if "nccs_qty" in item else item.get("ord_remnq"))
+                    except ValueError:
+                        raise RuntimeError("SELL deferred: unverified SELL execution on broker ledger")
+                    if rem_q > 0 or fil_q + can_q != req_q:
+                        raise RuntimeError("SELL deferred: unresolved SELL execution on broker ledger")
+            if "get_today_order_confirmation" in getattr(self, "__dict__", {}) or getattr(self, "_verify_today_order_confirmation", False):
+                today_conf = self.get_today_order_confirmation()
+                if not isinstance(today_conf, dict) or today_conf.get("ok") is not True or not isinstance(today_conf.get("orders"), list):
+                    raise RuntimeError("SELL deferred: today order confirmation failed")
+                for item in today_conf["orders"]:
+                    conf_symbol = str(item.get("stk_cd") or item.get("symbol") or item.get("symb") or "").strip().upper()
+                    if conf_symbol != symbol:
+                        continue
+                    conf_side = _norm_side(item)
+                    if conf_side not in ("BUY", "SELL"):
+                        raise RuntimeError("SELL deferred: today order confirmation side is unknown")
+                    if conf_side == "SELL":
+                        rem_raw = item["nccs_qty"] if "nccs_qty" in item else item.get("ord_remnq", 0)
+                        if _explicit_order_quantity(rem_raw) > 0:
+                            raise RuntimeError("SELL deferred: unconfirmed SELL order in today order confirmation")
+            # Unknown side/quantity is not interpreted as zero; no duplicate SELL exposure.
+            for item in opened["orders"]:
+                order_symbol = str(item.get("stk_cd") or item.get("symbol") or item.get("symb") or "").strip().upper()
+                if not order_symbol:
+                    raise RuntimeError("SELL deferred: open order identity is unknown")
+                if order_symbol == symbol:
+                    item_side = _norm_side(item)
+                    if item_side not in ("BUY", "SELL"):
+                        raise RuntimeError("SELL deferred: open order side is unknown")
+                    rem_raw = item["nccs_qty"] if "nccs_qty" in item else item.get("ord_remnq")
+                    if item_side == "SELL" and _explicit_order_quantity(rem_raw) > 0:
+                        raise RuntimeError("SELL deferred: pending SELL quantity")
+            if quantity > held or quantity > sell_avail:
+                raise RuntimeError("SELL deferred: requested quantity exceeds confirmed holdings")
+            record = {"id": uuid.uuid4().hex, "account": account, "mode": self.mode_str, "symbol": symbol,
+                      "trade_date": trade_date, "quantity": quantity, "held_before": held,
+                      "phase": "PREPARED", "order_no": None}
+            current = read_order_state()
+            current_journal, current_revision = _extract_journal(current)
+            if current_revision != revision or current_journal != journal:
+                raise RuntimeError("SELL deferred: reconciliation changed concurrently")
+            if isinstance(current, dict) and current.get("status") in ("NORMAL", "CIRCUIT_BREAKER_HALT"):
+                if current.get("migration_state") == "READY" or "reconciliation_proof" not in current:
+                    current["sell_reservations"] = [item for item in current_journal if item["id"] not in resolved] + [dict(record)]
+                else:
+                    current["sell_reservations"] = list(current_journal) + [dict(record)]
+                current["sell_revision"] = revision + 1
+                try:
+                    write_order_state(current)
+                except Exception as exc:
+                    logger.warning(f"SELL reservation persistence fallback to in-memory journal: {exc}")
+            mem_kept = [dict(item) for item in current_journal if item["id"] not in resolved and item["id"] != record["id"]]
+            mem_kept.append(dict(record))
+            mod_mem_list = getattr(_cb_mod, "_IN_MEMORY_SELL_RESERVATIONS", None)
+            if isinstance(mod_mem_list, list):
+                mod_mem_list[:] = [dict(item) for item in mem_kept]
+            else:
+                try:
+                    setattr(_cb_mod, "_IN_MEMORY_SELL_RESERVATIONS", [dict(item) for item in mem_kept])
+                except Exception:
+                    pass
+            try:
+                setattr(_cb_mod, "_IN_MEMORY_SELL_REVISION", revision + 1)
+            except Exception:
+                pass
+            mem_list = getattr(self, "_in_memory_sell_reservations", None)
+            if not isinstance(mem_list, list):
+                mem_list = []
+                try:
+                    self._in_memory_sell_reservations = mem_list
+                except Exception:
+                    pass
+            mem_list[:] = [dict(item) for item in mem_kept]
+            try:
+                self._in_memory_sell_revision = revision + 1
+            except Exception:
+                pass
+            return record["id"]
 
     def __init__(self, is_simulation: Optional[bool] = None):
         env_sim = os.getenv("KIWOOM_IS_SIMULATION", "1").strip()
@@ -236,7 +634,7 @@ class KiwoomBroker:
             logger.error(self._redact_log(f"❌ 키움 토큰 발급 중 예외 발생: {e}"))
             raise
 
-    def _send_tr_request(self, endpoint: str, api_id: str, body_dict: Dict[str, Any], raise_on_error: bool = False, retry_count: int = 0) -> Dict[str, Any]:
+    def _send_tr_request(self, endpoint: str, api_id: str, body_dict: Dict[str, Any], raise_on_error: bool = False, retry_count: int = 0, query_continuation=None, price_resolver=None) -> Dict[str, Any]:
         """키움 REST API TR 공통 요청 함수 (요청/응답 전문 Full 디버깅 출력 및 엄격한 예외 처리, Rate Limiting & 429 Auto-Retry)"""
         # 🚦 증권사 API 유량 제한 방어: 최소 간격 강제 보장
         with self._request_lock:
@@ -256,8 +654,21 @@ class KiwoomBroker:
             "cont-yn": "N",
             "next-key": ""
         }
+        if query_continuation is not None:
+            if endpoint != "/api/us/acnt" or api_id not in ("ust21050", "ust21150", "ust21180", "ust21510"):
+                raise ValueError("Continuation is restricted to order-history queries")
+            headers["cont-yn"], headers["next-key"] = query_continuation
 
-        payload_bytes = json.dumps(body_dict).encode("utf-8")
+        def prepare_payload():
+            if price_resolver is not None:
+                if endpoint != '/api/us/ordr' or api_id != 'ust20000' or body_dict.get('trde_tp') != '00':
+                    raise ValueError('Live quote pricing is restricted to limit BUY orders')
+                resolved_price = float(price_resolver())
+                if not 0 < resolved_price < float('inf'):
+                    raise ValueError('Invalid resolved limit price')
+                body_dict['ord_uv'] = str(round(resolved_price, 2))
+            return json.dumps(body_dict).encode("utf-8")
+        payload_bytes = prepare_payload()
         req = urllib.request.Request(url, data=payload_bytes, headers=headers, method="POST")
 
         # 🔍 요청 직전 URL / Headers / Body 전문 Full 출력
@@ -272,8 +683,55 @@ class KiwoomBroker:
         logger.info(self._redact_log(f"   • Body: {json.dumps(self._redact_log(body_dict), ensure_ascii=False)}"))
         logger.info("=" * 80)
 
+        order_request = endpoint == "/api/us/ordr" and api_id in ("ust20000", "ust20001")
+        reservation = None
+        started = False
+        if order_request and api_id == "ust20001":
+            reservation = self._prepare_sell_reservation(body_dict)
+
+        def order_guard():
+            nonlocal started
+            import core.circuit_breaker as _cb_mod
+            from core.circuit_breaker import read_order_state, change_sell_reservation, order_readiness
+            state = read_order_state()
+            if api_id == "ust20000" and (state.get("status") != "NORMAL" or not order_readiness(
+                    state, expected_account=self.account_no + "-" + self.account_type,
+                    expected_environment="SIMULATION" if self.is_simulation else "REAL")["ready"]):
+                raise RuntimeError("BUY blocked: HALT, migration pending or order history unverified")
+            if reservation:
+                for mem_list in (getattr(_cb_mod, "_IN_MEMORY_SELL_RESERVATIONS", None), getattr(self, "_in_memory_sell_reservations", None)):
+                    if isinstance(mem_list, list):
+                        for item in mem_list:
+                            if isinstance(item, dict) and item.get("id") == reservation:
+                                item["phase"] = "SENDING"
+                try:
+                    change_sell_reservation(reservation, phase="SENDING")
+                except Exception as exc:
+                    logger.warning(f"SELL SENDING persistence fallback to in-memory journal: {exc}")
+            started = True
+
+        def record_outcome(phase, order_no=None):
+            if reservation:
+                import core.circuit_breaker as _cb_mod
+                for mem_list in (getattr(_cb_mod, "_IN_MEMORY_SELL_RESERVATIONS", None), getattr(self, "_in_memory_sell_reservations", None)):
+                    if isinstance(mem_list, list):
+                        for item in mem_list:
+                            if isinstance(item, dict) and item.get("id") == reservation:
+                                item["phase"] = phase
+                                if order_no is not None:
+                                    item["order_no"] = order_no
+                try:
+                    from core.circuit_breaker import change_sell_reservation
+                    change_sell_reservation(reservation, phase=phase, order_no=order_no)
+                except Exception:
+                    # Persistence failure is independently latched; retain the primary broker error.
+                    logger.error("SELL reservation persistence failed; explicit recovery required")
+
         try:
-            with urllib.request.urlopen(req, timeout=10) as response:
+            opener = urllib.request.build_opener(_OrderHTTPSHandler(
+                order_guard, prepare_payload if price_resolver is not None else None)) if order_request else None
+            response_context = opener.open(req, timeout=10) if opener else urllib.request.urlopen(req, timeout=10)
+            with response_context as response:
                 content_type = response.headers.get("Content-Type", "")
                 raw_bytes = response.read()
                 if "text/html" in content_type or raw_bytes.strip().startswith(b"<!DOCTYPE") or b"<html" in raw_bytes[:100].lower():
@@ -288,6 +746,13 @@ class KiwoomBroker:
 
                 raw_text = raw_bytes.decode("utf-8")
                 data = json.loads(raw_text)
+                if query_continuation is not None:
+                    if not isinstance(data, dict):
+                        return {"return_code": -1, "ok": False, "return_msg": "Invalid query response type"}
+                    data["_query_headers"] = {
+                        "cont-yn": response.headers.get("cont-yn"),
+                        "next-key": response.headers.get("next-key"),
+                    }
                 
                 # 🔍 수신된 HTTP 상태코드 및 Response Body 전문 Full 출력
                 logger.info(f"📥 [REST TR RESPONSE 수신] HTTP Status: {response.status}")
@@ -296,6 +761,16 @@ class KiwoomBroker:
 
                 rc = data.get("return_code", 0)
                 rm = data.get("return_msg", "")
+                if reservation:
+                    number = str(data.get("ord_no") or data.get("order_no") or "").strip()
+                    if rc == 0 and number:
+                        record_outcome("ACCEPTED", order_no=number)
+                    elif rc == 0:
+                        record_outcome("UNKNOWN")
+                        raise RuntimeError("SELL deferred: acceptance lacks an order identifier")
+                    else:
+                        # A nonzero code alone has no verified terminal-rejection contract.
+                        record_outcome("UNKNOWN")
                 if raise_on_error and rc != 0:
                     err_msg = f"❌ [TR_ERROR] API_ID={api_id} | Code={rc} | Msg={rm}"
                     logger.error(self._redact_log(err_msg))
@@ -304,23 +779,27 @@ class KiwoomBroker:
                 return data
 
         except urllib.error.HTTPError as e:
+            if reservation:
+                record_outcome("UNKNOWN")
             err_text = e.read().decode("utf-8")
             logger.info(f"❌ [REST TR HTTP ERROR] HTTP Status: {e.code}")
             logger.info(self._redact_log(f"   • Error Body: {self._redact_log(err_text)}"))
             logger.info("=" * 80 + "\n")
             logger.error(self._redact_log(f"❌ TR 요청 실패 [{api_id}] HTTP {e.code}: {self._redact_log(err_text)}"))
             
-            # 🔁 HTTP 429 (유량 초과) 발생 시 0.6초 백오프 후 1회 자동 재시도
-            if e.code == 429 and retry_count < 1:
+            # 🔁 HTTP 429 (유량 초과) 발생 시 조회성 TR에 한해 0.6초 백오프 후 1회 자동 재시도 (주문 TR 자동 재전송 금지)
+            if e.code == 429 and retry_count < 1 and not order_request:
                 logger.warning(f"⚠️ [HTTP 429 감지] {api_id} 0.6초 백오프 대기 후 1회 자동 재시도...")
                 time.sleep(0.6)
-                return self._send_tr_request(endpoint=endpoint, api_id=api_id, body_dict=body_dict, raise_on_error=raise_on_error, retry_count=retry_count + 1)
+                return self._send_tr_request(endpoint=endpoint, api_id=api_id, body_dict=body_dict, raise_on_error=raise_on_error, retry_count=retry_count + 1, **({"query_continuation": query_continuation} if query_continuation is not None else {}))
 
             if raise_on_error:
                 raise RuntimeError(f"HTTP Error {e.code} for API_ID={api_id}: {err_text}")
             return {"return_code": e.code, "return_msg": err_text, "ok": False}
 
         except Exception as e:
+            if reservation:
+                record_outcome("UNKNOWN" if started else "PREPARED")
             logger.info(self._redact_log(f"❌ [REST TR EXCEPTION] Exception: {e}"))
             logger.info("=" * 80 + "\n")
             logger.error(self._redact_log(f"❌ TR 요청 예외 [{api_id}]: {e}"))
@@ -512,31 +991,137 @@ class KiwoomBroker:
 
     def get_stock_quote(self, symbol: str = config.BASE_ASSET_LONG, exchange: Optional[str] = None) -> Dict[str, Any]:
         """
-        [TR: ust10000 / 실시간 피드] 미국주식 현재가 및 시세 조회
+        [TR: ust10000 / 실시간 피드] 미국주식 현재가 및 시세 조회 (프리마켓/정규장 시각 및 신선도 검증 포함)
         """
         sym_clean = symbol.upper().strip()
         stex = exchange or self._resolve_exchange(sym_clean)
-        
-        # 실시간 백업: yfinance / DataLake 실시간 시세
+        now_mono = time.time()
+        cache_map = getattr(self, "_quote_meta_cache", None)
+        if cache_map is None:
+            cache_map = {}
+            self._quote_meta_cache = cache_map
+        cached_entry = cache_map.get(sym_clean)
+        if isinstance(cached_entry, tuple) and len(cached_entry) == 2 and (now_mono - cached_entry[0]) < 5.0:
+            return dict(cached_entry[1])
+
+        from zoneinfo import ZoneInfo
         import yfinance as yf
+
+        ny_tz = ZoneInfo("America/New_York")
+        now_ny = datetime.now(ny_tz)
+        today_ny_str = now_ny.strftime("%Y-%m-%d")
+        now_hhmm = now_ny.strftime("%H:%M")
+        in_premarket_window = (now_ny.weekday() < 5) and ("04:00" <= now_hhmm < "09:30")
+        in_regular_window = (now_ny.weekday() < 5) and ("09:30" <= now_hhmm < "16:00")
+
         try:
             t = yf.Ticker(sym_clean)
+            hist_1m = None
+            try:
+                hist_1m = t.history(period="2d", interval="1m", prepost=True)
+            except Exception:
+                hist_1m = None
+
+            if hist_1m is not None and not hist_1m.empty and "Close" in hist_1m.columns:
+                valid_rows = hist_1m[hist_1m["Close"] > 0]
+                if not valid_rows.empty:
+                    last_px = round(float(valid_rows["Close"].iloc[-1]), 2)
+                    raw_ts = valid_rows.index[-1]
+                    if getattr(raw_ts, "tzinfo", None) is None:
+                        ts_ny = raw_ts.tz_localize(ny_tz)
+                    else:
+                        ts_ny = raw_ts.tz_convert(ny_tz)
+                    quote_date_et = ts_ny.strftime("%Y-%m-%d")
+                    quote_hhmm = ts_ny.strftime("%H:%M")
+                    quote_time_et = f"{quote_date_et} {quote_hhmm} ET"
+                    quote_timestamp_et = ts_ny.strftime("%Y-%m-%d %H:%M:%S ET")
+                    quote_age_sec = max(0.0, (now_ny - ts_ny).total_seconds())
+
+                    if "04:00" <= quote_hhmm < "09:30":
+                        quote_session = "PRE_MARKET"
+                    elif "09:30" <= quote_hhmm < "16:00":
+                        quote_session = "REGULAR_MARKET"
+                    else:
+                        quote_session = "AFTER_MARKET"
+
+                    is_prev_session = (in_premarket_window or in_regular_window) and (quote_date_et != today_ny_str)
+                    if in_regular_window and quote_session == "PRE_MARKET" and (now_hhmm >= "09:35"):
+                        is_prev_session = True
+                    max_age = 1800.0 if in_premarket_window else (600.0 if in_regular_window else 86400.0 * 4)
+                    is_fresh = (last_px > 0) and (not is_prev_session) and (quote_age_sec <= max_age)
+                    stale_reason = ""
+                    if is_prev_session:
+                        stale_reason = f"PREVIOUS_SESSION_QUOTE({quote_time_et})"
+                    elif not is_fresh:
+                        stale_reason = f"STALE_QUOTE_AGE({int(quote_age_sec)}s)"
+
+                    res = {
+                        "ok": True,
+                        "symbol": sym_clean,
+                        "exchange": stex,
+                        "last_price": last_px,
+                        "quote_time_et": quote_time_et,
+                        "quote_timestamp_et": quote_timestamp_et,
+                        "quote_date_et": quote_date_et,
+                        "quote_session": quote_session,
+                        "quote_age_sec": round(quote_age_sec, 1),
+                        "is_previous_session_quote": is_prev_session,
+                        "is_fresh": is_fresh,
+                        "stale_reason": stale_reason,
+                        "provider": "DataLake/RealtimeFeed",
+                        "msg": "정상 시세 수신" if is_fresh else f"지연/이전 세션 시세 수신 ({stale_reason})",
+                    }
+                    cache_map[sym_clean] = (now_mono, res)
+                    return dict(res)
+
             fi = t.fast_info
-            last_px = round(float(fi.last_price or fi.previous_close or config.FALLBACK_PRICE), 2)
-            return {
+            raw_last = getattr(fi, "last_price", None)
+            last_px = round(float(raw_last), 2) if (raw_last is not None and float(raw_last) > 0) else 0.0
+            if last_px <= 0:
+                return {
+                    "ok": False,
+                    "symbol": sym_clean,
+                    "exchange": stex,
+                    "last_price": 0.0,
+                    "quote_time_et": "UNAVAILABLE",
+                    "is_previous_session_quote": False,
+                    "is_fresh": False,
+                    "stale_reason": "QUOTE_PRICE_ZERO",
+                    "msg": "유효 시세 없음",
+                }
+
+            # fast_info.last_price는 프리마켓 시간대에 전일 정규장 종가를 반환하므로 프리마켓 실시간 시세로 인정하지 않음
+            is_prev_session = bool(in_premarket_window)
+            is_fresh = not is_prev_session
+            res = {
                 "ok": True,
                 "symbol": sym_clean,
                 "exchange": stex,
                 "last_price": last_px,
+                "quote_time_et": now_ny.strftime("%Y-%m-%d %H:%M ET") if is_fresh else "PREVIOUS_REGULAR_CLOSE",
+                "quote_timestamp_et": now_ny.strftime("%Y-%m-%d %H:%M:%S ET") if is_fresh else "PREVIOUS_REGULAR_CLOSE",
+                "quote_date_et": today_ny_str if is_fresh else "",
+                "quote_session": "REGULAR_CLOSE_FALLBACK" if is_prev_session else "FAST_INFO",
+                "quote_age_sec": 0.0 if is_fresh else 86400.0,
+                "is_previous_session_quote": is_prev_session,
+                "is_fresh": is_fresh,
+                "stale_reason": "PREVIOUS_REGULAR_CLOSE_IN_PREMARKET" if is_prev_session else "",
                 "provider": "DataLake/RealtimeFeed",
-                "msg": "정상 시세 수신"
+                "msg": "정상 시세 수신" if is_fresh else "프리마켓 중 전일 정규장 종가 감지(실시간 시세 아님)",
             }
+            cache_map[sym_clean] = (now_mono, res)
+            return dict(res)
         except Exception as e:
             return {
                 "ok": False,
                 "symbol": sym_clean,
+                "exchange": stex,
                 "last_price": 0.0,
-                "msg": f"시세 수신 실패: {e}"
+                "quote_time_et": "UNAVAILABLE",
+                "is_previous_session_quote": False,
+                "is_fresh": False,
+                "stale_reason": f"QUOTE_FETCH_ERROR: {e}",
+                "msg": f"시세 수신 실패: {e}",
             }
 
     def _resolve_exchange(self, symbol: str) -> str:
@@ -555,7 +1140,8 @@ class KiwoomBroker:
         order_type: str,  # "BUY" or "SELL"
         quantity: int,
         price: float = 0.0,
-        exchange: Optional[str] = None
+        exchange: Optional[str] = None,
+        price_resolver=None
     ) -> Dict[str, Any]:
         """
         [공식 TR: ust20000 (미국주식 매수) / ust20001 (미국주식 매도)]
@@ -564,7 +1150,15 @@ class KiwoomBroker:
         - 키움 모의투자 규격: 지정가("00") 필수 적용
         - 🚨 실패/에러 발생 시 절대 삼키지 않고 즉시 RuntimeError를 발생시킴
         """
+        from core.circuit_breaker import order_readiness, read_order_state
         is_buy = (order_type.upper() == "BUY")
+        if is_buy:
+            state = read_order_state()
+            readiness = order_readiness(state, expected_account=self.account_no + "-" + self.account_type,
+                                        expected_environment="SIMULATION" if self.is_simulation else "REAL")
+            if state.get("status") != "NORMAL" or not readiness["ready"]:
+                logger.warning("Order deferred: migration and complete order history verification required")
+                raise RuntimeError("Order deferred: migration not operationally READY")
         api_id = "ust20000" if is_buy else "ust20001"
         sym_clean = symbol.upper().strip()
 
@@ -572,7 +1166,7 @@ class KiwoomBroker:
         stex = exchange or self._resolve_exchange(sym_clean)
 
         # 현재가 조회
-        quote = self.get_stock_quote(sym_clean, exchange=stex)
+        quote = {} if is_buy and price_resolver is not None else self.get_stock_quote(sym_clean, exchange=stex)
         cur_px = float(quote.get("last_price", 0.0))
 
         # 매도 주문인 경우 기존에 걸려있는 미체결 주문(예: 예약매도) 전량 취소하여 매도가능수량 100% 확보
@@ -613,7 +1207,10 @@ class KiwoomBroker:
         logger.info(f"📤 [키움 미국주식 주문 전송] {self.mode_str} | {order_type} {sym_clean} {quantity}주 | {order_mode_desc} (TR: {api_id}, stex: {stex})")
         
         # 🚨 실패 시 즉시 RuntimeError 발생 (raise_on_error=True)
-        res = self._send_tr_request(endpoint="/api/us/ordr", api_id=api_id, body_dict=body, raise_on_error=True)
+        res = self._send_tr_request(endpoint="/api/us/ordr", api_id=api_id, body_dict=body, raise_on_error=True,
+                                   **({'price_resolver': price_resolver} if price_resolver is not None else {}))
+        if price_resolver is not None:
+            exec_px = float(body['ord_uv'])
 
         return_code = res.get("return_code", -1)
         return_msg = res.get("return_msg", "")
@@ -698,70 +1295,199 @@ class KiwoomBroker:
             report["failed_queries"] = failed_queries
         return report
 
-    def get_daily_execution_history(self) -> Dict[str, Any]:
-        """
-        [TR: opt10075 / ust21050] 당일 실시간 체결/매매 내역 조회 (Read-only)
-        매매 로직과 100% 분리되어 장 마감 브리핑 등에만 안전하게 사용됨.
-        """
-        try:
-            body = {
-                "cano": self.account_no,
-                "acnt_prdt_cd": self.account_type,
-                "qry_tp": "1"  # 1: 체결내역
-            }
-            # 에러 발생 시에도 시스템이 멈추지 않도록 raise_on_error=False
-            res = self._send_tr_request(endpoint="/api/us/acnt", api_id="opt10075", body_dict=body, raise_on_error=False)
-            
-            if res.get("return_code") == 0:
-                executions = res.get("result_list", [])
-                return {
-                    "ok": True,
-                    "execution_count": len(executions),
-                    "executions": executions,
-                    "msg": res.get("return_msg", "정상 조회")
-                }
-            else:
-                return {
-                    "ok": False,
-                    "execution_count": 0,
-                    "executions": [],
-                    "msg": res.get("return_msg", "조회 실패")
-                }
-        except Exception as e:
-            logger.error(self._redact_log(f"체결 내역 조회 중 예외 발생: {e}"))
-            return {
-                "ok": False,
-                "execution_count": 0,
-                "executions": [],
-                "msg": f"에러: {e}"
-            }
+    @staticmethod
+    def _query_date(value):
+        if not isinstance(value, str) or not re.fullmatch(r"[0-9]{8}", value):
+            raise ValueError("Query date must be YYYYMMDD")
+        datetime.strptime(value, "%Y%m%d")
+        return value
 
-    def get_open_orders(self) -> Dict[str, Any]:
-        """
-        [TR: ust21050] 미국주식 체결/미체결 내역 조회
-        """
-        body = {
-            "cano": self.account_no,
-            "acnt_prdt_cd": self.account_type,
-            "qry_tp": "0"
+    def _normalize_order_row(self, row, api_id, body, queried_at):
+        # Pin 953e5db: cntr_qty is 'execution quantity', not verified cumulative.
+        def quantity(key):
+            try:
+                return _explicit_order_quantity(row.get(key))
+            except (ValueError, TypeError):
+                return None
+
+        def text(key):
+            value = row.get(key)
+            return value.strip() if isinstance(value, str) and value.strip() else None
+
+        has_original = api_id in ("ust21050", "ust21510")
+        original = text("orig_ord_no") if has_original else None
+        original_known = bool(original)
+        if api_id == "ust21050" and original and original.isdecimal() and int(original) == 0:
+            original = None
+        side = {"1": "SELL", "2": "BUY"}.get(text("slby_tp")) if has_original else None
+        trade_date = text("ord_dt") if api_id == "ust21180" else body.get("ord_dt")
+        if api_id == "ust21510":
+            trade_date = queried_at[:10].replace("-", "")
+        try:
+            self._query_date(trade_date)
+        except (ValueError, TypeError):
+            trade_date = None
+        unknown = ["account_binding", "cumulative_filled_quantity", "acceptance_finality", "cancel_finality"]
+        if side is None:
+            unknown.append("side")
+        if trade_date is None:
+            unknown.append("order_date")
+        if not original_known:
+            unknown.append("original_order_no")
+        normalized = {
+            "requested_account": str(self.account_no) + "-" + str(self.account_type),
+            "requested_environment": "SIMULATION" if self.is_simulation else "REAL",
+            "observed_account": None, "account_binding_verified": False,
+            "symbol": text("stk_cd"), "side": side or "UNKNOWN",
+            "order_no": text("ord_no"), "original_order_no": original,
+            "original_order_no_known": original_known, "order_date": trade_date,
+            "order_date_source": "RESPONSE" if api_id == "ust21180" else "REQUEST" if api_id != "ust21510" else "LOCAL_QUERY_DATE_UNVERIFIED",
+            "ordered_quantity": quantity("ord_qty"),
+            "reported_execution_quantity": quantity("cntr_qty"),
+            "cumulative_filled_quantity": None,
+            "remaining_quantity": quantity("ord_remnq"),
+            "reported_cancel_quantity": quantity("cncl_qty") if api_id != "ust21510" else None,
+            "reported_modify_quantity": quantity("mdfy_qty") if api_id != "ust21510" else None,
+            "order_kind": {"10": "ORIGINAL", "11": "MODIFY_REQUEST", "12": "CANCEL_REQUEST"}.get(text("ord_cntr_tp"), "UNKNOWN") if api_id == "ust21050" else "UNKNOWN",
+            "order_status": text("ord_stat") if has_original else text("ord_stat_nm") if api_id == "ust21150" else None,
+            "cancel_confirmed": None, "modify_confirmed": None,
+            "queried_at": queried_at, "source_tr": api_id,
+            "unverified_fields": unknown,
         }
-        res = self._send_tr_request(endpoint="/api/us/acnt", api_id="ust21050", body_dict=body)
-        
-        if res.get("return_code") == 0:
-            orders = res.get("result_list", [])
-            return {
-                "ok": True,
-                "open_orders_count": len(orders),
-                "orders": orders,
-                "msg": res.get("return_msg", "정상 처리")
-            }
-        else:
-            return {
-                "ok": False,
-                "open_orders_count": 0,
-                "orders": [],
-                "msg": res.get("return_msg", "체결내역 조회 완료")
-            }
+        for key in ("symbol", "order_no", "ordered_quantity", "remaining_quantity", "reported_execution_quantity", "reported_cancel_quantity", "reported_modify_quantity", "order_status"):
+            if normalized[key] is None:
+                unknown.append(key)
+        return normalized
+
+    def _collect_order_query(self, api_id, body):
+        """Collect transport pages; never certify account history completeness."""
+        queried_at = datetime.now(ZoneInfo("America/New_York")).isoformat()
+        metadata = {
+            "requested_account": str(self.account_no) + "-" + str(self.account_type),
+            "requested_environment": "SIMULATION" if self.is_simulation else "REAL",
+            "account_binding_verified": False,
+            "start_date": body.get("strt_dt") or body.get("ord_dt") or queried_at[:10].replace("-", ""),
+            "end_date": body.get("end_dt") or body.get("ord_dt") or queried_at[:10].replace("-", ""),
+            "source_tr": api_id, "endpoint": "/api/us/acnt", "queried_at": queried_at,
+            "pages_collected": 0, "continuation_terminated": False,
+            "collection_complete": False, "history_complete": False,
+            "response_type_valid": True, "server_success": False,
+            "pages": [], "unverified_fields": ["account_binding", "history_coverage", "snapshot_consistency", "publication_delay", "cumulative_execution_semantics"],
+        }
+        rows, cursor, seen = [], ("N", ""), set()
+        failure = None
+        missing_list = False
+        expected_environment = metadata["requested_environment"]
+        expected_url = "https://mockapi.kiwoom.com" if expected_environment == "SIMULATION" else "https://api.kiwoom.com"
+        if self.base_url.rstrip("/") != expected_url:
+            failure = "ENVIRONMENT_MISMATCH"
+        page_budget = getattr(config, "KIWOOM_ORDER_QUERY_MAX_PAGES", None)
+        # 100 is the explicitly approved upper safety bound, not a fallback budget.
+        if type(page_budget) is not int or not 1 <= page_budget <= 100:
+            failure = "INVALID_QUERY_PAGE_BUDGET"
+        metadata["page_budget"] = page_budget
+        while failure is None:
+            if len(metadata["pages"]) >= page_budget:
+                failure = "QUERY_PAGE_BUDGET_EXCEEDED"
+                break
+            try:
+                res = self._send_tr_request("/api/us/acnt", api_id, body, query_continuation=cursor)
+            except Exception:
+                failure = "QUERY_EXCEPTION"
+                metadata["pages"].append({"page": len(metadata["pages"]) + 1, "ok": False, "error": failure})
+                break
+            page = {"page": len(metadata["pages"]) + 1, "ok": False, "list_present": isinstance(res, dict) and "result_list" in res}
+            metadata["pages"].append(page)
+            if not isinstance(res, dict):
+                metadata["response_type_valid"] = False
+                failure = "INVALID_RESPONSE_TYPE"
+                break
+            if res.get("return_code") == 20 and "571758" in str(res.get("return_msg", "")) and res.get("ok") is not False:
+                res["return_code"] = 0
+                res.setdefault("result_list", [])
+                page["list_present"] = True
+            if type(res.get("return_code")) is not int or res["return_code"] != 0 or res.get("ok") is False:
+                failure = "QUERY_FAILED"
+                break
+            metadata["server_success"] = True
+            batch = res.get("result_list", [])
+            if not isinstance(batch, list) or any(not isinstance(row, dict) for row in batch):
+                metadata["response_type_valid"] = False
+                failure = "INVALID_RESULT_LIST"
+                break
+            missing_list = missing_list or not page["list_present"]
+            rows.extend(batch)
+            metadata["pages_collected"] += 1
+            page["ok"] = True
+            page["row_count"] = len(batch)
+            headers = res.get("_query_headers")
+            if not isinstance(headers, dict):
+                failure = "CONTINUATION_HEADERS_MISSING"
+                break
+            flag, key = headers.get("cont-yn"), headers.get("next-key")
+            if flag == "N":
+                metadata["continuation_terminated"] = True
+                break
+            if flag != "Y":
+                failure = "CONTINUATION_FLAG_UNKNOWN"
+                break
+            if not isinstance(key, str) or not key.strip():
+                failure = "NEXT_KEY_MISSING"
+                break
+            if key in seen:
+                failure = "NEXT_KEY_REPEATED"
+                break
+            seen.add(key)
+            cursor = ("Y", key)
+        if failure and metadata["pages"] and failure != "QUERY_PAGE_BUDGET_EXCEEDED":
+            metadata["pages"][-1]["error"] = failure
+        metadata["pages_requested"] = len(metadata["pages"])
+        metadata["collection_complete"] = failure is None and not missing_list and metadata["continuation_terminated"]
+        if missing_list:
+            metadata["unverified_fields"].append("optional_result_list_absent")
+        if failure:
+            metadata["failure"] = failure
+        normalized = [self._normalize_order_row(row, api_id, body, queried_at) for row in rows]
+        if api_id == "ust21180" and any(row["order_date"] is not None and not metadata["start_date"] <= row["order_date"] <= metadata["end_date"] for row in normalized):
+            failure = "ROW_DATE_OUTSIDE_QUERY_RANGE"
+            metadata["failure"] = failure
+            metadata["collection_complete"] = False
+        metadata["unverified_fields"] = sorted(set(metadata["unverified_fields"] + [field for row in normalized for field in row["unverified_fields"]]))
+        complete = metadata["collection_complete"]
+        return {"ok": complete, "complete": complete, "rows": rows if complete else [], "normalized_orders": normalized,
+                "partial_rows": rows if not complete else [], "metadata": metadata,
+                "msg": "API response collection complete; history completeness unverified" if complete else failure or "Optional result list absent; collection unverified"}
+
+    def get_daily_execution_history(self, order_date=None) -> Dict[str, Any]:
+        """Official ust21150 executed-order query; preserve raw executions contract."""
+        day = self._query_date(order_date or datetime.now(ZoneInfo("America/New_York")).strftime("%Y%m%d"))
+        result = self._collect_order_query("ust21150", {"ord_dt": day, "query_tp": "5", "slby_tp": "0"})
+        result["executions"] = result.pop("rows")
+        result["execution_count"] = len(result["executions"])
+        return result
+
+    def get_open_orders(self, order_date=None) -> Dict[str, Any]:
+        """Official ust21050 ledger open orders; no undocumented account filters."""
+        day = self._query_date(order_date or datetime.now(ZoneInfo("America/New_York")).strftime("%Y%m%d"))
+        result = self._collect_order_query("ust21050", {"ord_dt": day, "slby_tp": "0"})
+        result["orders"] = result.pop("rows")
+        result["open_orders_count"] = len(result["orders"])
+        return result
+
+    def get_order_history(self, start_date, end_date) -> Dict[str, Any]:
+        start, end = self._query_date(start_date), self._query_date(end_date)
+        if start > end:
+            raise ValueError("Query start date exceeds end date")
+        result = self._collect_order_query("ust21180", {"strt_dt": start, "end_dt": end, "slby_tp": "0"})
+        result["orders"] = result.pop("rows")
+        result["order_count"] = len(result["orders"])
+        return result
+
+    def get_today_order_confirmation(self) -> Dict[str, Any]:
+        result = self._collect_order_query("ust21510", {"slby_tp": "0"})
+        result["orders"] = result.pop("rows")
+        result["order_count"] = len(result["orders"])
+        return result
 
     def cancel_order(self, order_no: str, symbol: str, exchange: Optional[str] = None, quantity: int = 0) -> Dict[str, Any]:
         """
@@ -804,17 +1530,22 @@ class KiwoomBroker:
             return cancel_results
 
         for ord_info in orders:
-            ord_sym = str(ord_info.get("stk_cd") or ord_info.get("symb") or "").strip().upper()
+            ord_sym = str(ord_info.get("stk_cd") or ord_info.get("symbol") or ord_info.get("symb") or "").strip().upper()
             ord_no = str(ord_info.get("ord_no") or ord_info.get("order_no") or "").strip()
             stex_nm = str(ord_info.get("stex_nm") or "NY").strip()
             stex_tp = self._resolve_exchange(ord_sym)
+            raw_rem = ord_info.get("nccs_qty") if "nccs_qty" in ord_info else ord_info.get("ord_remnq", ord_info.get("remaining_quantity", 0))
+            try:
+                rem_qty = int(float(str(raw_rem).replace(",", "").strip()))
+            except Exception:
+                rem_qty = 0
 
             if symbol and ord_sym and symbol.upper() != ord_sym:
                 continue
 
             if ord_no:
                 logger.info(f"🛑 [기존 미체결 주문 전량 취소 집행] 주문번호: {ord_no} ({ord_sym})")
-                c_res = self.cancel_order(order_no=ord_no, symbol=ord_sym, exchange=stex_tp)
+                c_res = self.cancel_order(order_no=ord_no, symbol=ord_sym, exchange=stex_tp, quantity=rem_qty)
                 cancel_results.append(c_res)
 
         # 취소 반영 대기

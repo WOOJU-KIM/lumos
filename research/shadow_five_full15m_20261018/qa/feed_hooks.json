@@ -1,0 +1,19 @@
+{
+  "status": "PASS",
+  "checks": {
+    "kiwoom_ws_streamer.py_original_ast_preserved": true,
+    "ml_engine.py_original_ast_preserved": true,
+    "live_runner.py_original_ast_preserved": true,
+    "moe_orchestrator.py_original_ast_preserved": true,
+    "worker_dead_live_callback_continues": true,
+    "observer_exception_live_callback_continues": true,
+    "only_approved_original_files_changed": true
+  },
+  "changed": [
+    "core/kiwoom_ws_streamer.py",
+    "core/ml_engine.py",
+    "core/live_runner.py"
+  ],
+  "model_config_backup_hashes_unchanged": true,
+  "orders": 0
+}

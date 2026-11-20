@@ -1,0 +1,45 @@
+{
+  "stage": 3,
+  "status": "PASS_DATA_ACCOUNTED_NOT_FEED_READY",
+  "raw_native15m_rows": 44300,
+  "feature_rows": 44300,
+  "raw_row_accounting": {
+    "FEATURE_WARMUP_OR_MISSING": 32,
+    "OUTSIDE_ENTRY_WINDOW_CONTEXT_RETAINED": 10613,
+    "ENTRY_WINDOW_NATIVE_ROW": 33655
+  },
+  "calendar_decisions": 37416,
+  "retained_feature_decisions": 34429,
+  "sequence_valid_decisions": 34403,
+  "SOXS_labels": 13206,
+  "SOXL_labels": 24405,
+  "both_labels": 13113,
+  "at_least_one_label": 24498,
+  "decision_status_counts": {
+    "FEATURE_WARMUP_OR_MISSING": 34,
+    "MISSING_LATEST15M": 2953,
+    "ELIGIBLE": 34429
+  },
+  "label_status_counts": {
+    "SOXS": {
+      "UNAVAILABLE": 2987,
+      "ZERO_VOLUME_UNVERIFIED_FILL": 13830,
+      "MISSING_ENTRY_5M": 6103,
+      "MISSING_PATH_BEFORE_EXIT": 1261,
+      "LABEL_CONFIRMED": 13206,
+      "MISSING_DEADLINE_PRICE": 29
+    },
+    "SOXL": {
+      "UNAVAILABLE": 2987,
+      "MISSING_ENTRY_5M": 3264,
+      "MISSING_PATH_BEFORE_EXIT": 6695,
+      "LABEL_CONFIRMED": 24405,
+      "MISSING_DEADLINE_PRICE": 65
+    }
+  },
+  "all_native_rows_used_for_features": true,
+  "paired_intersection_not_required": true,
+  "full90m_path_not_required": true,
+  "original_active_training_already_uses_full_native15m": true,
+  "protected_changes": []
+}

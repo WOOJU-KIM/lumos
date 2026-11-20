@@ -1,0 +1,12 @@
+{
+  "status": "PASS",
+  "checks": 5,
+  "fixtures": "SYNTHETIC_NOT_PERFORMANCE",
+  "cases": [
+    "SL_before_TP",
+    "prior_peak_only",
+    "cost_once",
+    "gap_stop",
+    "time_stop"
+  ]
+}

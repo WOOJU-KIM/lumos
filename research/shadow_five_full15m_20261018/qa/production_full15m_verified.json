@@ -1,0 +1,16 @@
+{
+  "status": "ALREADY_FULL15M_NO_CHANGE_REQUIRED",
+  "training_window_meta": {
+    "config_rolling_training_weeks": 520,
+    "config_training_lookback_days": 3640,
+    "train_start_dt": "2020-07-29 09:30:00",
+    "train_end_dt": "2026-10-16 14:15:00",
+    "train_rows": 44256,
+    "span_days": 2270,
+    "excluded_older_than_10y_rows": 0,
+    "excluded_warmup_nan_rows": 38,
+    "excluded_unconfirmed_tail_rows": 6,
+    "raw_total_rows_verified_from_artifact": 44300
+  },
+  "active_model_unchanged": true
+}

@@ -53,10 +53,31 @@ def main():
     try:
         subprocess.run([sys.executable, script_path], env=env, check=True)
         print("✅ 롤링 백업 및 재학습 파이프라인 무사 완료!")
-        notifier._dispatch_message(f"✅ [Lumos Auto-Train] 최근 {config.TRAINING_LOOKBACK_DAYS}일({start_dt_str}~{end_dt_str}) 데이터 적재 및 GBDT 재학습 완료! 다음 주 매매 준비 끝.")
+        from core.ml_engine import MLFeatureEngine
+        active_info = MLFeatureEngine(auto_load=True).get_active_model_info()
+        win_meta = active_info.get("training_window_meta") or {}
+        notifier.send_retrain_status_alert(
+            status_code="MODEL_ACTIVATION_SUCCEEDED",
+            model_id=str(active_info.get("active_model_id", "B_Normalized_72")),
+            feature_schema=str(active_info.get("active_model_schema", "B_normalized")),
+            num_features=int(active_info.get("active_model_num_features") or 72),
+            model_sha256=str(active_info.get("active_model_sha256") or ""),
+            training_window_meta=win_meta,
+            detail=f"롤링 기간({start_dt_str}~{end_dt_str}) 적재 및 B_Normalized_72 원자적 활성화 완료",
+        )
     except subprocess.CalledProcessError as e:
         print(f"❌ 파이프라인 실행 중 에러 발생: {e}")
-        notifier._dispatch_message(f"🚨 [Lumos Auto-Train] 재학습 중 에러가 발생했습니다! 로그를 확인하세요.")
+        from core.ml_engine import MLFeatureEngine
+        active_info = MLFeatureEngine(auto_load=True).get_active_model_info()
+        notifier.send_retrain_status_alert(
+            status_code="MODEL_ACTIVATION_FAILED",
+            model_id=str(active_info.get("active_model_id", "B_Normalized_72")),
+            feature_schema=str(active_info.get("active_model_schema", "B_normalized")),
+            num_features=int(active_info.get("active_model_num_features") or 72),
+            model_sha256=str(active_info.get("active_model_sha256") or ""),
+            training_window_meta=active_info.get("training_window_meta") or {},
+            detail=f"주말 롤링 재학습 스크립트 실행 실패 (기존 활성 모델 유지): {e}",
+        )
         
     # 알림 전송 대기 및 셧다운
     notifier.shutdown()

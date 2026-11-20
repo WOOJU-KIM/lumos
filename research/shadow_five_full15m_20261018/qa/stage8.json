@@ -1,0 +1,29 @@
+{
+  "stage": 8,
+  "status": "PREPARED_NOT_CONNECTED",
+  "candidates": 5,
+  "full15m_feature_rows": 44300,
+  "all_available_targets_used": true,
+  "original_files_checked": 879,
+  "original_files_changed": [],
+  "legacy_system_integrity": "9/9 PASS in isolated unchanged source copy",
+  "real_network_or_order_calls": 0,
+  "production_hooks": [],
+  "read_only_event_feed_available": false,
+  "activation_enabled": false,
+  "live_ready": false,
+  "active_model_action": "NO_CHANGE_ALREADY_TRAINED_ON44256_OF44300_NATIVE_ROWS",
+  "outstanding": [
+    "Observed read-only tick/quote/decision publisher not connected",
+    "Actual event arrival latency and feed gap acceptance not yet measured"
+  ],
+  "selector_activity_caveat": {
+    "FULL_COND_PAYOFF_F1.0": 0,
+    "FULL_HIST_PAYOFF_F1.0": 2
+  },
+  "selector_activity_period": "prior12week calibration,not live performance",
+  "final_model_qa": "PASS_600_INFERENCES_AND29_RUNTIME_CHECKS",
+  "latest_selector_artifacts": "all_labels_v3",
+  "all_originals_unchanged": true,
+  "active_model_changed": false
+}

@@ -1,7 +1,12 @@
+import hashlib
+import os
+import math
 import sqlite3
 import datetime
 import threading
 import queue
+import uuid
+from contextlib import closing
 from pathlib import Path
 from zoneinfo import ZoneInfo
 import config
@@ -24,17 +29,43 @@ SLOT_KEYS = (
 )
 
 class ShadowTracker:
-    def __init__(self, db_path: Path = None):
+    def __init__(self, db_path: Path = None, enabled: bool = True):
         self._lock = threading.RLock()
         self.slots = [self._create_empty_slot(i) for i in range(MAX_SHADOW_SLOTS)]
         self.last_entered_candle_id = None
+        self._latest_prices = {}
+        self._slot_signals = {}
         
         self.db_path = db_path or (config.DATA_DIR / "shadow_trades_live.db")
         self._db_queue = queue.Queue()
+        self.enabled = bool(enabled)
+        self._worker_thread = None
+        if not self.enabled:
+            return
         self._init_db()
         
         self._worker_thread = threading.Thread(target=self._db_worker, daemon=True)
         self._worker_thread.start()
+
+    def _claim_candle(self, candle_id: str) -> bool:
+        """Atomically reserve admission across instances sharing this DB path.
+
+        Independent of SQLite logging availability. A crash after reservation
+        consumes this candle conservatively; this is not proof of a fill.
+        Storage failures reject shadow admission only.
+        """
+        claim_dir = self.db_path.with_suffix(self.db_path.suffix + ".candle_claims")
+        claim_name = hashlib.sha256(str(candle_id).encode("utf-8")).hexdigest()
+        try:
+            claim_dir.mkdir(parents=True, exist_ok=True)
+            fd = os.open(claim_dir / claim_name, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            os.close(fd)
+            return True
+        except FileExistsError:
+            system_logger.log("INFO", "ShadowTracker", "[DUPLICATE_CANDLE_SHADOW_ENTRY_BLOCKED] Persisted admission exists")
+        except OSError:
+            system_logger.log("ERROR", "ShadowTracker", "[SHADOW_ADMISSION_STORAGE_UNAVAILABLE] Shadow entry blocked")
+        return False
 
     @staticmethod
     def _create_empty_slot(slot_id: int) -> dict:
@@ -97,6 +128,7 @@ class ShadowTracker:
             except sqlite3.OperationalError as e:
                 if "no such column" in str(e):
                     c.execute("ALTER TABLE shadow_logs ADD COLUMN sl_pct REAL")
+            self.ensure_signal_schema(conn)
             conn.commit()
             conn.close()
         except Exception as e:
@@ -110,7 +142,13 @@ class ShadowTracker:
                 if task is None:
                     break
                 
-                slot_data = task
+                signal = task.get("entry_signal")
+                if signal is not None:
+                    with closing(sqlite3.connect(self.db_path, timeout=5.0)) as conn, conn:
+                        self.write_entry_signal(conn, signal)
+                    continue
+                slot_data = task.get("slot_data", task)
+                signal = task.get("signal", {})
                 conn = sqlite3.connect(self.db_path, timeout=5.0)
                 c = conn.cursor()
                 
@@ -137,28 +175,39 @@ class ShadowTracker:
                 # 2. 레거시 shadow_logs 호환 저장
                 c.execute("""
                     INSERT INTO shadow_logs 
-                    (symbol, virtual_entry_time, virtual_entry_price, gbdt_confidence, virtual_exit_time, virtual_exit_price, pnl_pct, exit_reason, highest_price_seen, candles_passed, sl_pct)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (symbol, virtual_entry_time, virtual_entry_price, gbdt_confidence, virtual_exit_time, virtual_exit_price, pnl_pct, exit_reason, highest_price_seen, candles_passed, sl_pct,
+                     signal_id, learning_snapshot_id, model_sha256, score_source)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     slot_data.get("symbol"),
                     slot_data.get("entry_time"),
                     slot_data.get("entry_price"),
-                    0.0,
+                    signal.get("gbdt_confidence"),
                     slot_data.get("exit_time"),
                     slot_data.get("exit_price"),
                     slot_data.get("net_return_pct"),
                     slot_data.get("exit_reason"),
                     slot_data.get("highest_price"),
                     0,
-                    0.0
+                    0.0,
+                    signal.get("signal_id"),
+                    signal.get("learning_snapshot_id"),
+                    signal.get("model_sha256"),
+                    signal.get("score_source", "UNAVAILABLE")
                 ))
+                if signal:
+                    self.write_entry_signal(conn, signal)
                 conn.commit()
                 conn.close()
 
                 # 3. JSONL 파일에도 지시된 12개 키 dict 그대로 한 줄씩 append 저장
                 try:
                     import json
-                    jsonl_path = self.db_path.parent / "shadow_trades_history.jsonl"
+                    jsonl_path = (
+                        self.db_path.parent / "shadow_trades_history.jsonl"
+                        if self.db_path.name == "shadow_trades_live.db"
+                        else self.db_path.with_suffix(".jsonl")
+                    )
                     with open(jsonl_path, "a", encoding="utf-8") as f:
                         f.write(json.dumps(slot_data, ensure_ascii=False) + "\n")
                 except Exception as je:
@@ -167,6 +216,43 @@ class ShadowTracker:
                 system_logger.log("ERROR", "ShadowTracker", f"[SHADOW_EXCEPTION] DB 비동기 저장 중 에러: {e}")
             finally:
                 self._db_queue.task_done()
+
+    @staticmethod
+    def ensure_signal_schema(conn):
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(shadow_logs)")}
+        for column in ("signal_id", "learning_snapshot_id", "model_sha256", "score_source"):
+            if column not in columns:
+                conn.execute(f"ALTER TABLE shadow_logs ADD COLUMN {column} TEXT")
+        conn.execute("""CREATE TABLE IF NOT EXISTS shadow_entry_signals (
+            signal_id TEXT PRIMARY KEY, symbol TEXT NOT NULL, entry_time TEXT NOT NULL,
+            entry_price REAL NOT NULL, candle_id TEXT, gbdt_confidence REAL,
+            learning_snapshot_id TEXT, model_sha256 TEXT, score_source TEXT NOT NULL)""")
+
+    @staticmethod
+    def write_entry_signal(conn, signal):
+        conn.execute("""INSERT OR IGNORE INTO shadow_entry_signals
+            (signal_id,symbol,entry_time,entry_price,candle_id,gbdt_confidence,
+             learning_snapshot_id,model_sha256,score_source) VALUES (?,?,?,?,?,?,?,?,?)""",
+            tuple(signal.get(key) for key in ("signal_id", "symbol", "entry_time", "entry_price",
+                "candle_id", "gbdt_confidence", "learning_snapshot_id", "model_sha256", "score_source")))
+
+    @staticmethod
+    def entry_signal_from_decision(decision, direction):
+        snapshot = decision.get("learning_snapshot")
+        snapshot = snapshot if isinstance(snapshot, dict) else {}
+        scores = snapshot.get("displayed_scores")
+        scores = scores if isinstance(scores, dict) else {}
+        value = scores.get(direction)
+        expected = decision.get("active_model_sha256")
+        valid = (direction in ("LONG", "SHORT") and isinstance(value, (int, float)) and
+                 math.isfinite(value) and 0 <= value <= 1 and
+                 snapshot.get("inference_complete") is True and
+                 bool(snapshot.get("event_id")) and bool(snapshot.get("model_sha256")) and
+                 (not expected or snapshot.get("model_sha256") == expected))
+        return dict(confidence=float(value) * 100 if valid else None,
+                    learning_snapshot_id=snapshot.get("event_id"),
+                    model_sha256=snapshot.get("model_sha256"),
+                    score_source="RECORDED_DIRECTION_DISPLAYED_SCORE" if valid else "UNAVAILABLE")
 
     def get_last_closed_15m_candle(self, dt: datetime.datetime = None):
         """
@@ -220,7 +306,11 @@ class ShadowTracker:
         price: float,
         current_time = None,
         atr_pct: float = None,
-        force_candle_id: str = None
+        force_candle_id: str = None,
+        confidence: float = None,
+        learning_snapshot_id: str = None,
+        model_sha256: str = None,
+        score_source: str = None
     ) -> bool:
         """
         15분봉 마감 시 호출되는 SHADOW 강제 진입 엔진.
@@ -229,10 +319,12 @@ class ShadowTracker:
         - 최대 10개 독립 슬롯 관리 (빈 슬롯 부재 시 NO_EMPTY_SHADOW_SLOT).
         - 유효하지 않은 가격/시각 거부 (SHADOW_ENTRY_REJECTED_INVALID_PRICE).
         """
+        if not self.enabled:
+            return False
         try:
             with self._lock:
                 # 1. 가격 유효성 검사
-                if price is None or not isinstance(price, (int, float)) or price <= 0.0:
+                if price is None or not isinstance(price, (int, float)) or not math.isfinite(price) or price <= 0.0:
                     system_logger.log("WARNING", "ShadowTracker", f"[SHADOW_ENTRY_REJECTED_INVALID_PRICE] 가격 유효하지 않음: {price}")
                     return False
 
@@ -283,20 +375,23 @@ class ShadowTracker:
                     return False
 
                 # 6. 실전 동일 초기 손절가(stop_price) 계산
-                sl_atr_mult = getattr(config, "SL_ATR_MULTIPLIER", 1.5)
-                sl_min = getattr(config, "SL_MIN_PCT", 0.02)
-                sl_max = getattr(config, "SL_MAX_PCT", 0.032)
-
-                if atr_pct is not None and atr_pct > 0:
-                    effective_sl_pct = max(sl_min, min(sl_max, atr_pct * sl_atr_mult))
-                else:
-                    effective_sl_pct = sl_min
-
-                initial_stop = price * (1.0 - effective_sl_pct)
+                initial_stop = price * (1.0 - config.SL_MIN_PCT)
                 entry_time_str = curr_dt.strftime("%Y-%m-%d %H:%M:%S")
 
                 # 7. 슬롯 할당 (정확히 12개 키 유지)
+                if not self._claim_candle(candle_id):
+                    return False
+
                 slot_id = empty_slot["slot_id"]
+                score_valid = (isinstance(confidence, (int, float)) and
+                               math.isfinite(confidence) and 0 <= confidence <= 100)
+                signal = dict(signal_id=uuid.uuid4().hex, symbol=str(symbol).upper(),
+                    entry_time=entry_time_str, entry_price=float(price), candle_id=str(candle_id),
+                    gbdt_confidence=float(confidence) if score_valid else None,
+                    learning_snapshot_id=learning_snapshot_id, model_sha256=model_sha256,
+                    score_source=(score_source or "CALLER_PROVIDED_PERCENT") if score_valid else "UNAVAILABLE")
+                self._slot_signals[slot_id] = signal
+                self._db_queue.put({"entry_signal": dict(signal)})
                 empty_slot["active"] = True
                 empty_slot["symbol"] = str(symbol).upper()
                 empty_slot["entry_time"] = entry_time_str
@@ -310,6 +405,7 @@ class ShadowTracker:
                 empty_slot["net_return_pct"] = 0.0
 
                 self.last_entered_candle_id = candle_id
+                self._latest_prices[empty_slot["symbol"]] = float(price)
 
                 system_logger.log(
                     "INFO",
@@ -321,12 +417,13 @@ class ShadowTracker:
             system_logger.log("ERROR", "ShadowTracker", f"[SHADOW_EXCEPTION] SHADOW 진입 실패: {e}")
             return False
 
-    def add_virtual_trade(self, symbol: str, price: float, confidence: float = 0.0, sl_pct: float = None, current_time = None):
+    def add_virtual_trade(self, symbol: str, price: float, confidence: float = None, sl_pct: float = None, current_time = None):
         """기존 live_runner.py 호출과의 하위 호환성을 위한 래퍼 메서드"""
         atr_pct = None
         if sl_pct is not None and sl_pct > 0:
             atr_pct = (sl_pct / 100.0) / getattr(config, "SL_ATR_MULTIPLIER", 1.5)
-        return self.try_enter_shadow_trade(symbol, price, current_time=current_time, atr_pct=atr_pct)
+        return self.try_enter_shadow_trade(symbol, price, current_time=current_time, atr_pct=atr_pct,
+            confidence=confidence, score_source="LEGACY_CALLER_PROVIDED_PERCENT")
 
     def check_ticks(self, symbol: str, current_price: float, current_time = None):
         """
@@ -335,6 +432,8 @@ class ShadowTracker:
         - 트레일링 스탑가 갱신: SHADOW_STOP_PRICE_UPDATED
         - 청산 우선순위: 손절/트레일링 -> 최대 익절 -> 90분 타임스탑
         """
+        if not self.enabled:
+            return
         try:
             if current_price is None or current_price <= 0.0:
                 return
@@ -349,6 +448,7 @@ class ShadowTracker:
             time_stop_min = getattr(config, "TIME_STOP_MINUTES", 90)
 
             with self._lock:
+                self._latest_prices[sym] = float(current_price)
                 for slot_id, slot in enumerate(self.slots):
                     if not slot["active"] or slot["symbol"] != sym:
                         continue
@@ -396,12 +496,14 @@ class ShadowTracker:
         except Exception as e:
             system_logger.log("ERROR", "ShadowTracker", f"[SHADOW_EXCEPTION] check_ticks 실행 에러: {e}")
 
-    def increment_candle(self, current_time = None):
+    def increment_candle(self, current_time = None, exit_prices: dict = None):
         """15분 주기 브리핑 시 호출되어 90분 타임스탑을 일괄 검사"""
-        self.check_time_stops(current_time)
+        self.check_time_stops(current_time, exit_prices=exit_prices)
 
-    def check_time_stops(self, current_time = None):
-        """90분 경과한 활성 슬롯 강제 청산"""
+    def check_time_stops(self, current_time = None, exit_prices: dict = None):
+        """90분 경과한 활성 슬롯 강제 청산 (최고가 청산 절대 금지: 현재가 -> 최근 틱 가격 -> 진입가 순 적용)"""
+        if not self.enabled:
+            return
         try:
             curr_dt = self._parse_dt(current_time)
             time_str = curr_dt.strftime("%Y-%m-%d %H:%M:%S")
@@ -413,13 +515,21 @@ class ShadowTracker:
                         continue
 
                     if self._is_time_stop_elapsed(slot["entry_time"], curr_dt, time_stop_min):
-                        exit_px = slot["highest_price"] if slot["highest_price"] > 0 else slot["entry_price"]
+                        sym = slot["symbol"]
+                        if exit_prices and sym in exit_prices and exit_prices[sym] > 0:
+                            exit_px = float(exit_prices[sym])
+                        elif self._latest_prices.get(sym, 0.0) > 0:
+                            exit_px = float(self._latest_prices[sym])
+                        else:
+                            exit_px = float(slot["entry_price"])
                         self._close_slot(slot_id, exit_px, time_str, "TIME_STOP", "SHADOW_EXIT_TIME_STOP")
         except Exception as e:
             system_logger.log("ERROR", "ShadowTracker", f"[SHADOW_EXCEPTION] check_time_stops 실행 에러: {e}")
 
     def flush_eod(self, current_time = None, exit_prices: dict = None):
-        """장 마감 시(15:55 NYT) 전량 시장가 청산 및 슬롯 초기화"""
+        """장 마감 시(15:55 NYT) 전량 시장가 청산 및 슬롯 초기화 (최고가 청산 절대 금지: 현재가 -> 최근 틱 가격 -> 진입가 순 적용)"""
+        if not self.enabled:
+            return
         try:
             curr_dt = self._parse_dt(current_time)
             time_str = curr_dt.strftime("%Y-%m-%d %H:%M:%S")
@@ -430,13 +540,12 @@ class ShadowTracker:
                         continue
 
                     sym = slot["symbol"]
-                    px = 0.0
                     if exit_prices and sym in exit_prices and exit_prices[sym] > 0:
-                        px = exit_prices[sym]
-                    elif slot["highest_price"] > 0:
-                        px = slot["highest_price"]
+                        px = float(exit_prices[sym])
+                    elif self._latest_prices.get(sym, 0.0) > 0:
+                        px = float(self._latest_prices[sym])
                     else:
-                        px = slot["entry_price"]
+                        px = float(slot["entry_price"])
 
                     self._close_slot(slot_id, px, time_str, "EOD_CLEAR", "SHADOW_EXIT_EOD_CLEAR")
         except Exception as e:
@@ -476,7 +585,7 @@ class ShadowTracker:
         )
 
         # DB 비동기 저장 요청
-        self._db_queue.put(dict(slot))
+        self._db_queue.put(dict(slot_data=dict(slot), signal=self._slot_signals.pop(slot_id, {})))
 
         # 완전히 새로운 empty dict 객체로 교체하여 이전 거래 잔여 데이터 100% 격리
         self.slots[slot_id] = self._create_empty_slot(slot_id)
