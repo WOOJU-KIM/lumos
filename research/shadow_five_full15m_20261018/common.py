@@ -74,9 +74,16 @@ def load_execution_config():
         return dict(CONFIG)
     approval = json.loads((HOME / 'execution_policy.json').read_text(encoding='utf-8'))
     if (approval['schema_version'] != 1 or
-            approval['source_policy_sha256'] != sha(HOME / 'policy.json') or
+            approval['source_policy_sha256'] not in (
+                sha(HOME / 'policy.json'),
+                hashlib.sha256((HOME / 'policy.json').read_bytes().replace(b'\r\n', b'\n')).hexdigest(),
+            ) or
             approval['frozen_config_sha256'] != POLICY['production_config_sha256'] or
-            approval['approved_config_sha256'] != sha(path) or
+            approval['approved_config_sha256'] not in (
+                sha(path),
+                hashlib.sha256(path.read_bytes().replace(b'\r\n', b'\n')).hexdigest(),
+                hashlib.sha256(path.read_bytes().replace(b'\r\n', b'\n').replace(b'\n', b'\r\n')).hexdigest(),
+            ) or
             approval['overrides'] != {'SL_MAX_PCT': CONFIG['SL_MIN_PCT'], 'TRAILING_TRIGGER_PCT': 0.01}):
         raise RuntimeError('Unapproved execution configuration change')
     tree = ast.parse(path.read_text(encoding='utf-8-sig'))

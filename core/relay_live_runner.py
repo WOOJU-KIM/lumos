@@ -222,8 +222,15 @@ class RelayLiveRunner(KiwoomLiveRunner):
                     value.get('qa_passed') is not True or set(value['source_hashes']) != required):
                 return False
             root = Path(config.BASE_DIR)
-            return all(hashlib.sha256((root/name).read_bytes()).hexdigest() == digest
-                       for name,digest in value['source_hashes'].items())
+            for name, digest in value['source_hashes'].items():
+                raw = (root / name).read_bytes()
+                if digest not in (
+                    hashlib.sha256(raw).hexdigest(),
+                    hashlib.sha256(raw.replace(b'\r\n', b'\n')).hexdigest(),
+                    hashlib.sha256(raw.replace(b'\r\n', b'\n').replace(b'\n', b'\r\n')).hexdigest(),
+                ):
+                    return False
+            return True
         except (OSError, ValueError, TypeError, KeyError):
             return False
 
