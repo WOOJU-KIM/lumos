@@ -1,0 +1,53 @@
+{
+  "stage": 9,
+  "status": "PASS_LOCAL_QA_PENDING_OBSERVED_SESSION",
+  "original_files_checked": 879,
+  "approved_observer_changes": [
+    "core/kiwoom_ws_streamer.py",
+    "core/live_runner.py",
+    "core/ml_engine.py"
+  ],
+  "other_original_files_unchanged": true,
+  "protected_models_config_backups_unchanged": true,
+  "installed_source_sha256": {
+    "core/kiwoom_ws_streamer.py": "55eb9d564bbec42fd9c9b956597b9e80f2d7f90a5008f86d10c542e46e5d4280",
+    "core/ml_engine.py": "df90bd4fa6b0c556af5f397b06d92ad32f90239cc1b56c8e2458cd40373382bb",
+    "core/live_runner.py": "616c6cb0aadcfed8a5e1c4e8b936b3cbcc19f536e99bfcbaf8885b797f92122e"
+  },
+  "transport_checks": 19,
+  "hook_checks": 6,
+  "cross_process_events": 1000,
+  "runtime_checks": 29,
+  "real_input_model_evaluations": 600,
+  "legacy_integrity_tests": 9,
+  "legacy_integrity_scope": "credential-free network-blocked copy; exact modified sources",
+  "latency": {
+    "samples": 10000,
+    "tick_p50_us": 1.9,
+    "tick_p99_us": 2.9,
+    "tick_max_us": 52.1,
+    "feature_capture_max_us": 825.9,
+    "busy_lock_us": 3.3
+  },
+  "read_only_api_calls": 0,
+  "sqlite_reads": "mode=ro,query_only,timeout0,index lookup; ATR and asof provenance only",
+  "actual_orders": 0,
+  "live_runner_started_or_restarted": false,
+  "b03_status": "UNVERIFIED_NOT_CLEARED",
+  "live_ready": false,
+  "pending": [
+    "First actual session event receipt",
+    "Observed peak-load latency/gaps",
+    "Actual bid/ask coverage and unresolved virtual fills"
+  ],
+  "limits": [
+    "Existing running interpreter needs normal restart to load hooks",
+    "Sidecar explicitly launched; no OS boot scheduler installed",
+    "Virtual polling timer phase differs from real holdings poll; no extra broker calls",
+    "Exact final feature vector captured; individual cross-source provenance checked from DB, not atomic snapshot"
+  ],
+  "listener_status": "LISTENING",
+  "listener_pid": 22304,
+  "background_io_mode": true,
+  "observed_market_events": 0
+}

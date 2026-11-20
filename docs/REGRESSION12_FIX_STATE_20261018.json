@@ -1,0 +1,144 @@
+{
+  "date_kst": "2026-10-18",
+  "status": "OFFLINE_REGRESSION_PASSED",
+  "previous_failures_resolved": 12,
+  "tests": 133,
+  "passed": 133,
+  "suites": {
+    "test_b03_order_ledger_integrity.py": {
+      "tests": 39,
+      "success": true,
+      "failures": [],
+      "errors": [],
+      "guards": {
+        "network_blocked": 0,
+        "outside_write_blocked": 0
+      }
+    },
+    "test_b03_hardening.py": {
+      "tests": 26,
+      "success": true,
+      "failures": [],
+      "errors": [],
+      "guards": {
+        "network_blocked": 0,
+        "outside_write_blocked": 0
+      }
+    },
+    "test_system_integrity.py": {
+      "tests": 9,
+      "success": true,
+      "failures": [],
+      "errors": [],
+      "guards": {
+        "network_blocked": 0,
+        "outside_write_blocked": 0
+      }
+    },
+    "test_learning_capture.py": {
+      "tests": 6,
+      "success": true,
+      "failures": [],
+      "errors": [],
+      "guards": {
+        "network_blocked": 0,
+        "outside_write_blocked": 0
+      }
+    },
+    "test_live_experience_logger.py": {
+      "tests": 4,
+      "success": true,
+      "failures": [],
+      "errors": [],
+      "guards": {
+        "network_blocked": 0,
+        "outside_write_blocked": 0
+      }
+    },
+    "test_live_execution_safety.py": {
+      "tests": 4,
+      "success": true,
+      "failures": [],
+      "errors": [],
+      "guards": {
+        "network_blocked": 0,
+        "outside_write_blocked": 0
+      }
+    },
+    "test_live_defense_and_briefing.py": {
+      "tests": 3,
+      "success": true,
+      "failures": [],
+      "errors": [],
+      "guards": {
+        "network_blocked": 0,
+        "outside_write_blocked": 0
+      }
+    },
+    "test_b05_premarket_signal_and_transition.py": {
+      "tests": 13,
+      "success": true,
+      "failures": [],
+      "errors": [],
+      "guards": {
+        "network_blocked": 0,
+        "outside_write_blocked": 0
+      }
+    },
+    "test_shadow_audit_verification.py": {
+      "tests": 6,
+      "success": true,
+      "failures": [],
+      "errors": [],
+      "guards": {
+        "network_blocked": 0,
+        "outside_write_blocked": 0
+      }
+    },
+    "test_shadow_forced_entry.py": {
+      "tests": 15,
+      "success": true,
+      "failures": [],
+      "errors": [],
+      "guards": {
+        "network_blocked": 0,
+        "outside_write_blocked": 0
+      }
+    },
+    "test_shadow_admission_persistence.py": {
+      "tests": 8,
+      "success": true,
+      "failures": [],
+      "errors": [],
+      "guards": {
+        "network_blocked": 0,
+        "outside_write_blocked": 0
+      }
+    }
+  },
+  "direct_integrity_pass": true,
+  "protected_files_checked": 243,
+  "protected_changed": [],
+  "protected_added": [],
+  "source_hashes": {
+    "core/shadow_tracker.py": "9dfe77d4380d14e862855554d8507a103d4474784669262304dda7f9615a619c",
+    "tests/test_live_execution_safety.py": "d65f4f6f9879a8bf3dcfc4448daa559296d4da183cd2f55a6f7aaff8de98b1cb",
+    "tests/test_live_defense_and_briefing.py": "f7f62f1ece5d6572ad3831cfbf34529a432f7175d5dee54e681aa7743f25b8a3",
+    "tests/test_b05_premarket_signal_and_transition.py": "e5075ca05e1d795a28f9dd74f3817a7a6a18dc1db16e035c35613a95ca77940c",
+    "tests/test_shadow_audit_verification.py": "3935fd146c7f741498af5f9e65f488733e5ceb097d8bdfd5cbfc97931f058f0a",
+    "tests/test_shadow_forced_entry.py": "748488a4664648b87a20331b3e2d9dfddbc6a016edb04b0987c09723ebee5be0",
+    "tests/test_shadow_admission_persistence.py": "f69cb2ae36cc11aeb79f22a3f97dcea1be4462de3d0975d2b31c8c2766ede391"
+  },
+  "live_ready": false,
+  "real_runner_started": false,
+  "broker_api_calls": 0,
+  "real_orders": 0,
+  "telegram_messages": 0,
+  "limitations": [
+    "Synthetic orchestration fixtures do not measure trading performance",
+    "Persistent shadow admission does not restore open virtual positions",
+    "Crash after claim consumes that candle conservatively; no power-loss durability claim",
+    "One local filesystem reservation per accepted candle; operational storage latency not measured",
+    "Actual broker reconciliation and next-session shadow feed remain unverified"
+  ]
+}

@@ -75,8 +75,8 @@ class TestLiveExecutionSafety(unittest.TestCase):
             is_simulation=True
         )
         exit_msg, _ = dispatched_messages[-1]
-        self.assertIn("🧪 [키움 모의투자]", exit_msg)
-        self.assertNotIn("🚨 [키움 실전투자]", exit_msg)
+        self.assertIn("[키움 모의투자]", exit_msg)
+        self.assertNotIn("[키움 실전투자]", exit_msg)
 
         # 실전투자 청산 알림
         notifier.send_exit_alert(
@@ -87,8 +87,8 @@ class TestLiveExecutionSafety(unittest.TestCase):
             is_simulation=False
         )
         exit_real_msg, _ = dispatched_messages[-1]
-        self.assertIn("🚨 [키움 실전투자]", exit_real_msg)
-        self.assertNotIn("🧪 [키움 모의투자]", exit_real_msg)
+        self.assertIn("[키움 실전투자]", exit_real_msg)
+        self.assertNotIn("[키움 모의투자]", exit_real_msg)
 
         print("✅ [Test 3 통과] 텔레그램 청산 알림 헤더 [모의투자]/[실전투자] 투명 표기 검증 완료")
 

@@ -1,0 +1,8 @@
+{
+  "status": "SHADOW_MANIFEST_PROMOTED",
+  "manifest_sha256": "6ddee4f0d2d9055938a03dbac846de223602224c3d6aad225f574e9b25b0f45a",
+  "previous_manifest_sha256": "6a1d5968f6b1bdc99b2dff4e0dd24a571e7b62d2f579241493c4887ce1e17b77",
+  "real_production_model_changed": false,
+  "real_runner_started": false,
+  "orders": 0
+}

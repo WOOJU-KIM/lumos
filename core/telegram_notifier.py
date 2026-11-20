@@ -99,6 +99,34 @@ class TelegramNotifier:
         s = str(val if val is not None else "")
         return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
+    @staticmethod
+    def _relay_enabled() -> bool:
+        return getattr(config, 'LIVE_EXECUTION_STRATEGY', None) == 'OPPOSITE_RELAY_V1'
+
+    def _relay_strategy_summary(self) -> str:
+        if not self._relay_enabled():
+            return ''
+        return (
+            f"\n🔁 <b>현재 매매 방식: 최초 + 반대 종목 연쇄 1회</b>\n"
+            f"• 최초: 완료 15분봉 GBDT 기준 통과 시 사이클 시작 자금의 {config.RELAY_INITIAL_ALLOCATION*100:.0f}%\n"
+            f"• 연쇄: 최초 종목 매수가 대비 -{config.RELAY_OPPOSITE_TRIGGER_PCT*100:g}%에서 반대 종목 {config.RELAY_CHAIN_ALLOCATION*100:.0f}% 1회\n"
+            f"• 추적 발동: 최초 +{config.TRAILING_TRIGGER_PCT*100:g}% / 연쇄 +{config.RELAY_CHAIN_TRAILING_TRIGGER_PCT*100:g}%, 이후 각 고점 대비 -{config.TRAILING_DROP_PCT*100:g}%\n"
+            f"• 공통: 고정 손절 -{config.SL_MIN_PCT*100:g}% / 최대 익절 +{config.MAX_TP_PCT*100:g}% / {config.TIME_STOP_MINUTES}분 종료\n"
+            f"• 모두 청산·주문 정리 후 다음 새 15분봉에서 신규 진입\n"
+            f"• {self._escape_html(config.PHASE_EOD_CLEAR)} 뉴욕시간부터 두 종목 모두 전량 청산\n"
+        )
+
+    def send_relay_cycle_complete_alert(self, cycle_id: str, is_simulation: bool) -> Dict[str, Any]:
+        mode = '모의투자' if is_simulation else '실전투자'
+        message = (
+            f"🏁 <b>[Lumos 사이클 종료]</b> ({mode})\n"
+            f"• 사이클: <code>{self._escape_html(str(cycle_id or '')[:8])}</code>\n"
+            f"• 증권사 원장 기준 보유·미체결·미해결 주문 정리 확인\n"
+            f"• 다음 새 15분봉에서 GBDT 최초 진입 판단 재개\n"
+            f"• 사이클 합산 손익은 체결·비용 대사 전이므로 이 알림에 표시하지 않습니다."
+        )
+        return self._dispatch_message(message, alert_type='RELAY_CYCLE_COMPLETE')
+
     @classmethod
     def _extract_model_meta(cls, model_info: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
@@ -109,13 +137,13 @@ class TelegramNotifier:
         model_id = str(
             info.get("active_model_id")
             or info.get("ACTIVE_MODEL_ID")
-            or "B_Normalized_72"
+            or "UNKNOWN"
         ).strip()
         schema = str(
             info.get("active_model_schema")
             or info.get("feature_schema")
             or info.get("ACTIVE_MODEL_SCHEMA")
-            or "B_normalized"
+            or "UNKNOWN"
         ).strip()
         num_features = int(
             info.get("active_model_num_features")
@@ -123,7 +151,7 @@ class TelegramNotifier:
             else (
                 info.get("num_features")
                 if info.get("num_features") is not None
-                else (info.get("ACTIVE_MODEL_FEATURE_COUNT") if info.get("ACTIVE_MODEL_FEATURE_COUNT") is not None else 72)
+                else (info.get("ACTIVE_MODEL_FEATURE_COUNT") if info.get("ACTIVE_MODEL_FEATURE_COUNT") is not None else 0)
             )
         )
         sha256 = str(
@@ -142,13 +170,13 @@ class TelegramNotifier:
             info.get("active_model_load_status")
             or info.get("load_status")
             or info.get("MODEL_LOAD_STATUS")
-            or f"ACTIVE_{schema.upper()}"
+            or "UNKNOWN"
         ).strip()
         fb_raw = str(
             info.get("active_model_fallback_status")
             or info.get("fallback_status")
             or info.get("MODEL_FALLBACK_STATUS")
-            or "PRIMARY_ACTIVE"
+            or "UNKNOWN"
         ).strip()
         is_fallback = bool(
             info.get("active_model_is_fallback")
@@ -160,6 +188,8 @@ class TelegramNotifier:
             display_status = "BLOCKED"
         elif is_fallback:
             display_status = "FALLBACK_TO_CHAMPION"
+        elif model_id == "UNKNOWN" or schema == "UNKNOWN" or not sha256 or load_status == "UNKNOWN":
+            display_status = "UNVERIFIED"
         else:
             display_status = "PRIMARY_ACTIVE"
 
@@ -261,7 +291,8 @@ class TelegramNotifier:
             f"{tw_lines}\n"
             f"• <b>최대 학습 상한</b>: <code>최대 {meta['max_training_weeks']}주 ({max_days}일 / 10년 상한)</code>\n"
             f"• <b>진입 기준 / 방패</b>: GBDT &gt;= {config.GBDT_CONFIDENCE_THRESHOLD*100:.1f}% | 크로스에셋 Veto: {cross_asset_txt} | QQQ 60분 추세방패: {trend_txt}\n"
-            f"⚡ <b>마켓 데이터:</b> 10ms WebSocket 스트리밍 기반 실시간 체결 처리 중...\n\n"
+            f"⚡ <b>마켓 데이터:</b> WebSocket 실시간 가격 수신 연결 예정\n"
+            f"{self._relay_strategy_summary()}\n"
             f"✅ 성공적으로 초기화되었습니다. 매매 대기 중..."
         )
 
@@ -300,15 +331,21 @@ class TelegramNotifier:
     ) -> str:
         """미국 정규장 오픈 알림 포맷 생성 (활성 모델 단일 메타데이터 반영)"""
         meta = self._extract_model_meta(model_info)
+        exit_policy = (
+            f"고정 SL -{config.SL_MIN_PCT*100:g}% / 최초 +{config.TRAILING_TRIGGER_PCT*100:g}%·연쇄 +{config.RELAY_CHAIN_TRAILING_TRIGGER_PCT*100:g}% 추적 발동 / 고점 -{config.TRAILING_DROP_PCT*100:g}%"
+            if self._relay_enabled() else
+            f"Max TP +{config.MAX_TP_PCT*100:.1f}% / ATR SL({config.SL_MIN_PCT*100:.1f}~{config.SL_MAX_PCT*100:.1f}%) / {config.TIME_STOP_MINUTES}m 타임스탑 / ATR 트레일링"
+        )
         return (
             f"🟢 <b>[미국장 오픈 알림]</b>\n\n"
             f"⏰ <b>현재 시간</b>: <code>{self._escape_html(now_kst_str)}</code>\n"
             f"💼 <b>체결 모드</b>: <code>{self._escape_html(mode_str)}</code>\n"
             f"🧠 <b>AI 엔진</b>: <code>{self._escape_html(meta['model_id'])} ({self._escape_html(meta['schema'])}, {meta['num_features']}개 피처, v:{self._escape_html(meta['version'])})</code>\n"
-            f"🚦 <b>모델 상태</b>: <code>{self._escape_html(meta['display_status'])}</code> (09:30~15:30 EDT)\n"
+            f"🚦 <b>모델 상태</b>: <code>{self._escape_html(meta['display_status'])}</code> ({config.PHASE_MAIN_START}~{config.PHASE_MAIN_END} 뉴욕시간)\n"
             f"🎯 <b>진입 기준</b>: <code>GBDT {config.GBDT_CONFIDENCE_THRESHOLD*100:.1f}% 이상</code>\n"
-            f"🛡️ <b>청산 기준</b>: <code>Max TP +{config.MAX_TP_PCT*100:.1f}% / ATR SL({config.SL_MIN_PCT*100:.1f}~{config.SL_MAX_PCT*100:.1f}%) / {config.TIME_STOP_MINUTES}m 타임스탑 / ATR 트레일링</code>\n"
-            f"🧹 <b>장마감</b>: <code>{config.PHASE_EOD_CLEAR} EDT 0% 오버나잇 청산</code>"
+            f"🛡️ <b>청산 기준</b>: <code>{exit_policy}</code>\n"
+            f"🧹 <b>장마감</b>: <code>{config.PHASE_EOD_CLEAR} 뉴욕시간 0% 오버나잇 청산</code>"
+            f"\n{self._relay_strategy_summary()}"
         )
 
     def compose_signal_briefing_alert(
@@ -347,6 +384,18 @@ class TelegramNotifier:
 
         is_stale = bool(data_stale) if data_stale is not None else bool(moe_res.get("data_stale", False))
         stale_detail = str(stale_reason if stale_reason is not None else moe_res.get("stale_reason", "")).strip()
+
+        if is_stale and stale_detail == "FIRST_15M_CANDLE_NOT_CLOSED":
+            return (
+                "⏳ <b>[Lumos AI 정기 브리핑 — 첫 봉 완료 대기]</b>\n"
+                f"시각: {self._escape_html(ny_time_str)} (NYT) / {self._escape_html(kst_time_str)} (KST)\n"
+                f"개장 후 첫 {config.RELAY_DECISION_INTERVAL_MINUTES}분봉이 아직 완성되지 않았습니다.\n"
+                "모델 판단: 미실행 / 보정 점수: 산출 전\n"
+                "신규 진입: 대기 (FIRST_15M_CANDLE_NOT_CLOSED)\n"
+                "보유 포지션 청산 감시: 실시간 WebSocket 가격 기준\n"
+                f"사용 모델: {self._escape_html(meta['model_id'])} | "
+                f"버전: {self._escape_html(meta['version'])}"
+            )
 
         raw_mkt = str(market_state or moe_res.get("market_state") or "REGULAR_MARKET").strip().upper()
         raw_sess = str(session_state or moe_res.get("session_state") or "").strip().upper()
@@ -444,6 +493,9 @@ class TelegramNotifier:
             status_line = "프리마켓 신호 감지 🟠 (SIGNAL_ONLY — NO ORDER)"
         elif mkt_label == "PRE_MARKET":
             status_line = "프리마켓 관망 대기 🟡 (PRE_MARKET_WAITING | NONE)"
+        elif ord_block_str == 'ORDER_UNFILLED':
+            status_line = '매수 주문 미체결 취소 🟡 (ORDER_UNFILLED)'
+            ord_allowed_str = '미체결 취소 완료'
         elif is_appr and pos_exists:
             status_line = "진입 승인 🟢 (보유종목 있어 실제 진입은 Skip)"
         elif is_appr and not ord_allowed_bool:
@@ -454,15 +506,38 @@ class TelegramNotifier:
             status_line = "관망 유지 🟡"
 
         extra_lines = ""
+        if self._relay_enabled():
+            extra_lines += (
+                f"매매 방식: 최초 {config.RELAY_INITIAL_ALLOCATION*100:.0f}% + 반대 연쇄 {config.RELAY_CHAIN_ALLOCATION*100:.0f}% 1회\n"
+                "GBDT 신호는 최초 진입용이며, 진행 중인 사이클의 추가 GBDT 매수는 차단됩니다.\n"
+                "모두 청산·주문 정리 후 다음 새 15분봉에서 신규 진입합니다.\n"
+            )
         if is_stale:
             extra_lines += f"신호 상태: SIGNAL_UNAVAILABLE_STALE_DATA ({self._escape_html(stale_detail or 'DATA_STALE')})\n"
         if mkt_label == "PRE_MARKET":
             extra_lines += f"프리마켓 정책: {self._escape_html(pm_policy)}\n"
-            extra_lines += "추론 입력 데이터: 전일 정규장 15분봉 + 프리마켓 실시간 시세 오버레이 (정규장 15분봉 학습 분포와 상이 — 참고용 신호)\n"
+            extra_lines += "프리마켓 참고 신호이며 실전 신규 주문은 차단됩니다.\n"
         elif mkt_label == "REGULAR_MARKET":
-            extra_lines += "추론 입력 데이터: 정규장 15분봉 + 실시간 시세 (모델 학습 분포와 동일)\n"
+            extra_lines += "최초 판단: 완료 15분봉 / 주문·청산 감시: 실시간 WebSocket 호가\n"
         if order_block_detail:
-            extra_lines += f"차단 상세: {self._escape_html(str(order_block_detail))}\n"
+            detail_code = str(order_block_detail)
+            detail_label = {
+                'WAIT_NEXT_COMPLETED_15M': '동일 15분봉 재진입 차단. 다음 새 15분봉 대기',
+                'FRESH_WS_QUOTES_REQUIRED': '양 종목의 신선한 WebSocket 호가 대기',
+                'COMPLETED_15M_DECISION_UNAVAILABLE': '최신 완료 15분봉 판단이 없어 대기',
+                'STALE_15M_DECISION': '이전 15분봉 판단이 만료되어 새 판단 대기',
+                'FIRST_15M_CANDLE_NOT_CLOSED': '개장 후 첫 15분봉 완료 대기',
+                'RELAY_ENTRY_SAFETY_GUARD': '거래 시간·계좌·실행 상태 안전 검사 미통과',
+                'RELAY_CYCLE_ACTIVE': '기존 포지션 또는 미해결 주문 정리 대기',
+                'RELAY_CYCLE_RESERVED_OR_PENDING': '진행 중인 사이클 또는 예약 주문 정리 대기',
+                'INSUFFICIENT_FUNDS': '배정 한도·현금 버퍼 적용 후 매수 가능한 수량이 0주',
+                'BUY_EXECUTION_NOT_CONFIRMED': '매수 실행 또는 체결 확인이 완료되지 않음',
+                'BUY_UNFILLED_CANCELLED': '지정가 매수 미체결. 주문 취소 및 체결 0주 확인',
+            }.get(detail_code)
+            detail_text = f'{detail_label} ({detail_code})' if detail_label else detail_code
+            extra_lines += f"차단 상세: {self._escape_html(detail_text)}\n"
+            if detail_code == 'BUY_UNFILLED_CANCELLED' and moe_res.get('buy_order_attempts'):
+                extra_lines += f"매수 주문 시도: {int(moe_res['buy_order_attempts'])}회 / 체결 0주 / 취소 확인 완료\n"
 
         px_detail_str = f"${cur_px_val:.2f}"
         if soxl_px_val > 0 and soxs_px_val > 0:
@@ -479,16 +554,16 @@ class TelegramNotifier:
             f"현재가: {self._escape_html(px_detail_str)}\n"
             f"시세 기준 시각: {self._escape_html(q_time_str)}\n"
             f"캔들 기준 시각: {self._escape_html(c_time_str)}\n"
-            f"주문 가능 여부: {self._escape_html(ord_allowed_str)}\n"
-            f"주문 차단 사유: {self._escape_html(ord_block_str)}\n"
-            f"실제 주문 실행 여부: {self._escape_html(ord_exec_str)}\n"
+            f"{'주문 처리 상태' if ord_block_str == 'ORDER_UNFILLED' else '주문 가능 여부'}: {self._escape_html(ord_allowed_str)}\n"
+            f"{'주문 처리 결과' if ord_block_str == 'ORDER_UNFILLED' else '주문 차단 사유'}: {self._escape_html(ord_block_str)}\n"
+            f"{'매수 체결 여부' if ord_block_str == 'ORDER_UNFILLED' else '실제 주문 실행 여부'}: {self._escape_html(ord_exec_str)}\n"
             f"{extra_lines}\n"
             f"🤖 <b>[Lumos AI 정기 브리핑]</b>\n"
             f"⏰ <b>판정 시각:</b> {self._escape_html(ny_time_str)} (NYT) / {self._escape_html(kst_time_str)} (KST)\n"
             f"🎯 <b>대상 종목 / 방향:</b> <code>{self._escape_html(target_sym)}</code> ({self._escape_html(dir_str)})\n"
-            f"📈 <b>{config.BASE_ASSET_LONG}(LONG) 확률:</b> {p_long:.1f}%\n"
-            f"📉 <b>{config.BASE_ASSET_SHORT}(SHORT) 확률:</b> {p_short:.1f}%\n"
-            f"⏸ <b>관망(NONE) 확률:</b> {p_none:.1f}%\n"
+            f"📈 <b>{config.BASE_ASSET_LONG}(LONG) 보정 점수:</b> {p_long:.1f}%\n"
+            f"📉 <b>{config.BASE_ASSET_SHORT}(SHORT) 보정 점수:</b> {p_short:.1f}%\n"
+            f"⏸ <b>관망(NONE) 보정 점수:</b> {p_none:.1f}%\n"
             f"🔥 <b>보정 확신도 / 임계값:</b> {conf:.1f}% / {threshold_pct:.1f}%\n"
             f"🛡️ <b>크로스에셋 Veto:</b> {veto_str}\n"
             f"🧭 <b>QQQ 60분 추세 필터:</b> {trend_60m_str}\n"
@@ -590,6 +665,40 @@ class TelegramNotifier:
 
         meta = self._extract_model_meta(model_snapshot_info)
 
+        info = model_snapshot_info if isinstance(model_snapshot_info, dict) else {}
+        role = info.get('relay_role')
+        if role in ('INITIAL', 'CHAIN'):
+            role_label = '최초 매수' if role == 'INITIAL' else '연쇄 매수'
+            allocation = config.RELAY_INITIAL_ALLOCATION if role == 'INITIAL' else config.RELAY_CHAIN_ALLOCATION
+            trigger = config.TRAILING_TRIGGER_PCT if role == 'INITIAL' else config.RELAY_CHAIN_TRAILING_TRIGGER_PCT
+            if role == 'INITIAL':
+                basis = (
+                    f"• 진입 근거: 완료 15분봉 GBDT 신호\n"
+                    f"• GBDT 점수: {prob_val:.1f}% (기준 {config.GBDT_CONFIDENCE_THRESHOLD*100:.1f}%)\n"
+                    f"• 사용 모델: <code>{self._escape_html(meta['model_id'])}</code> / <code>{self._escape_html(meta['version'])}</code>"
+                )
+            else:
+                source = self._escape_html(info.get('relay_trigger_symbol') or '최초 보유 종목')
+                basis = (
+                    f"• 진입 근거: {source}의 자기 매수가 대비 -{config.RELAY_OPPOSITE_TRIGGER_PCT*100:g}% 도달\n"
+                    "• 실시간 WebSocket Bid 조건으로 반대 종목 매수\n"
+                    "• 이번 연쇄 진입에는 GBDT 신규 판단을 사용하지 않음"
+                )
+            message = (
+                f"🟢 <b>[Lumos {role_label} 체결] {sym_clean}</b>\n{mode_tag}\n\n"
+                f"• 체결가: ${entry_price:,.2f}\n• 수량: {qty}주 (총 ${total_amt:,.2f})\n"
+                f"• 배정 한도: 사이클 시작 자금의 {allocation*100:.0f}% (가용 현금·수량 버퍼 적용)\n"
+                f"{basis}\n\n"
+                f"🛡️ <b>이 포지션의 청산 기준</b>\n"
+                f"• 추적 발동: 매수가 대비 +{trigger*100:g}% / 이후 고점 대비 -{config.TRAILING_DROP_PCT*100:g}%\n"
+                f"• 고정 손절: ${calc_sl:,.2f} (-{sl_pct_calc:g}%)\n"
+                f"• 최대 익절: ${calc_tp:,.2f} (+{tp_pct_calc:g}%)\n"
+                f"• 시간 종료: {self._escape_html(time_stop_time)} ({time_stop_minutes}분)\n"
+                f"• {self._escape_html(config.PHASE_EOD_CLEAR)} 뉴욕시간부터 두 종목 모두 전량 청산\n"
+                f"• 최초 1회 + 연쇄 1회 후, 모두 청산까지 추가 매수 금지"
+            )
+            return self._dispatch_message(message, alert_type='ENTRY_BUY')
+
         message = f"""🟢 <b>[Lumos 신규 진입] {sym_clean}</b>
 {mode_tag}
 
@@ -662,6 +771,24 @@ class TelegramNotifier:
             meta = self._extract_model_meta(model_snapshot_info)
             model_line = f"\n• <b>진입 모델</b>: <code>{self._escape_html(meta['model_id'])}</code> (v:<code>{self._escape_html(meta['version'])}</code>)"
 
+        info = model_snapshot_info if isinstance(model_snapshot_info, dict) else {}
+        role = info.get('relay_role')
+        relay_detail = ''
+        if role in ('INITIAL', 'CHAIN'):
+            role_label = '최초' if role == 'INITIAL' else '연쇄'
+            remaining = info.get('relay_remaining_symbols')
+            relay_detail = f"\n• <b>포지션 구분</b>: {role_label} 매수분"
+            if remaining:
+                relay_detail += (
+                    f"\n• <b>남은 전략 포지션</b>: {self._escape_html(', '.join(remaining))}"
+                    "\n• 남은 포지션 청산을 기다립니다. 추가 매수는 차단됩니다."
+                )
+            else:
+                relay_detail += "\n• 사이클 종료는 원장·미체결 최종 확인 후 별도 안내합니다."
+            relay_detail += "\n• 표시 손익은 알림 기준 가격으로 계산한 비용 전 추정값입니다."
+            if role == 'CHAIN':
+                model_line = '\n• <b>진입 방식</b>: WebSocket 가격 조건 연쇄 매수'
+
         message = f"""{emoji} <b>[Lumos 매도 청산] {sym_clean}</b>
 {mode_tag}
 
@@ -673,7 +800,7 @@ class TelegramNotifier:
 📊 <b>거래 상세</b>
 • <b>매수가</b>: ${entry_price:,.2f}
 • <b>매도가</b>: ${exit_price:,.2f}
-• <b>수량</b>: {qty}주{model_line}"""
+• <b>수량</b>: {qty}주{model_line}{relay_detail}"""
 
         return self._dispatch_message(message, alert_type="EXIT_SELL")
 
@@ -684,10 +811,10 @@ class TelegramNotifier:
         self,
         status: str = "",
         status_code: str = "",
-        model_id: str = "B_Normalized_72",
-        schema: str = "B_normalized",
+        model_id: str = "UNKNOWN",
+        schema: str = "UNKNOWN",
         feature_schema: str = "",
-        num_features: int = 72,
+        num_features: int = 0,
         new_sha256: str = "",
         model_sha256: str = "",
         prev_sha256: str = "",
@@ -704,7 +831,7 @@ class TelegramNotifier:
         - STALE_RETRAIN_IGNORED: 더 최신 모델이 이미 활성화되어 구버전 작업 무시
         """
         status_clean = str(status or status_code).strip().upper()
-        schema_clean = str(feature_schema or schema or "B_normalized").strip()
+        schema_clean = str(feature_schema or schema or "UNKNOWN").strip()
         sha_actual = new_sha256 or model_sha256 or ""
         new_ver = sha_actual[:12] if sha_actual else "PENDING"
         prev_ver = (prev_sha256 or "")[:12] if prev_sha256 else "NONE"
@@ -727,9 +854,9 @@ class TelegramNotifier:
             desc = "신규 후보 모델 학습이 완료되었으며, 7단계 무결성 검증 전이므로 아직 운영 모델로 활성화되지 않았습니다."
         elif status_clean == "MODEL_VALIDATION_PASSED":
             title = "🔍 <b>[Lumos 자동 재학습] 후보 모델 무결성 검증 통과</b>"
-            desc = "SHA256, B_normalized 72개 피처 순서, 클래스 매핑([0,1,2]), 추론 Self-Test 및 10년 상한 검증을 모두 통과했습니다."
+            desc = f"SHA256, {self._escape_html(schema_clean)} 72개 피처 순서, 클래스 매핑([0,1,2]), 추론 Self-Test 및 10년 상한 검증을 모두 통과했습니다."
         elif status_clean == "MODEL_ACTIVATION_SUCCEEDED":
-            title = "✅ <b>[Lumos 자동 재학습] 신규 B_Normalized_72 원자적 활성화 완료</b>"
+            title = f"✅ <b>[Lumos 자동 재학습] 신규 {self._escape_html(model_id)} 원자적 활성화 완료</b>"
             desc = "active_model_manifest.json 단일 원자적 교체(os.replace)가 완료되어 신규 모델이 운영 활성화되었습니다."
         elif status_clean == "STALE_RETRAIN_IGNORED":
             title = "⏭️ <b>[Lumos 자동 재학습] 구버전 재학습 결과 무시 (최신 모델 유지)</b>"

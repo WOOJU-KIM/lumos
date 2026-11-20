@@ -16,6 +16,17 @@ from core.ml_engine import MLFeatureEngine
 from core.moe_orchestrator import MoEMetaOrchestrator
 
 
+def active_b72_path():
+    import json
+    manifest=json.loads((PROJECT_ROOT/"models/active_model_manifest.json").read_text(encoding="utf-8"))
+    return PROJECT_ROOT/manifest["active_model_path"]
+
+
+def active_manifest_field(name):
+    import json
+    return json.loads((PROJECT_ROOT/"models/active_model_manifest.json").read_text(encoding="utf-8"))[name]
+
+
 class TestLGBMTrendMeanReversion(unittest.TestCase):
     """
     STEP 6 & STEP 7: LightGBM Trend + Mean-Reversion Challenger 독립 검증 테스트
@@ -164,8 +175,10 @@ class TestLGBMTrendMeanReversion(unittest.TestCase):
         # 반환 키 집합 및 자료형 100% 일치 확인
         self.assertEqual(set(out_champ.keys()), set(out_chall.keys()))
         for k, v in out_champ.items():
-            if k != "features":
+            if k not in ("features", "learning_snapshot"):
                 self.assertEqual(type(v), type(out_chall[k]), f"키 {k}의 반환 타입이 다릅니다.")
+        for output in (out_champ, out_chall):
+            self.assertTrue(output['learning_snapshot'] is None or isinstance(output['learning_snapshot'], dict))
         self.assertIn(out_chall["direction"], ["LONG", "SHORT", "NONE"])
         self.assertEqual(set(out_chall["gbdt_probs"].keys()), {"LONG", "SHORT", "NONE"})
 
@@ -293,20 +306,19 @@ class TestLGBMTrendMeanReversion(unittest.TestCase):
     def test_9_b_normalized_72_live_artifact_and_7_point_verification(self):
         """[STEP 3, 4, 5] B_Normalized_72 실전 모델 파일 및 7대 필수 무결성 검증 통과 확인"""
         import json
-        norm_path = PROJECT_ROOT / "models" / "model_normalized_72.pkl"
+        norm_path = active_b72_path()
         manifest_path = PROJECT_ROOT / "models" / "active_model_manifest.json"
         self.assertTrue(norm_path.exists(), "models/model_normalized_72.pkl 파일이 존재해야 합니다.")
         self.assertTrue(manifest_path.exists(), "models/active_model_manifest.json 파일이 존재해야 합니다.")
 
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        self.assertEqual(manifest["active_model_id"], "B_Normalized_72")
-        self.assertEqual(manifest["expected_schema"], "B_normalized")
+        self.assertIn(manifest["expected_schema"], MLFeatureEngine.LIVE_ALLOWED_SCHEMAS)
         self.assertEqual(manifest["expected_num_features"], 72)
 
         ver = MLFeatureEngine.verify_model_artifact(
             norm_path,
             expected_sha256=manifest["expected_sha256"],
-            expected_schema="B_normalized",
+            expected_schema=manifest["expected_schema"],
             enforce_live_policy=True,
         )
         self.assertTrue(ver["ok"], f"7대 검증 실패: {ver['error']}")
@@ -315,20 +327,20 @@ class TestLGBMTrendMeanReversion(unittest.TestCase):
 
         ext_feats = ver["extracted"]["feature_names"]
         self.assertEqual(len(ext_feats), 72)
-        self.assertEqual(ext_feats, MLFeatureEngine.CANONICAL_B_NORMALIZED_72_FEATURES)
+        self.assertEqual(ext_feats, manifest["feature_names"])
         for d_col in MLFeatureEngine.DOLLAR_SCALE_FEATURES:
-            self.assertNotIn(d_col, ext_feats)
+            self.assertEqual(d_col in ext_feats, manifest['expected_schema'] != 'B_normalized')
         for n_col in MLFeatureEngine.NORMALIZED_PRICE_FEATURES:
-            self.assertIn(n_col, ext_feats)
+            self.assertEqual(n_col in ext_feats, manifest['expected_schema'] == 'B_normalized')
 
     def test_10_live_default_loading_and_challenger_77_blocking(self):
         """[STEP 5] 기본 실전 로더가 B_Normalized_72를 로드하고 E Challenger(77피처)는 실전 정책에서 차단하는지 검증"""
         moe = MoEMetaOrchestrator()
         info = moe.get_active_model_info()
-        self.assertEqual(info["active_model_id"], "B_Normalized_72")
-        self.assertEqual(info["feature_schema"], "B_normalized")
+        self.assertEqual(info["active_model_id"], active_manifest_field('active_model_id'))
+        self.assertEqual(info["feature_schema"], active_manifest_field('expected_schema'))
         self.assertEqual(info["num_features"], 72)
-        self.assertEqual(info["load_status"], "ACTIVE_B_NORMALIZED")
+        self.assertEqual(info["load_status"], 'ACTIVE_'+active_manifest_field('expected_schema').upper())
         self.assertTrue(info["is_ready"])
 
         # E Challenger 77개 모델은 enforce_live_policy=True 시 반드시 차단되어야 함
@@ -399,6 +411,7 @@ class TestLGBMTrendMeanReversion(unittest.TestCase):
             self.assertTrue(0.50 <= conf <= 0.95)
             self.assertEqual(set(probs.keys()), {"LONG", "SHORT", "NONE"})
 
+    @patch.object(config, 'GBDT_FEATURE_GAIN_WEIGHTS', {})  # Synthetic frames omit cross assets.
     def test_13_ten_year_boundary_and_edge_cases(self):
         """[STEP 1 & 7] config.py 10년 상한(ROLLING_TRAINING_WEEKS=520, 3640일) 경계값 및 엣지케이스 검증"""
         import config
@@ -486,6 +499,7 @@ class TestLGBMTrendMeanReversion(unittest.TestCase):
             self.assertEqual(len(top_short), 10)
             self.assertFalse(eng.last_training_window_meta["is_valid_window"])
 
+    @patch.object(config, 'GBDT_FEATURE_GAIN_WEIGHTS', {})
     def test_14_atomic_retraining_activation_and_hot_reload(self):
         """[STEP 2, 3, 4] 임시 디렉토리에서 원자적 재학습·검증·활성화 및 런타임 핫리로드 검증"""
         import hashlib
@@ -498,7 +512,7 @@ class TestLGBMTrendMeanReversion(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir_str:
             tmp_dir = Path(tmp_dir_str)
             shutil.copy2(PROJECT_ROOT / "models" / "model_champion.pkl", tmp_dir / "model_champion.pkl")
-            shutil.copy2(PROJECT_ROOT / "models" / "model_normalized_72.pkl", tmp_dir / "model_normalized_72.pkl")
+            shutil.copy2(active_b72_path(), tmp_dir / "model_normalized_72.pkl")
             shutil.copy2(PROJECT_ROOT / "models" / "active_model_manifest.json", tmp_dir / "active_model_manifest.json")
 
             orig_base_pkl = tmp_dir / "model_normalized_72.pkl"
@@ -549,6 +563,7 @@ class TestLGBMTrendMeanReversion(unittest.TestCase):
             running_moe.evaluate_dual_filter_signal(self.sample_df.tail(80))
             self.assertEqual(running_moe.get_active_model_info()["sha256"], new_sha)
 
+    @patch.object(config, 'GBDT_FEATURE_GAIN_WEIGHTS', {})
     def test_15_retraining_failure_preserves_existing_model_100_percent(self):
         """[STEP 3 & 6-D] 재학습 실패/검증 실패 시 기존 model_normalized_72.pkl과 manifest가 100% 보존되는지 검증"""
         import hashlib
@@ -561,7 +576,7 @@ class TestLGBMTrendMeanReversion(unittest.TestCase):
             pkl_path = tmp_dir / "model_normalized_72.pkl"
             manifest_path = tmp_dir / "active_model_manifest.json"
             shutil.copy2(PROJECT_ROOT / "models" / "model_champion.pkl", tmp_dir / "model_champion.pkl")
-            shutil.copy2(PROJECT_ROOT / "models" / "model_normalized_72.pkl", pkl_path)
+            shutil.copy2(active_b72_path(), pkl_path)
             shutil.copy2(PROJECT_ROOT / "models" / "active_model_manifest.json", manifest_path)
 
             orig_pkl_sha = hashlib.sha256(pkl_path.read_bytes()).hexdigest()
@@ -612,7 +627,7 @@ class TestLGBMTrendMeanReversion(unittest.TestCase):
             e_pkl = tmp_dir / "model_challenger_trend_mr.pkl"
             manifest_file = tmp_dir / "active_model_manifest.json"
 
-            shutil.copy2(PROJECT_ROOT / "models" / "model_normalized_72.pkl", b_pkl)
+            shutil.copy2(active_b72_path(), b_pkl)
             shutil.copy2(PROJECT_ROOT / "models" / "model_champion.pkl", c_pkl)
             shutil.copy2(PROJECT_ROOT / "models" / "model_challenger_trend_mr.pkl", e_pkl)
             orig_manifest = json.loads((PROJECT_ROOT / "models" / "active_model_manifest.json").read_text(encoding="utf-8"))
@@ -633,7 +648,7 @@ class TestLGBMTrendMeanReversion(unittest.TestCase):
             self.assertEqual(eng_a.get_active_model_info()["feature_schema"], "v4_champion")
 
             # 2) 복구 후 SHA256 불일치 -> Champion 자동 폴백
-            shutil.copy2(PROJECT_ROOT / "models" / "model_normalized_72.pkl", b_pkl)
+            shutil.copy2(active_b72_path(), b_pkl)
             _write_manifest(expected_sha256="a" * 64)
             eng_b = MLFeatureEngine(manifest_path=manifest_file)
             self.assertEqual(eng_b.get_active_model_info()["load_status"], "FALLBACK_TO_CHAMPION")
@@ -663,7 +678,7 @@ class TestLGBMTrendMeanReversion(unittest.TestCase):
 
         live_db_path = PROJECT_ROOT / "data" / "live_experience.db"
         db_sha_before = hashlib.sha256(live_db_path.read_bytes()).hexdigest()
-        expected_b_sha = "ef954c3be286d4fd4e429c5ed21b7e3da4842927c53e594ada86460029a0dcae"
+        expected_b_sha = hashlib.sha256(active_b72_path().read_bytes()).hexdigest()
 
         with patch("core.live_runner.KiwoomBroker") as MockBroker, \
              patch("core.live_runner.DispatcherAgent"), \
@@ -698,11 +713,11 @@ class TestLGBMTrendMeanReversion(unittest.TestCase):
                 self.assertIn(rk, model_info)
                 self.assertIn(f"{rk}=", log_line)
 
-            self.assertEqual(model_info["ACTIVE_MODEL_ID"], "B_Normalized_72")
-            self.assertEqual(model_info["ACTIVE_MODEL_SCHEMA"], "B_normalized")
+            self.assertEqual(model_info["ACTIVE_MODEL_ID"], active_manifest_field('active_model_id'))
+            self.assertEqual(model_info["ACTIVE_MODEL_SCHEMA"], active_manifest_field('expected_schema'))
             self.assertEqual(model_info["ACTIVE_MODEL_SHA256"], expected_b_sha)
             self.assertEqual(model_info["ACTIVE_MODEL_FEATURE_COUNT"], 72)
-            self.assertEqual(model_info["MODEL_LOAD_STATUS"], "ACTIVE_B_NORMALIZED")
+            self.assertEqual(model_info["MODEL_LOAD_STATUS"], ('ACTIVE_'+active_manifest_field('expected_schema').upper()))
             self.assertEqual(model_info["MODEL_FALLBACK_STATUS"], "PRIMARY_ACTIVE")
             self.assertTrue(bool(model_info["MODEL_ACTIVATION_TIME"]))
             self.assertFalse(model_info["is_fallback"])
@@ -717,7 +732,7 @@ class TestLGBMTrendMeanReversion(unittest.TestCase):
                 self.assertTrue(0.0 <= float(p_val) <= 1.0)
             self.assertEqual(len(runner.moe_orchestrator.gbdt_engine.feature_names), 72)
             self.assertEqual(decision["active_model_sha256"], expected_b_sha)
-            self.assertEqual(decision["active_model_schema"], "B_normalized")
+            self.assertEqual(decision["active_model_schema"], active_manifest_field('expected_schema'))
 
             # 주문 호출 0건, 포지션/DB 상태 100% 불변 확인
             self.assertEqual(broker_inst.send_order.call_count, 0)
@@ -725,6 +740,7 @@ class TestLGBMTrendMeanReversion(unittest.TestCase):
             db_sha_after = hashlib.sha256(live_db_path.read_bytes()).hexdigest()
             self.assertEqual(db_sha_before, db_sha_after)
 
+    @patch.object(config, 'GBDT_FEATURE_GAIN_WEIGHTS', {})
     def test_18_atomic_activation_and_concurrency_scenarios_a_to_j(self):
         """[STEP 6] 시나리오 A ~ J 원자적 활성화·중단 복원력·멀티스레드 핫리로드·동시 재학습 경합·즉시 롤백 전수 검증"""
         import hashlib
@@ -748,7 +764,7 @@ class TestLGBMTrendMeanReversion(unittest.TestCase):
             e_pkl = tmp_dir / "model_challenger_trend_mr.pkl"
             manifest_file = tmp_dir / "active_model_manifest.json"
 
-            shutil.copy2(PROJECT_ROOT / "models" / "model_normalized_72.pkl", b_pkl)
+            shutil.copy2(active_b72_path(), b_pkl)
             shutil.copy2(PROJECT_ROOT / "models" / "model_champion.pkl", c_pkl)
             shutil.copy2(PROJECT_ROOT / "models" / "model_challenger_trend_mr.pkl", e_pkl)
 
@@ -991,7 +1007,7 @@ class TestLGBMTrendMeanReversion(unittest.TestCase):
 
         live_db_path = PROJECT_ROOT / "data" / "live_experience.db"
         db_sha_before = hashlib.sha256(live_db_path.read_bytes()).hexdigest()
-        expected_b_sha = hashlib.sha256((PROJECT_ROOT / "models" / "model_normalized_72.pkl").read_bytes()).hexdigest()
+        expected_b_sha = hashlib.sha256((active_b72_path()).read_bytes()).hexdigest()
         manifest_data = json.loads((PROJECT_ROOT / "models" / "active_model_manifest.json").read_text(encoding="utf-8"))
 
         sent_dispatcher_msgs = []
@@ -1032,8 +1048,8 @@ class TestLGBMTrendMeanReversion(unittest.TestCase):
             self.assertTrue(startup_res["ok"])
             self.assertEqual(len(sent_dispatcher_msgs), 1)
             start_msg = sent_dispatcher_msgs[0]
-            self.assertIn("B_Normalized_72", start_msg)
-            self.assertIn("B_normalized", start_msg)
+            self.assertIn(active_manifest_field('active_model_id'), start_msg)
+            self.assertIn(active_manifest_field('expected_schema'), start_msg)
             self.assertIn("72개", start_msg)
             self.assertIn(expected_b_sha[:12], start_msg)
             self.assertIn("PRIMARY_ACTIVE", start_msg)
@@ -1050,20 +1066,20 @@ class TestLGBMTrendMeanReversion(unittest.TestCase):
             snap = gbdt_eng.get_last_inference_snapshot()
 
             # 3중 일치 검증: manifest == 메모리 모델 == 신호 생성 스냅샷 모델
-            self.assertEqual(manifest_data["active_model_id"], "B_Normalized_72")
-            self.assertEqual(mem_info["ACTIVE_MODEL_ID"], "B_Normalized_72")
-            self.assertEqual(moe_res["active_model_id"], "B_Normalized_72")
-            self.assertEqual(snap.active_model_id, "B_Normalized_72")
+            self.assertEqual(manifest_data["active_model_id"], active_manifest_field('active_model_id'))
+            self.assertEqual(mem_info["ACTIVE_MODEL_ID"], active_manifest_field('active_model_id'))
+            self.assertEqual(moe_res["active_model_id"], active_manifest_field('active_model_id'))
+            self.assertEqual(snap.active_model_id, active_manifest_field('active_model_id'))
 
             self.assertEqual(manifest_data["expected_sha256"], expected_b_sha)
             self.assertEqual(mem_info["ACTIVE_MODEL_SHA256"], expected_b_sha)
             self.assertEqual(moe_res["active_model_sha256"], expected_b_sha)
             self.assertEqual(snap.active_model_sha256, expected_b_sha)
 
-            self.assertEqual(manifest_data["expected_schema"], "B_normalized")
-            self.assertEqual(mem_info["ACTIVE_MODEL_SCHEMA"], "B_normalized")
-            self.assertEqual(moe_res["active_model_schema"], "B_normalized")
-            self.assertEqual(snap.feature_schema, "B_normalized")
+            self.assertEqual(manifest_data["expected_schema"], active_manifest_field('expected_schema'))
+            self.assertEqual(mem_info["ACTIVE_MODEL_SCHEMA"], active_manifest_field('expected_schema'))
+            self.assertEqual(moe_res["active_model_schema"], active_manifest_field('expected_schema'))
+            self.assertEqual(snap.feature_schema, active_manifest_field('expected_schema'))
 
             self.assertEqual(len(gbdt_eng.feature_names), 72)
             self.assertEqual(moe_res["active_model_num_features"], 72)
@@ -1073,8 +1089,8 @@ class TestLGBMTrendMeanReversion(unittest.TestCase):
 
             # 15m 브리핑 메시지에 스냅샷 모델 정보 포함 확인
             briefing_msg = cycle_res["briefing_msg"]
-            self.assertIn("B_Normalized_72", briefing_msg)
-            self.assertIn("B_normalized", briefing_msg)
+            self.assertIn(active_manifest_field('active_model_id'), briefing_msg)
+            self.assertIn(active_manifest_field('expected_schema'), briefing_msg)
             self.assertIn("72개", briefing_msg)
             self.assertIn(expected_b_sha[:12], briefing_msg)
 
@@ -1134,7 +1150,7 @@ class TestLGBMTrendMeanReversion(unittest.TestCase):
             c_pkl = tmp_dir / "model_champion.pkl"
             manifest_file = tmp_dir / "active_model_manifest.json"
 
-            shutil.copy2(PROJECT_ROOT / "models" / "model_normalized_72.pkl", b_pkl)
+            shutil.copy2(active_b72_path(), b_pkl)
             shutil.copy2(PROJECT_ROOT / "models" / "model_champion.pkl", c_pkl)
             orig_b_sha = hashlib.sha256(b_pkl.read_bytes()).hexdigest()
             orig_c_sha = hashlib.sha256(c_pkl.read_bytes()).hexdigest()
@@ -1177,8 +1193,8 @@ class TestLGBMTrendMeanReversion(unittest.TestCase):
             self.assertTrue(sent_a["ok"])
             self.assertEqual(len(captured_messages), 1)
             msg_a = captured_messages[0]
-            self.assertIn("B_Normalized_72", msg_a)
-            self.assertIn("B_normalized", msg_a)
+            self.assertIn(active_manifest_field('active_model_id'), msg_a)
+            self.assertIn(active_manifest_field('expected_schema'), msg_a)
             self.assertIn("72개", msg_a)
             self.assertIn(orig_b_sha[:12], msg_a)
             self.assertIn("PRIMARY_ACTIVE", msg_a)
@@ -1211,8 +1227,8 @@ class TestLGBMTrendMeanReversion(unittest.TestCase):
             )
             self.assertEqual(len(captured_messages), 2)
             for m in captured_messages:
-                self.assertIn("B_Normalized_72", m)
-                self.assertIn("B_normalized", m)
+                self.assertIn(active_manifest_field('active_model_id'), m)
+                self.assertIn(active_manifest_field('expected_schema'), m)
                 self.assertIn("72개", m)
                 self.assertIn(orig_b_sha[:12], m)
 

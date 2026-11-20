@@ -1,5 +1,6 @@
 import sys
 import os
+import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 import datetime
@@ -16,12 +17,9 @@ from core.live_runner import KiwoomLiveRunner
 
 class TestShadowAuditVerification(unittest.TestCase):
     def setUp(self):
-        self.test_db_path = config.DATA_DIR / "test_shadow_audit_temp.db"
-        if self.test_db_path.exists():
-            try:
-                self.test_db_path.unlink()
-            except Exception:
-                pass
+        self._tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(self._tmp.cleanup)
+        self.test_db_path = Path(self._tmp.name) / "shadow.db"
         self.ny_tz = ZoneInfo("America/New_York")
         self.candle_time = datetime.datetime(2026, 10, 14, 9, 45, 0, tzinfo=self.ny_tz)
 
@@ -194,11 +192,8 @@ class TestShadowAuditVerification(unittest.TestCase):
         # 2차 재생성 인스턴스에 동일한 마감 봉 전달
         entered_2 = tracker2.try_enter_shadow_trade("SOXL", 30.0, current_time=self.candle_time)
 
-        # 사용자 규칙: 차단되면 PASS, 다시 진입하면 FAIL
-        # 현재 shadow_tracker.py 구현은 __init__에서 self.last_entered_candle_id = None 이고
-        # 디스크/DB에서 영속된 candle_id를 복원하지 않으므로 entered_2가 True가 됨!
-        # 따라서 아래 assertion이 False여야 영속적 차단(PASS)이지만, 현재 코드는 재진입하므로 FAIL임.
-        self.assertFalse(entered_2, "객체/프로세스 재생성 후에도 동일 마감봉 진입이 차단되어야 함 (현재 영속성 미지원으로 FAIL 예상)")
+        # Persistent admission is independent of the in-memory last candle.
+        self.assertFalse(entered_2, "Recreated tracker must reject an already admitted candle")
 
     def test_item6_10_slots_full_rejects_shadow_allows_live_order(self):
         """

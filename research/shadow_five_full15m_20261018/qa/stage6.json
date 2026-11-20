@@ -1,0 +1,8 @@
+{
+  "stage": 6,
+  "status": "PASS",
+  "audit_append_only": true,
+  "input_replay_fields_saved": true,
+  "real_prediction_values_saved": true,
+  "primary_forced_separate": true
+}

@@ -28,11 +28,20 @@
     .chart-container { position: relative; height: 300px; width: 100%; }
     .stats-text { margin-top: 15px; font-size: 13px; color: var(--text-muted); text-align: center; font-weight: 600; white-space: pre-line; line-height: 1.4; }
     
-    .trade-table { width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 12px; color: var(--text-muted); }
-    .trade-table th, .trade-table td { padding: 6px; text-align: center; border-bottom: 1px solid var(--border-subtle); }
-    .trade-table th { font-weight: 600; color: var(--text-main); }
-    .win-text { color: #10b981; }
-    .loss-text { color: #e74c3c; }
+    .table-container {
+      max-height: 280px;
+      overflow-y: auto;
+      margin-top: 15px;
+      border-top: 1px solid var(--border-subtle);
+    }
+    .table-container::-webkit-scrollbar { width: 4px; }
+    .table-container::-webkit-scrollbar-track { background: transparent; }
+    .table-container::-webkit-scrollbar-thumb { background: #233144; border-radius: 2px; }
+    .trade-table { width: 100%; border-collapse: collapse; font-size: 11px; color: var(--text-muted); }
+    .trade-table th, .trade-table td { padding: 6px 4px; text-align: center; border-bottom: 1px solid var(--border-subtle); white-space: nowrap; }
+    .trade-table th { font-weight: 600; color: var(--text-main); position: sticky; top: 0; background: var(--bg-card); z-index: 2; border-bottom: 2px solid var(--border-subtle); }
+    .win-text { color: #10b981; font-weight: 600; }
+    .loss-text { color: #e74c3c; font-weight: 600; }
   </style>
 </head>
 <body>
@@ -45,19 +54,19 @@
       <div class="card-title">월별 성과 (올해 누적)</div>
       <div class="chart-container"><canvas id="chartMonthly"></canvas></div>
       <div id="statsMonthly" class="stats-text"></div>
-      <table class="trade-table" id="tableMonthly"></table>
+      <div class="table-container"><table class="trade-table" id="tableMonthly"></table></div>
     </div>
     <div class="card">
       <div class="card-title">주별 성과 (이번 주 누적 / 최근 5주)</div>
       <div class="chart-container"><canvas id="chartWeekly"></canvas></div>
       <div id="statsWeekly" class="stats-text"></div>
-      <table class="trade-table" id="tableWeekly"></table>
+      <div class="table-container"><table class="trade-table" id="tableWeekly"></table></div>
     </div>
     <div class="card">
       <div class="card-title">일별 성과 (최근 14일)</div>
       <div class="chart-container"><canvas id="chartDaily"></canvas></div>
       <div id="statsDaily" class="stats-text"></div>
-      <table class="trade-table" id="tableDaily"></table>
+      <div class="table-container"><table class="trade-table" id="tableDaily"></table></div>
     </div>
   </div>
   <script>
@@ -148,20 +157,42 @@
                 table.innerHTML = "";
                 return;
             }
-            let html = "<tr><th>날짜</th><th>종목</th><th>수량</th><th>승패</th><th>매수가</th><th>매도가</th><th>수익률</th></tr>";
+            let html = `<thead>
+                <tr>
+                    <th>날짜</th>
+                    <th>종목</th>
+                    <th>전적</th>
+                    <th>승률</th>
+                    <th>총잔고</th>
+                    <th>손익</th>
+                    <th>수익률</th>
+                </tr>
+            </thead><tbody>`;
             trades.forEach(t => {
-                const resClass = t.result === '승' ? 'win-text' : 'loss-text';
-                const pctStr = (t.pct > 0 ? '+' : '') + t.pct.toFixed(2) + '%';
+                const isNoTrade = t.total === 0;
+                const pnlClass = t.pnl > 0 ? 'win-text' : (t.pnl < 0 ? 'loss-text' : '');
+                const pctClass = t.pct > 0 ? 'win-text' : (t.pct < 0 ? 'loss-text' : '');
+                const wrClass = t.total > 0 ? (t.win_rate >= 50 ? 'win-text' : 'loss-text') : '';
+                
+                const pnlSign = t.pnl > 0 ? '+$' : (t.pnl < 0 ? '-$' : '$');
+                const pnlFormatted = isNoTrade ? '$0.00' : (pnlSign + Math.abs(t.pnl).toFixed(2));
+                const pctSign = t.pct > 0 ? '+' : '';
+                const pctFormatted = pctSign + t.pct.toFixed(2) + '%';
+                const balFormatted = '$' + (t.balance !== null && t.balance !== undefined ? Number(t.balance).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}) : '0.00');
+                const recordStr = isNoTrade ? '-' : `${t.wins}승 ${t.losses}패`;
+                const wrStr = isNoTrade ? '-' : `${t.win_rate.toFixed(1)}%`;
+                
                 html += `<tr>
-                    <td>${t.date}</td>
-                    <td>${t.symbol}</td>
-                    <td>${t.qty}주</td>
-                    <td class="${resClass}">${t.result}</td>
-                    <td>${t.buy.toFixed(2)}</td>
-                    <td>${t.sell.toFixed(2)}</td>
-                    <td class="${resClass}">${pctStr}</td>
+                    <td style="font-weight: 600; color: var(--text-main);">${t.date}</td>
+                    <td style="color: #cbd5e1;">${t.symbol}</td>
+                    <td>${recordStr}</td>
+                    <td class="${wrClass}">${wrStr}</td>
+                    <td style="color: #38bdf8; font-weight: 600;">${balFormatted}</td>
+                    <td class="${pnlClass}">${pnlFormatted}</td>
+                    <td class="${pctClass}">${pctFormatted}</td>
                 </tr>`;
             });
+            html += `</tbody>`;
             table.innerHTML = html;
         };
 

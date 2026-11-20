@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "enabled": true,
+  "runtime_enabled": false,
+  "legacy_tracker_enabled": false,
+  "model_source": "ACTIVE_LIVE_MANIFEST",
+  "entry_policy": "MATCH_LIVE_THRESHOLD_AND_NEUTRAL",
+  "repeat_chain": false,
+  "initial_cash": 10000.0,
+  "retired_groups": [
+    "FROZEN_FIVE_PRIMARY_AND_FORCED",
+    "LEGACY_B72_SINGLE_98",
+    "DIRECTION_ABLATIONS",
+    "THREE_ABS72_COMPARISON_SHADOWS",
+    "SOXX_ORB_VWAP_RVOL_M10"
+  ],
+  "strategies": {
+    "ABS72_SINGLE_98": {
+      "label": "실전 동일 모델 · 98% 단일 진입",
+      "mode": "SINGLE",
+      "initial_allocation": 0.98,
+      "chain_allocation": 0.0,
+      "chain_trigger_loss": null
+    },
+    "ABS72_RELAY_M15": {
+      "label": "49%/49% · -1.5% 선제 연쇄",
+      "mode": "PRELOSS",
+      "initial_allocation": 0.49,
+      "chain_allocation": 0.49,
+      "chain_trigger_loss": 0.015
+    },
+    "ABS72_STOP_REVERSE": {
+      "label": "49% 손절 체결 후 반대 49% 진입",
+      "mode": "AFTER_SL",
+      "initial_allocation": 0.49,
+      "chain_allocation": 0.49,
+      "chain_trigger_loss": null
+    }
+  }
+}

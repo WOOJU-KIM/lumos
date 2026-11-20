@@ -1,0 +1,30 @@
+{
+  "stage": 10,
+  "status": "PASS_AUTOSTART_AND_REUSE_PENDING_ACTUAL_MARKET",
+  "auto_start_tests": 12,
+  "real_sidecar_launch_and_reuse": {
+    "status": "PASS",
+    "real_runner_executed": false,
+    "actual_worker_spawned": true,
+    "existing_worker_reused": true,
+    "stale_pid_rejected": true,
+    "start_request_ms": 0.4744000034406781,
+    "worker_pid": 21848,
+    "broker_api_calls": 0,
+    "real_orders": 0
+  },
+  "regression_tests": "9/9 PASS in credential-free network-blocked source copy",
+  "source_hashes": {
+    "core/kiwoom_ws_streamer.py": "55eb9d564bbec42fd9c9b956597b9e80f2d7f90a5008f86d10c542e46e5d4280",
+    "core/live_runner.py": "a75fa9af5222aaf5af48d4ce2d040eadabe324f4d596dcd6b45bbf50cbdb204c",
+    "core/ml_engine.py": "df90bd4fa6b0c556af5f397b06d92ad32f90239cc1b56c8e2458cd40373382bb"
+  },
+  "original_files_checked": 879,
+  "other_originals_unchanged": true,
+  "active_model_and_config_unchanged": true,
+  "real_runner_executed": false,
+  "broker_api_calls": 0,
+  "real_orders": 0,
+  "live_ready": false,
+  "b03_status": "NOT_CLEARED"
+}

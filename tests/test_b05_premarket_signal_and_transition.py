@@ -32,12 +32,25 @@ class TestB05PreMarketSignalAndTransition(unittest.TestCase):
             confidence_threshold=config.GBDT_CONFIDENCE_THRESHOLD,
             gbdt_threshold=config.GBDT_CONFIDENCE_THRESHOLD,
         )
-        lake = MarketDataLake()
-        cls._cached_df_15m = lake.load_candles(config.BASE_ASSET_LONG, "15m").tail(120)
+        cls._cached_df_15m = cls._market_fixture(datetime.datetime(2026, 10, 15, 7, 15))
+
+    @staticmethod
+    def _market_fixture(now):
+        # Synthetic input for orchestration tests; never used as market evidence.
+        end = pd.Timestamp(now).tz_localize(None).floor("15min") - pd.Timedelta(minutes=15)
+        index = pd.date_range(end=end, periods=120, freq="15min")
+        return pd.DataFrame({"open": 100.0, "high": 101.0, "low": 99.0,
+                             "close": 100.0, "volume": 10000}, index=index)
+
+    def _evaluate_cycle(self, runner, **kwargs):
+        self._quote_clock = kwargs["now_dt"]
+        runner.data_lake.load_candles.return_value = self._market_fixture(kwargs["now_dt"])
+        return runner.evaluate_15m_cycle_once(**kwargs)
 
     def setUp(self):
         self.tmp_dir_obj = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.tmp_dir = Path(self.tmp_dir_obj.name)
+        self._quote_clock = datetime.datetime(2026, 10, 15, 7, 15)
         self.sent_notifier_msgs = []
         self.sent_dispatcher_msgs = []
 
@@ -95,8 +108,8 @@ class TestB05PreMarketSignalAndTransition(unittest.TestCase):
             "ok": True,
             "symbol": sym,
             "last_price": 100.01 if sym == "SOXL" else 46.56,
-            "quote_time_et": "2026-10-15 07:15 ET",
-            "quote_session": "PRE_MARKET",
+            "quote_time_et": self._quote_clock.strftime("%Y-%m-%d %H:%M ET"),
+            "quote_session": "PRE_MARKET" if self._quote_clock.hour < 9 else "REGULAR_MARKET",
             "quote_age_sec": 12.0,
             "is_previous_session_quote": False,
             "is_fresh": True,
@@ -176,14 +189,14 @@ class TestB05PreMarketSignalAndTransition(unittest.TestCase):
     def test_01_scenario_1_premarket_none_signal(self):
         """시나리오 1: PRE_MARKET_WAITING + NONE 신호 -> 텔레그램 전송, 주문 0건"""
         runner, broker = self._build_isolated_runner()
-        pre_dt = datetime.datetime(2026, 10, 15, 16, 15, 0, tzinfo=ZoneInfo("America/New_York"))
+        pre_dt = datetime.datetime(2026, 10, 15, 7, 15, 0, tzinfo=ZoneInfo("America/New_York"))
 
         with patch.object(
             runner.moe_orchestrator,
             "evaluate_dual_filter_signal",
             return_value=self._mock_moe_decision(direction="NONE", conf=0.521, is_approved=False),
         ):
-            res = runner.evaluate_15m_cycle_once(
+            res = self._evaluate_cycle(runner,
                 allow_order_execution=True,  # True를 넘겨도 프리마켓 하드 인터락이 강제 차단해야 함
                 sync_intraday=False,
                 now_dt=pre_dt,
@@ -213,14 +226,14 @@ class TestB05PreMarketSignalAndTransition(unittest.TestCase):
     def test_02_scenario_2_premarket_long_signal_above_threshold_blocked(self):
         """시나리오 2: PRE_MARKET_WAITING + LONG 신호 (확신도 >= 70.4%) -> SIGNAL_ONLY — NO ORDER, 주문 0건"""
         runner, broker = self._build_isolated_runner()
-        pre_dt = datetime.datetime(2026, 10, 15, 16, 15, 0, tzinfo=ZoneInfo("America/New_York"))
+        pre_dt = datetime.datetime(2026, 10, 15, 7, 15, 0, tzinfo=ZoneInfo("America/New_York"))
 
         with patch.object(
             runner.moe_orchestrator,
             "evaluate_dual_filter_signal",
             return_value=self._mock_moe_decision(direction="LONG", conf=0.752, is_approved=True),
         ), patch.object(runner, "_execute_buy_with_10s_chase") as mock_buy:
-            res = runner.evaluate_15m_cycle_once(
+            res = self._evaluate_cycle(runner,
                 allow_order_execution=True,
                 sync_intraday=False,
                 now_dt=pre_dt,
@@ -248,14 +261,14 @@ class TestB05PreMarketSignalAndTransition(unittest.TestCase):
     def test_03_scenario_3_premarket_short_signal_above_threshold_blocked(self):
         """시나리오 3: PRE_MARKET_WAITING + SHORT 신호 (확신도 >= 70.4%) -> SIGNAL_ONLY — NO ORDER, 주문 0건"""
         runner, broker = self._build_isolated_runner()
-        pre_dt = datetime.datetime(2026, 10, 15, 16, 15, 0, tzinfo=ZoneInfo("America/New_York"))
+        pre_dt = datetime.datetime(2026, 10, 15, 7, 15, 0, tzinfo=ZoneInfo("America/New_York"))
 
         with patch.object(
             runner.moe_orchestrator,
             "evaluate_dual_filter_signal",
             return_value=self._mock_moe_decision(direction="SHORT", conf=0.781, is_approved=True),
         ), patch.object(runner, "_execute_buy_with_10s_chase") as mock_buy:
-            res = runner.evaluate_15m_cycle_once(
+            res = self._evaluate_cycle(runner,
                 allow_order_execution=True,
                 sync_intraday=False,
                 now_dt=pre_dt,
@@ -279,7 +292,7 @@ class TestB05PreMarketSignalAndTransition(unittest.TestCase):
     def test_04_scenario_4_premarket_stale_data_suppresses_signal(self):
         """시나리오 4: PRE_MARKET_WAITING + Stale Data (전일 종가 또는 지연 시세) -> SIGNAL_UNAVAILABLE_STALE_DATA 및 추론 억제"""
         runner, broker = self._build_isolated_runner()
-        pre_dt = datetime.datetime(2026, 10, 15, 16, 15, 0, tzinfo=ZoneInfo("America/New_York"))
+        pre_dt = datetime.datetime(2026, 10, 15, 7, 15, 0, tzinfo=ZoneInfo("America/New_York"))
 
         broker.get_stock_quote.side_effect = lambda sym: {
             "ok": False,
@@ -296,7 +309,7 @@ class TestB05PreMarketSignalAndTransition(unittest.TestCase):
         with patch.object(
             runner.moe_orchestrator, "evaluate_dual_filter_signal"
         ) as mock_eval, patch.object(runner, "_execute_buy_with_10s_chase") as mock_buy:
-            res = runner.evaluate_15m_cycle_once(
+            res = self._evaluate_cycle(runner,
                 allow_order_execution=True,
                 sync_intraday=False,
                 now_dt=pre_dt,
@@ -381,7 +394,7 @@ class TestB05PreMarketSignalAndTransition(unittest.TestCase):
     def test_06_scenario_6_regular_market_valid_long_signal_executes_order(self):
         """시나리오 6: REGULAR_MARKET_OPEN + 유효 LONG 신호 -> 모든 안전 조건 통과 시 주문 실행 허용"""
         runner, broker = self._build_isolated_runner()
-        reg_dt = datetime.datetime(2026, 10, 15, 16, 15, 0, tzinfo=ZoneInfo("America/New_York"))
+        reg_dt = datetime.datetime(2026, 10, 15, 10, 15, 0, tzinfo=ZoneInfo("America/New_York"))
         broker.get_stock_quote.side_effect = lambda sym: {
             "ok": True,
             "symbol": sym,
@@ -398,7 +411,7 @@ class TestB05PreMarketSignalAndTransition(unittest.TestCase):
             "evaluate_dual_filter_signal",
             return_value=self._mock_moe_decision(direction="LONG", conf=0.745, is_approved=True),
         ), patch.object(runner, "_execute_buy_with_10s_chase", return_value=True) as mock_buy:
-            res = runner.evaluate_15m_cycle_once(
+            res = self._evaluate_cycle(runner,
                 allow_order_execution=True,
                 sync_intraday=False,
                 now_dt=reg_dt,
@@ -420,7 +433,7 @@ class TestB05PreMarketSignalAndTransition(unittest.TestCase):
     def test_07_scenario_7_regular_market_long_signal_plus_filter_veto_blocks_order(self):
         """시나리오 7: REGULAR_MARKET_OPEN + LONG 신호 + Filter Veto -> 주문 차단 및 사유 기록"""
         runner, broker = self._build_isolated_runner()
-        reg_dt = datetime.datetime(2026, 10, 15, 16, 15, 0, tzinfo=ZoneInfo("America/New_York"))
+        reg_dt = datetime.datetime(2026, 10, 15, 10, 15, 0, tzinfo=ZoneInfo("America/New_York"))
 
         with patch.object(
             runner.moe_orchestrator,
@@ -433,7 +446,7 @@ class TestB05PreMarketSignalAndTransition(unittest.TestCase):
                 is_cross_veto=True,
             ),
         ), patch.object(runner, "_execute_buy_with_10s_chase") as mock_buy:
-            res = runner.evaluate_15m_cycle_once(
+            res = self._evaluate_cycle(runner,
                 allow_order_execution=True,
                 sync_intraday=False,
                 now_dt=reg_dt,
@@ -455,7 +468,7 @@ class TestB05PreMarketSignalAndTransition(unittest.TestCase):
     def test_08_scenario_8_regular_market_long_signal_plus_existing_position_blocks_order(self):
         """시나리오 8: REGULAR_MARKET_OPEN + LONG 신호 + 기존 포지션 보유 -> 중복 진입 차단"""
         runner, broker = self._build_isolated_runner()
-        reg_dt = datetime.datetime(2026, 10, 15, 16, 15, 0, tzinfo=ZoneInfo("America/New_York"))
+        reg_dt = datetime.datetime(2026, 10, 15, 10, 15, 0, tzinfo=ZoneInfo("America/New_York"))
         runner._active_position = {"symbol": "SOXL", "quantity": 10, "price": 98.50}
         broker.get_overseas_stock_balance.return_value = {
             "ok": True,
@@ -468,7 +481,7 @@ class TestB05PreMarketSignalAndTransition(unittest.TestCase):
             "evaluate_dual_filter_signal",
             return_value=self._mock_moe_decision(direction="LONG", conf=0.760, is_approved=True),
         ), patch.object(runner, "_execute_buy_with_10s_chase") as mock_buy:
-            res = runner.evaluate_15m_cycle_once(
+            res = self._evaluate_cycle(runner,
                 allow_order_execution=True,
                 sync_intraday=False,
                 now_dt=reg_dt,
@@ -488,7 +501,7 @@ class TestB05PreMarketSignalAndTransition(unittest.TestCase):
     def test_09_scenario_9_regular_market_long_signal_plus_open_order_blocks_order(self):
         """시나리오 9: REGULAR_MARKET_OPEN + LONG 신호 + 미체결 주문 존재 -> 중복 주문 차단"""
         runner, broker = self._build_isolated_runner()
-        reg_dt = datetime.datetime(2026, 10, 15, 16, 15, 0, tzinfo=ZoneInfo("America/New_York"))
+        reg_dt = datetime.datetime(2026, 10, 15, 10, 15, 0, tzinfo=ZoneInfo("America/New_York"))
         broker.get_open_orders = MagicMock(
             return_value={
                 "ok": True,
@@ -509,7 +522,7 @@ class TestB05PreMarketSignalAndTransition(unittest.TestCase):
             "evaluate_dual_filter_signal",
             return_value=self._mock_moe_decision(direction="LONG", conf=0.760, is_approved=True),
         ), patch.object(runner, "_execute_buy_with_10s_chase") as mock_buy:
-            res = runner.evaluate_15m_cycle_once(
+            res = self._evaluate_cycle(runner,
                 allow_order_execution=True,
                 sync_intraday=False,
                 now_dt=reg_dt,
@@ -529,7 +542,7 @@ class TestB05PreMarketSignalAndTransition(unittest.TestCase):
     def test_10_scenario_10_regular_market_long_signal_plus_circuit_breaker_halt_blocks_order(self):
         """시나리오 10: REGULAR_MARKET_OPEN + LONG 신호 + 서킷브레이커 HALT -> 진입 차단"""
         runner, broker = self._build_isolated_runner()
-        reg_dt = datetime.datetime(2026, 10, 15, 16, 15, 0, tzinfo=ZoneInfo("America/New_York"))
+        reg_dt = datetime.datetime(2026, 10, 15, 10, 15, 0, tzinfo=ZoneInfo("America/New_York"))
         runner.daily_circuit_breaker_triggered = True
 
         with patch.object(
@@ -537,7 +550,7 @@ class TestB05PreMarketSignalAndTransition(unittest.TestCase):
             "evaluate_dual_filter_signal",
             return_value=self._mock_moe_decision(direction="LONG", conf=0.790, is_approved=True),
         ), patch.object(runner, "_execute_buy_with_10s_chase") as mock_buy:
-            res = runner.evaluate_15m_cycle_once(
+            res = self._evaluate_cycle(runner,
                 allow_order_execution=True,
                 sync_intraday=False,
                 now_dt=reg_dt,
@@ -553,6 +566,33 @@ class TestB05PreMarketSignalAndTransition(unittest.TestCase):
         msg = self.sent_dispatcher_msgs[-1]
         self.assertIn("주문 가능 여부: BLOCKED", msg)
         self.assertIn("CIRCUIT_BREAKER", msg)
+
+    def test_shadow_storage_failure_does_not_block_actual_cycle_buy_gate(self):
+        runner, broker = self._build_isolated_runner()
+        now = datetime.datetime(2026, 10, 15, 10, 15, tzinfo=ZoneInfo("America/New_York"))
+        with patch.object(runner.moe_orchestrator, "evaluate_dual_filter_signal",
+                          return_value=self._mock_moe_decision(direction="LONG", conf=.745, is_approved=True)), \
+             patch.object(runner, "_execute_buy_with_10s_chase", return_value=True) as buy, \
+             patch("core.shadow_tracker.os.open", side_effect=OSError("test claim storage unavailable")):
+            result = self._evaluate_cycle(runner, now_dt=now, allow_order_execution=True,
+                                          sync_intraday=False, market_session="REGULAR_MARKET_OPEN")
+        self.assertTrue(result["order_allowed"])
+        self.assertTrue(result["order_executed"])
+        buy.assert_called_once()
+        broker.send_order.assert_not_called()
+
+    def test_stale_candles_suppress_inference_with_fresh_quote(self):
+        runner, broker = self._build_isolated_runner()
+        now = datetime.datetime(2026, 10, 15, 10, 15, tzinfo=ZoneInfo("America/New_York"))
+        runner.data_lake.load_candles.return_value = self._market_fixture(now - datetime.timedelta(days=10))
+        with patch.object(runner.moe_orchestrator, "evaluate_dual_filter_signal") as evaluate:
+            result = runner.evaluate_15m_cycle_once(
+                now_dt=now, allow_order_execution=True, sync_intraday=False,
+                market_session="REGULAR_MARKET_OPEN")
+        self.assertEqual(result["order_block_reason"], "DATA_STALE")
+        self.assertFalse(result["order_executed"])
+        evaluate.assert_not_called()
+        broker.send_order.assert_not_called()
 
     def test_11_data_lake_never_contaminates_db_with_premarket_bars(self):
         """프리마켓/애프터마켓 캔들이 market_data.db에 절대 저장되지 않는지 검증"""

@@ -1,0 +1,32 @@
+{
+  "valid": false,
+  "stats": {
+    "received": 65728,
+    "decisions": 0,
+    "quotes": 30793,
+    "ticks": 0,
+    "marks": 30793,
+    "polls": 10596,
+    "ignored_rest": 0,
+    "rejected_market": 0,
+    "max_arrival_age_ms": 29.6475887298584,
+    "api_calls": 0,
+    "receiver_losses": 0,
+    "ring_recoveries": 0,
+    "max_queue_depth": 5,
+    "max_build_ms": 0.0,
+    "max_engine_ms": 16.00000006146729,
+    "max_audit_write_ms": 16.00000006146729
+  },
+  "feed_health": {
+    "degraded": false,
+    "data_complete": true,
+    "gap_episodes": 0,
+    "skipped_frames": 0,
+    "skipped_decisions": 0,
+    "max_transport_ms": 29.6475887298584,
+    "max_queue_ms": 9.577751159667969
+  },
+  "live_ready": false,
+  "orders_possible": false
+}

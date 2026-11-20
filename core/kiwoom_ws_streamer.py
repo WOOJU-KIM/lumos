@@ -25,6 +25,12 @@ if not logger.handlers:
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
 
+try:
+    from research.shadow_five_full15m_20261018.feed_bridge import market as _shadow_market
+except Exception:
+    def _shadow_market(*args, **kwargs):
+        pass
+
 class KiwoomWebSocketStreamer:
     """
     [Lumos 고성능 실시간 웹소켓(WebSocket) 스트리밍 엔진]
@@ -294,7 +300,8 @@ class KiwoomWebSocketStreamer:
             "symbol": sym_clean,
             "price": price,
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
-            "extra": extra
+            "extra": extra,
+            "from_ws": bool(from_ws),
         }
         if from_ws:
             self.ws_tick_received[sym_clean] = True
@@ -302,6 +309,12 @@ class KiwoomWebSocketStreamer:
             self.ws_tick_count[sym_clean] = self.ws_tick_count.get(sym_clean, 0) + 1
 
         # 등록된 콜백 실행 (익절/손절 즉시 감시)
+        # Optional memory-only shadow copy; never wait for a consumer.
+        try:
+            _shadow_market(sym_clean, price, extra, from_ws, source=self)
+        except Exception:
+            pass
+
         for cb in self._callbacks:
             try:
                 cb(sym_clean, price, self.latest_ticks[sym_clean])

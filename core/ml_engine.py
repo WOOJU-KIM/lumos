@@ -15,6 +15,13 @@ from sklearn.ensemble import RandomForestClassifier
 warnings.filterwarnings('ignore')
 
 
+try:
+    from research.shadow_five_full15m_20261018.feed_bridge import features as _shadow_features
+except Exception:
+    def _shadow_features(*args, **kwargs):
+        pass
+
+
 @dataclass(frozen=True)
 class _ModelSnapshot:
     """
@@ -992,10 +999,10 @@ class MLFeatureEngine:
         is_fallback = snap.load_status == "FALLBACK_TO_CHAMPION"
         if not is_ready:
             op_verdict = "BLOCKED"
-        elif is_fallback or snap.feature_schema in ("v4_champion", "A_champion"):
+        elif is_fallback or snap.fallback_status == "ROLLED_BACK":
             op_verdict = "ROLLED_BACK"
         elif is_daemon_running:
-            op_verdict = "ACTIVE_B_NORMALIZED"
+            op_verdict = f"ACTIVE_{snap.feature_schema.upper()}"
         else:
             op_verdict = "READY_FOR_LIVE_START"
 
@@ -1436,7 +1443,7 @@ class MLFeatureEngine:
 
         schema_key = (schema or "B_normalized").strip()
         if schema_key in ("v4_champion", "A_champion"):
-            return base_72
+            return [c for c in MLFeatureEngine.LEGACY_PKL_CHAMPION_72_FEATURES if c in df.columns]
 
         dollar_set = set(MLFeatureEngine.DOLLAR_SCALE_FEATURES)
         ablated_set = set(MLFeatureEngine.ABLATED_REDUNDANT_FEATURES)
@@ -1605,6 +1612,12 @@ class MLFeatureEngine:
                 target_live_df = None
 
         if target_live_df is not None and not target_live_df.empty and "features_json" in target_live_df.columns:
+            # Simulation rows must never receive the real-experience multiplier.
+            if "mode" in target_live_df.columns:
+                target_live_df = target_live_df[target_live_df["mode"].astype(str).str.startswith("REAL")]
+            else:
+                logger.warning("Live experience mode unavailable; supplied rows excluded")
+                target_live_df = target_live_df.iloc[:0]
             # 최대 10년(TRAINING_LOOKBACK_DAYS) 학습 윈도우 동기화: 학습 캔들 시작일 이후의 거래만 반영
             if isinstance(clean_data.index, pd.DatetimeIndex) and len(clean_data) > 0 and "entry_time" in target_live_df.columns:
                 cutoff_str = clean_data.index.min().strftime('%Y-%m-%d')
@@ -1627,6 +1640,10 @@ class MLFeatureEngine:
                     if not isinstance(f_dict, dict) or len(f_dict) < 10:
                         continue
                 except Exception:
+                    continue
+
+                audit_meta = f_dict.get("__learning_audit__")
+                if isinstance(audit_meta, dict) and not audit_meta.get("feature_complete", False):
                     continue
 
                 # 구 스키마 JSON에 현재 스키마(예: B_normalized 정규화 피처)가 누락된 경우 임의 보간(median/0) 혼합 금지
@@ -1657,6 +1674,16 @@ class MLFeatureEngine:
                 sample_weights = pd.concat([sample_weights, weights_live], ignore_index=True)
                 logger.info(f"[MLFeatureEngine] 🧬 과거 캔들 {len(clean_data):,}개 + 실시간 실전 거래 {len(live_rows):,}개 (2.5x 가중치) 통합 학습 적용 완료")
 
+        self._report_live_sample_coverage(target_live_df, len(X) - len(clean_data))
+
+        # B72 training policy persists across full-history and weekly retraining.
+        gain_overrides = dict(config.GBDT_FEATURE_GAIN_WEIGHTS) if target_schema in ("B_normalized", "v4_champion") else {}
+        if set(gain_overrides) - set(feature_cols):
+            raise ValueError("Feature gain policy contains unknown feature names")
+        gain_weights = [float(gain_overrides.get(name, 1.0)) for name in feature_cols]
+        if not np.isfinite(gain_weights).all() or min(gain_weights) < 0 or max(gain_weights) <= 0:
+            raise ValueError("Feature gain weights must be finite, nonnegative and not all zero")
+        self.last_training_window_meta["feature_gain_weights"] = gain_overrides
         try:
             model = LGBMClassifier(
                 objective='multiclass',
@@ -1671,7 +1698,8 @@ class MLFeatureEngine:
                 colsample_bytree=config.GBDT_FEATURE_FRACTION,
                 subsample_freq=1,
                 deterministic=True,
-                force_col_wise=True
+                force_col_wise=True,
+                feature_contri=gain_weights if gain_overrides else None
             )
             model.fit(X, y, sample_weight=sample_weights)
             importances = model.feature_importances_
@@ -1710,6 +1738,19 @@ class MLFeatureEngine:
             self._apply_snapshot(snap)
 
         return model, self.top_10_features, self.top_3_features
+
+    def _report_live_sample_coverage(self, live_df, accepted):
+        seen = len(live_df) if live_df is not None else 0
+        coverage = {
+            "live_experience_rows_seen": int(seen),
+            "live_experience_rows_accepted": int(accepted),
+            "live_experience_rows_rejected": int(seen - accepted),
+        }
+        self.last_training_window_meta.update(coverage)
+        logger.info("Live experience training coverage: seen=%s accepted=%s rejected=%s",
+                    seen, accepted, seen - accepted)
+        if seen and not accepted:
+            logger.warning("All supplied live experience rows were excluded; no live weighting applied")
 
     def _get_thread_local(self) -> threading.local:
         tl = getattr(self, "_thread_local", None)
@@ -1750,6 +1791,9 @@ class MLFeatureEngine:
         clean_X = feat_df[feat_names].replace([np.inf, -np.inf], np.nan).fillna(0.0)
         try:
             probs = model_obj.predict_proba(clean_X)  # shape: (N, 3) -> [P(Short), P(Neutral), P(Long)]
+            audit_local = self._get_thread_local()
+            audit_local.last_raw_class_probabilities = probs[-1].copy().tolist()
+            audit_local.last_actual_model_input = clean_X.iloc[-1].to_numpy().copy().tolist()
             prob_short = probs[:, 0]
             prob_neutral = probs[:, 1]
             prob_long = probs[:, 2]
@@ -1815,7 +1859,11 @@ class MLFeatureEngine:
             snap = self.get_model_snapshot()
         else:
             snap = snapshot
-        self._get_thread_local().last_inference_snapshot = snap
+        audit_local = self._get_thread_local()
+        audit_local.last_inference_snapshot = snap
+        audit_local.last_learning_snapshot = None
+        audit_local.last_raw_class_probabilities = None
+        audit_local.last_actual_model_input = None
 
         if df_candle_15m is None or df_candle_15m.empty or len(df_candle_15m) < 15:
             return 0, 0.50, "데이터 부족"
@@ -1849,7 +1897,11 @@ class MLFeatureEngine:
             snap = self.get_model_snapshot()
         else:
             snap = snapshot
-        self._get_thread_local().last_inference_snapshot = snap
+        audit_local = self._get_thread_local()
+        audit_local.last_inference_snapshot = snap
+        audit_local.last_learning_snapshot = None
+        audit_local.last_raw_class_probabilities = None
+        audit_local.last_actual_model_input = None
 
         if hasattr(self.predict_signal, "_mock_name") or hasattr(self.predict_signal, "assert_called"):
             sig, conf, reason = self.predict_signal(df_candle_15m)
@@ -1867,6 +1919,18 @@ class MLFeatureEngine:
         df_feat = self.extract_features(df_candle_15m)
         if df_feat.empty:
             return 0, 0.50, "피처 추출 불가", {"LONG": 0.33, "SHORT": 0.33, "NONE": 0.34}
+        try:
+            from core.learning_audit import capture_features
+            audit_local.last_learning_snapshot = capture_features(
+                df_feat, snap.feature_names, snap.active_model_sha256, snap.feature_schema,
+                model_id=getattr(snap, "active_model_id", None))
+        except Exception:
+            logger.warning("Learning feature capture failed; inference continues")
+        # Exact pre-inference feature snapshot for the isolated shadow observer.
+        try:
+            _shadow_features(df_feat, source=self)
+        except Exception:
+            pass
         df_feat = self.add_confidence_columns(df_feat, snapshot=snap)
         last_row = df_feat.iloc[-1]
         sig = int(last_row.get("Signal", 0))
@@ -1885,6 +1949,13 @@ class MLFeatureEngine:
             "SHORT": p_short,
             "NONE": p_none
         }
+        if isinstance(audit_local.last_learning_snapshot, dict):
+            audit_local.last_learning_snapshot.update(
+                raw_class_probabilities=audit_local.last_raw_class_probabilities,
+                raw_class_order=["SHORT", "NEUTRAL", "LONG"],
+                actual_model_input=audit_local.last_actual_model_input,
+                inference_complete=audit_local.last_raw_class_probabilities is not None and audit_local.last_actual_model_input is not None,
+                signal=sig, confidence=conf, displayed_scores=dict(probs))
         return sig, conf, reason, probs
 
 

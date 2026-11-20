@@ -1,0 +1,15 @@
+{
+  "stage": 2,
+  "status": "PASS",
+  "models": [
+    "NET_GBDT",
+    "NET_LAG_GBDT",
+    "NET_TCN",
+    "FULL_COND_PAYOFF_F1.0",
+    "FULL_HIST_PAYOFF_F1.0"
+  ],
+  "count": 5,
+  "baseline_excluded": true,
+  "policy_frozen": true,
+  "production_config_changed": false
+}

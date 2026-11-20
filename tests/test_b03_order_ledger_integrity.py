@@ -1116,7 +1116,7 @@ class TestB03OrderLedgerIntegrity(unittest.TestCase):
         self.assertIsNotNone(pos)
         self.assertEqual(pos["quantity"], 4)
         self.assertAlmostEqual(pos["price"], 40.0, places=2)
-        self.assertAlmostEqual(pos["sl_px"], 39.0, places=2)
+        self.assertAlmostEqual(pos["sl_px"], 40.0 * (1.0 - config.SL_MIN_PCT), places=2)
         self.assertAlmostEqual(pos["tp_px"], 44.0, places=2)
 
     def test_step7_2_preserved_partial_fill_blocks_additional_buy(self):

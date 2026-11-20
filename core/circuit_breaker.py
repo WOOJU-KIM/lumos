@@ -101,12 +101,19 @@ def _is_valid_reconciliation_proof(state, strict_empty=False):
     return digest == expected
 
 
-def order_readiness(state=None):
+def order_readiness(state=None, expected_account=None, expected_environment=None):
     """Only a cryptographically bound, 4-TR verified ledger reconciliation proof can authorize READY."""
     state = read_order_state() if state is None else state
     mig = migration_status(state)
     proof_fn = globals().get("_is_valid_reconciliation_proof")
     valid_proof = proof_fn(state, strict_empty=False) if callable(proof_fn) else False
+    if expected_account is not None or expected_environment is not None:
+        proof = state.get("reconciliation_proof", {})
+        if (not expected_account or expected_environment not in ("REAL", "SIMULATION")
+                or not isinstance(proof, dict) or proof.get("verified_account") != expected_account
+                or proof.get("verified_environment") != expected_environment):
+            return {"ready": False, "migration_state": mig,
+                    "reason": "ACCOUNT_ENVIRONMENT_MISMATCH", "trading_status": state.get("status")}
     reservations = state.get("sell_reservations", []) if isinstance(state, dict) else []
     has_unknown_sell = not isinstance(reservations, list) or any(
         not isinstance(r, dict) or r.get("phase") == "UNKNOWN" for r in reservations
@@ -485,12 +492,16 @@ class CircuitBreakerEngine:
     def is_halted(self) -> bool:
         """현재 매매 중단(Halt) 상태인지 확인"""
         st = self._get_status()
-        return st.get("status") != "NORMAL" or not order_readiness(st)["ready"]
+        return st.get("status") != "NORMAL" or not self._account_readiness(st)["ready"]
+
+    def _account_readiness(self, state=None):
+        return order_readiness(state, expected_account=self.broker.account_no + "-" + self.broker.account_type,
+                               expected_environment="SIMULATION" if self.broker.is_simulation else "REAL")
 
     def can_trade(self) -> Tuple[bool, str]:
         """신규 주문 진입 가능 여부 검사"""
         st = self._get_status()
-        if st.get("status") != "NORMAL" or not order_readiness(st)["ready"]:
+        if st.get("status") != "NORMAL" or not self._account_readiness(st)["ready"]:
             return False, f"서킷 브레이커 발동 중 (사유: {st.get('reason')}, 발동시각: {st.get('halted_at')})"
         return True, "정상 매매 가능"
 
@@ -573,7 +584,7 @@ class CircuitBreakerEngine:
 
     def release_circuit_breaker(self, command_by: str = "USER_TELEGRAM_COMMAND") -> Dict[str, Any]:
         """서킷 브레이커 수동 해제"""
-        if not order_readiness()["ready"]:
+        if not self._account_readiness()["ready"]:
             return {"ok": False, "status": "BLOCKED", "reason": "Migration and order history verification required"}
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self._save_status("NORMAL", 0, f"대표님 수동 해제 ({command_by})")

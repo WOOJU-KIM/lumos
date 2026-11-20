@@ -173,7 +173,7 @@ def main():
     orchestrator = train_and_save_moe_orchestrator(
         confidence_threshold=config.GBDT_CONFIDENCE_THRESHOLD,
         mode="hybrid_v3",
-        schema="B_normalized"
+        schema=None
     )
     
     print("\n✅ [학습 완료] 상위 10대 핵심 피처:")

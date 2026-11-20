@@ -111,11 +111,23 @@ def _mask_sensitive_log(value: Any, secrets: Tuple[str, ...] = ()) -> Any:
 
 class _OrderHTTPSConnection(http.client.HTTPSConnection):
     """Check the order at the first HTTP socket write, after TLS/CONNECT preparation."""
-    def __init__(self, *args, order_guard=None, **kwargs):
+    def __init__(self, *args, order_guard=None, body_resolver=None, **kwargs):
         super().__init__(*args, **kwargs)
         self._order_guard = order_guard
         self._order_started = False
         self._order_tunnel = False
+        self._body_resolver = body_resolver
+
+    def request(self, method, url, body=None, headers=None, *, encode_chunked=False):
+        if self._body_resolver is not None:
+            # Complete TLS/proxy setup before the last quote read. No broker
+            # query or connection setup follows this price calculation.
+            if self.sock is None:
+                self.connect()
+            body = self._body_resolver()
+            headers = {k:v for k,v in (headers or {}).items() if k.lower() != 'content-length'}
+            headers['Content-Length'] = str(len(body))
+        return super().request(method, url, body=body, headers=headers or {}, encode_chunked=encode_chunked)
 
     def _tunnel(self):
         self._order_tunnel = True
@@ -138,13 +150,14 @@ class _OrderHTTPSConnection(http.client.HTTPSConnection):
 
 
 class _OrderHTTPSHandler(urllib.request.HTTPSHandler):
-    def __init__(self, guard):
+    def __init__(self, guard, body_resolver=None):
         super().__init__()
         self.guard = guard
+        self.body_resolver = body_resolver
 
     def https_open(self, req):
         def connection(*args, **kwargs):
-            return _OrderHTTPSConnection(*args, order_guard=self.guard, **kwargs)
+            return _OrderHTTPSConnection(*args, order_guard=self.guard, body_resolver=self.body_resolver, **kwargs)
         return self.do_open(connection, req, context=self._context)
 
 
@@ -171,203 +184,33 @@ class KiwoomBroker:
             ("_access_token", "app_key", "app_secret", "account_no")
         ))
 
-    def resolve_order_ledger_status(
-        self,
-        order_no: str,
-        symbol: str,
-        side: str = "SELL",
-        expected_qty: Optional[int] = None,
-        trade_date: Optional[str] = None,
-        open_orders: Optional[list] = None,
-        executions: Optional[list] = None,
-        order_history: Optional[list] = None,
-        cancel_ord_no: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """
-        키움 REST 원장 3종(ust21050 미체결, ust21150 체결내역, ust21180 주문내역)을 종합하여
-        단일 주문의 종결 상태(OPEN, PARTIALLY_FILLED, FILLED, CANCELED_ZERO_FILL, CANCELED_PARTIAL_FILL, UNKNOWN)를 판정한다.
-        """
-        ord_no_clean = str(order_no or "").strip()
-        sym_clean = str(symbol or "").strip().upper()
-        cancel_no_clean = str(cancel_ord_no or "").strip()
-        target_side = str(side or "").strip().upper()
-        compact_dt = str(trade_date or datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")).replace("-", "").strip()
-
-        def _norm_row_side(row: Dict[str, Any]) -> str:
-            raw_s = row.get("side")
-            if raw_s in ("BUY", "SELL"):
-                return raw_s
-            raw_tp = str(row.get("slby_tp") or row.get("slby_tp_nm") or "").strip()
-            if raw_tp in ("1", "매도") or "매도" in raw_tp:
-                return "SELL"
-            if raw_tp in ("2", "매수") or "매수" in raw_tp:
-                return "BUY"
-            return str(raw_s or "").strip().upper()
-
-        if not ord_no_clean or not sym_clean:
-            return {
-                "status": "UNKNOWN",
-                "ord_qty": 0,
-                "filled_qty": 0,
-                "cancelled_qty": 0,
-                "remaining_qty": 0,
-                "found_in_ledger": False,
-                "has_open_order": False,
-            }
-
-        if open_orders is None:
-            op_res = self.get_open_orders(compact_dt)
-            open_orders = op_res.get("orders", []) if isinstance(op_res, dict) and op_res.get("ok") is True else None
-        if executions is None:
-            ex_res = self.get_daily_execution_history(compact_dt)
-            executions = ex_res.get("executions", []) if isinstance(ex_res, dict) and ex_res.get("ok") is True else None
-        if order_history is None and callable(getattr(self, "get_order_history", None)):
-            oh_res = self.get_order_history(compact_dt, compact_dt)
-            order_history = oh_res.get("orders", []) if isinstance(oh_res, dict) and oh_res.get("ok") is True else None
-
-        if open_orders is None:
-            return {
-                "status": "UNKNOWN",
-                "ord_qty": 0,
-                "filled_qty": 0,
-                "cancelled_qty": 0,
-                "remaining_qty": 0,
-                "found_in_ledger": False,
-                "has_open_order": False,
-            }
-
-        for o_row in open_orders:
-            if not isinstance(o_row, dict):
-                return {"status": "UNKNOWN", "ord_qty": 0, "filled_qty": 0, "cancelled_qty": 0, "remaining_qty": 0, "found_in_ledger": False, "has_open_order": True}
-            o_no = str(o_row.get("ord_no") or o_row.get("order_no") or "").strip()
-            o_orig = str(o_row.get("orig_ord_no") or o_row.get("original_order_no") or "").strip()
-            if o_no in (ord_no_clean, cancel_no_clean) or (o_orig and o_orig == ord_no_clean):
-                try:
-                    rq = _explicit_order_quantity(o_row.get("ord_qty", expected_qty or 0))
-                    fq = _explicit_order_quantity(o_row["tot_che_qty"] if "tot_che_qty" in o_row else o_row.get("cntr_qty", 0))
-                    cq = _explicit_order_quantity(o_row["cancelled_qty"] if "cancelled_qty" in o_row else o_row.get("cncl_qty", 0))
-                    rem = _explicit_order_quantity(o_row["nccs_qty"] if "nccs_qty" in o_row else o_row.get("ord_remnq", 0))
-                except ValueError:
-                    return {"status": "UNKNOWN", "ord_qty": 0, "filled_qty": 0, "cancelled_qty": 0, "remaining_qty": 0, "found_in_ledger": True, "has_open_order": True}
-                if rem > 0:
-                    return {
-                        "status": "PARTIALLY_FILLED" if fq > 0 else "OPEN",
-                        "ord_qty": rq,
-                        "filled_qty": fq,
-                        "cancelled_qty": cq,
-                        "remaining_qty": rem,
-                        "found_in_ledger": True,
-                        "has_open_order": True,
-                    }
-
-        for rows_src in (executions or [], order_history or []):
-            if not isinstance(rows_src, list) or not rows_src:
-                continue
-            orig_rows = []
-            cancel_rows = []
-            for r in rows_src:
-                if not isinstance(r, dict):
-                    continue
-                r_sym = str(r.get("stk_cd") or r.get("symbol") or "").strip().upper()
-                if r_sym and r_sym != sym_clean:
-                    continue
-                r_no = str(r.get("ord_no") or r.get("order_no") or "").strip()
-                r_orig = str(r.get("orig_ord_no") or r.get("original_order_no") or "").strip()
-                r_orig_clean = "" if r_orig in ("", "000000000") else r_orig
-                r_cntr_tp = str(r.get("ord_cntr_tp") or "").strip()
-                is_cancel = (
-                    (r_orig_clean == ord_no_clean and r_no != ord_no_clean)
-                    or (bool(cancel_no_clean) and cancel_no_clean != ord_no_clean and r_no == cancel_no_clean)
-                    or (r_no == ord_no_clean and r_cntr_tp == "12")
-                )
-                is_orig = (r_no == ord_no_clean and not is_cancel)
-                if is_orig:
-                    orig_rows.append(r)
-                elif is_cancel:
-                    cancel_rows.append(r)
-            if not orig_rows:
-                continue
-            req_q = None
-            sum_fil = 0
-            cum_fil = 0
-            use_cum = False
-            max_can = 0
-            rem_max = 0
-            ambig = False
-            for r in orig_rows:
-                r_side = _norm_row_side(r)
-                if target_side and r_side and r_side != target_side:
-                    ambig = True
-                    break
-                try:
-                    rq = _explicit_order_quantity(r.get("ord_qty"))
-                    fq = _explicit_order_quantity(r["tot_che_qty"] if "tot_che_qty" in r else r.get("cntr_qty", 0))
-                    cq = _explicit_order_quantity(
-                        r["cancelled_qty"] if "cancelled_qty" in r else (r["cncl_cfrm_qty"] if "cncl_cfrm_qty" in r else r.get("cncl_qty", 0))
-                    )
-                    rmq = _explicit_order_quantity(r["nccs_qty"] if "nccs_qty" in r else r.get("ord_remnq", 0))
-                except ValueError:
-                    ambig = True
-                    break
-                if (req_q is not None and rq != req_q) or (expected_qty is not None and rq != expected_qty):
-                    ambig = True
-                    break
-                req_q = rq
-                max_can = max(max_can, cq)
-                rem_max = max(rem_max, rmq)
-                if "tot_che_qty" in r and "cntr_qty" not in r:
-                    use_cum = True
-                    cum_fil = max(cum_fil, fq)
-                else:
-                    sum_fil += fq
-            if ambig or req_q is None:
-                return {"status": "UNKNOWN", "ord_qty": 0, "filled_qty": 0, "cancelled_qty": 0, "remaining_qty": 0, "found_in_ledger": True, "has_open_order": False}
-            child_can = 0
-            for cr in cancel_rows:
-                try:
-                    cfq = _explicit_order_quantity(cr["tot_che_qty"] if "tot_che_qty" in cr else cr.get("cntr_qty", 0))
-                    ccq = _explicit_order_quantity(
-                        cr["cancelled_qty"] if "cancelled_qty" in cr else (cr["cncl_cfrm_qty"] if "cncl_cfrm_qty" in cr else cr.get("cncl_qty", 0))
-                    )
-                    crmq = _explicit_order_quantity(cr["nccs_qty"] if "nccs_qty" in cr else cr.get("ord_remnq", 0))
-                except ValueError:
-                    return {"status": "UNKNOWN", "ord_qty": 0, "filled_qty": 0, "cancelled_qty": 0, "remaining_qty": 0, "found_in_ledger": True, "has_open_order": False}
-                if cfq > 0 or crmq > 0:
-                    return {"status": "UNKNOWN", "ord_qty": 0, "filled_qty": 0, "cancelled_qty": 0, "remaining_qty": 0, "found_in_ledger": True, "has_open_order": False}
-                child_can += ccq
-            if max_can > 0 and child_can > 0 and max_can != child_can:
-                return {"status": "UNKNOWN", "ord_qty": 0, "filled_qty": 0, "cancelled_qty": 0, "remaining_qty": 0, "found_in_ledger": True, "has_open_order": False}
-            final_fil = cum_fil if use_cum else sum_fil
-            final_can = max(max_can, child_can)
-            if rem_max > 0 or final_fil + final_can != req_q:
-                return {"status": "UNKNOWN", "ord_qty": req_q, "filled_qty": final_fil, "cancelled_qty": final_can, "remaining_qty": rem_max, "found_in_ledger": True, "has_open_order": rem_max > 0}
-            if final_fil == req_q and final_can == 0:
-                st_str = "FILLED"
-            elif final_fil == 0 and final_can == req_q:
-                st_str = "CANCELED_ZERO_FILL"
-            elif final_fil > 0 and final_can > 0:
-                st_str = "CANCELED_PARTIAL_FILL"
-            else:
-                st_str = "UNKNOWN"
-            return {
-                "status": st_str,
-                "ord_qty": req_q,
-                "filled_qty": final_fil,
-                "cancelled_qty": final_can,
-                "remaining_qty": 0,
-                "found_in_ledger": True,
-                "has_open_order": False,
-            }
-
-        return {
-            "status": "UNKNOWN",
-            "ord_qty": 0,
-            "filled_qty": 0,
-            "cancelled_qty": 0,
-            "remaining_qty": 0,
-            "found_in_ledger": False,
-            "has_open_order": False,
-        }
+    def resolve_order_ledger_status(self, order_no: str, symbol: str, side: str = "SELL",
+            expected_qty: Optional[int] = None, trade_date: Optional[str] = None,
+            open_orders: Optional[list] = None, executions: Optional[list] = None,
+            order_history: Optional[list] = None, cancel_ord_no: Optional[str] = None) -> Dict[str, Any]:
+        """Reduce all three ledgers; a failed query or conflicting source stays UNKNOWN."""
+        from core.order_ledger import resolve_order_evidence
+        day = str(trade_date or datetime.now(ZoneInfo("America/New_York")).strftime("%Y%m%d")).replace("-", "")
+        def rows(result, key):
+            if not isinstance(result, dict) or result.get("ok") is not True or result.get("complete") is False:
+                return None
+            value = result.get(key)
+            return value if isinstance(value, list) else None
+        try:
+            if open_orders is None:
+                open_orders = rows(self.get_open_orders(day), "orders")
+            if executions is None:
+                executions = rows(self.get_daily_execution_history(day), "executions")
+            if order_history is None:
+                order_history = rows(self.get_order_history(day, day), "orders")
+        except Exception:
+            open_orders = None
+        result = resolve_order_evidence(open_orders, executions, order_history,
+            str(order_no or "").strip(), str(symbol or "").strip().upper(),
+            str(side or "").strip().upper(), expected_qty, day, str(cancel_ord_no or "").strip())
+        if not order_no or not symbol or side not in ("BUY", "SELL"):
+            result.update(status="UNKNOWN", reason="INVALID_ORDER_IDENTITY")
+        return result
 
     def _prepare_sell_reservation(self, body):
         import core.circuit_breaker as _cb_mod
@@ -486,86 +329,15 @@ class KiwoomBroker:
                 return None
 
             def _extract_order_summary(rows, target_ord_no, target_sym, target_compact_dt, target_acc):
-                if not isinstance(rows, list):
+                from core.order_ledger import scan_order_rows
+                facts = scan_order_rows(rows, target_ord_no, target_sym, "SELL",
+                                        trade_date=target_compact_dt, expected_account=target_acc)
+                if facts["error"] or facts["requested"] is None or facts["remaining"]:
                     return None
-                orig_rows = []
-                cancel_rows = []
-                for item in rows:
-                    if not isinstance(item, dict):
-                        continue
-                    if str(item.get("stk_cd") or item.get("symbol") or "").strip().upper() != target_sym:
-                        continue
-                    item_dt = str(item.get("trade_date") if "trade_date" in item else (item.get("ord_dt") or target_compact_dt)).strip().replace("-", "")
-                    if item_dt != target_compact_dt:
-                        continue
-                    if "account" in item and item.get("account") != target_acc:
-                        continue
-                    i_no = str(item.get("ord_no") or item.get("order_no") or "").strip()
-                    i_orig = str(item.get("orig_ord_no") or item.get("original_order_no") or "").strip()
-                    i_orig_clean = "" if i_orig in ("", "000000000") else i_orig
-                    i_cntr_tp = str(item.get("ord_cntr_tp") or "").strip()
-                    is_cancel_r = (i_orig_clean == target_ord_no and i_no != target_ord_no) or (i_no == target_ord_no and i_cntr_tp == "12")
-                    is_orig_r = (i_no == target_ord_no and not is_cancel_r)
-                    if is_orig_r:
-                        orig_rows.append(item)
-                    elif is_cancel_r:
-                        cancel_rows.append(item)
-                if not orig_rows:
+                canceled = max(facts["parent_cancel"], facts["child_cancel"])
+                if facts["filled"] + canceled != facts["requested"]:
                     return None
-                req_val = None
-                sum_fil = 0
-                cum_fil = 0
-                use_cum = False
-                max_orig_can = 0
-                seen_orig_keys = set()
-                for item in orig_rows:
-                    if _norm_side(item) != "SELL":
-                        return None
-                    try:
-                        rq = _explicit_order_quantity(item.get("ord_qty"))
-                        fq = _explicit_order_quantity(item["tot_che_qty"] if "tot_che_qty" in item else item.get("cntr_qty"))
-                        cq = _explicit_order_quantity(
-                            item["cancelled_qty"] if "cancelled_qty" in item else (item["cncl_cfrm_qty"] if "cncl_cfrm_qty" in item else item.get("cncl_qty"))
-                        )
-                        rmq = _explicit_order_quantity(item["nccs_qty"] if "nccs_qty" in item else item.get("ord_remnq"))
-                    except ValueError:
-                        return None
-                    if rmq > 0 or (req_val is not None and rq != req_val):
-                        return None
-                    req_val = rq
-                    max_orig_can = max(max_orig_can, cq)
-                    if "tot_che_qty" in item and "cntr_qty" not in item:
-                        use_cum = True
-                        cum_fil = max(cum_fil, fq)
-                    else:
-                        dedup_key = (
-                            str(item.get("cntr_no") or item.get("che_no") or item.get("exec_no") or ""),
-                            rq, fq, cq, rmq,
-                            str(item.get("cntr_uv") or item.get("ord_uv") or ""),
-                            str(item.get("ord_tmd") or item.get("cntr_tm") or ""),
-                        )
-                        if fq + cq == rq and len(orig_rows) > 1 and dedup_key in seen_orig_keys:
-                            continue
-                        seen_orig_keys.add(dedup_key)
-                        sum_fil += fq
-                child_can = 0
-                for c_item in cancel_rows:
-                    try:
-                        cfq = _explicit_order_quantity(c_item["tot_che_qty"] if "tot_che_qty" in c_item else c_item.get("cntr_qty", 0))
-                        ccq = _explicit_order_quantity(
-                            c_item["cancelled_qty"] if "cancelled_qty" in c_item else (c_item["cncl_cfrm_qty"] if "cncl_cfrm_qty" in c_item else c_item.get("cncl_qty", 0))
-                        )
-                        crmq = _explicit_order_quantity(c_item["nccs_qty"] if "nccs_qty" in c_item else c_item.get("ord_remnq", 0))
-                    except ValueError:
-                        return None
-                    if cfq > 0 or crmq > 0:
-                        return None
-                    child_can += ccq
-                if max_orig_can > 0 and child_can > 0 and max_orig_can != child_can:
-                    return None
-                final_fil = cum_fil if use_cum else sum_fil
-                final_can = max(max_orig_can, child_can)
-                return (req_val, final_fil, final_can, 0)
+                return (facts["requested"], facts["filled"], canceled, 0)
 
             journal, revision = _extract_journal(state)
             symbol = str(body.get("stk_cd", "")).strip().upper()
@@ -862,7 +634,7 @@ class KiwoomBroker:
             logger.error(self._redact_log(f"❌ 키움 토큰 발급 중 예외 발생: {e}"))
             raise
 
-    def _send_tr_request(self, endpoint: str, api_id: str, body_dict: Dict[str, Any], raise_on_error: bool = False, retry_count: int = 0, query_continuation=None) -> Dict[str, Any]:
+    def _send_tr_request(self, endpoint: str, api_id: str, body_dict: Dict[str, Any], raise_on_error: bool = False, retry_count: int = 0, query_continuation=None, price_resolver=None) -> Dict[str, Any]:
         """키움 REST API TR 공통 요청 함수 (요청/응답 전문 Full 디버깅 출력 및 엄격한 예외 처리, Rate Limiting & 429 Auto-Retry)"""
         # 🚦 증권사 API 유량 제한 방어: 최소 간격 강제 보장
         with self._request_lock:
@@ -887,7 +659,16 @@ class KiwoomBroker:
                 raise ValueError("Continuation is restricted to order-history queries")
             headers["cont-yn"], headers["next-key"] = query_continuation
 
-        payload_bytes = json.dumps(body_dict).encode("utf-8")
+        def prepare_payload():
+            if price_resolver is not None:
+                if endpoint != '/api/us/ordr' or api_id != 'ust20000' or body_dict.get('trde_tp') != '00':
+                    raise ValueError('Live quote pricing is restricted to limit BUY orders')
+                resolved_price = float(price_resolver())
+                if not 0 < resolved_price < float('inf'):
+                    raise ValueError('Invalid resolved limit price')
+                body_dict['ord_uv'] = str(round(resolved_price, 2))
+            return json.dumps(body_dict).encode("utf-8")
+        payload_bytes = prepare_payload()
         req = urllib.request.Request(url, data=payload_bytes, headers=headers, method="POST")
 
         # 🔍 요청 직전 URL / Headers / Body 전문 Full 출력
@@ -913,7 +694,9 @@ class KiwoomBroker:
             import core.circuit_breaker as _cb_mod
             from core.circuit_breaker import read_order_state, change_sell_reservation, order_readiness
             state = read_order_state()
-            if api_id == "ust20000" and (state.get("status") != "NORMAL" or not order_readiness(state)["ready"]):
+            if api_id == "ust20000" and (state.get("status") != "NORMAL" or not order_readiness(
+                    state, expected_account=self.account_no + "-" + self.account_type,
+                    expected_environment="SIMULATION" if self.is_simulation else "REAL")["ready"]):
                 raise RuntimeError("BUY blocked: HALT, migration pending or order history unverified")
             if reservation:
                 for mem_list in (getattr(_cb_mod, "_IN_MEMORY_SELL_RESERVATIONS", None), getattr(self, "_in_memory_sell_reservations", None)):
@@ -945,7 +728,8 @@ class KiwoomBroker:
                     logger.error("SELL reservation persistence failed; explicit recovery required")
 
         try:
-            opener = urllib.request.build_opener(_OrderHTTPSHandler(order_guard)) if order_request else None
+            opener = urllib.request.build_opener(_OrderHTTPSHandler(
+                order_guard, prepare_payload if price_resolver is not None else None)) if order_request else None
             response_context = opener.open(req, timeout=10) if opener else urllib.request.urlopen(req, timeout=10)
             with response_context as response:
                 content_type = response.headers.get("Content-Type", "")
@@ -1356,7 +1140,8 @@ class KiwoomBroker:
         order_type: str,  # "BUY" or "SELL"
         quantity: int,
         price: float = 0.0,
-        exchange: Optional[str] = None
+        exchange: Optional[str] = None,
+        price_resolver=None
     ) -> Dict[str, Any]:
         """
         [공식 TR: ust20000 (미국주식 매수) / ust20001 (미국주식 매도)]
@@ -1369,7 +1154,8 @@ class KiwoomBroker:
         is_buy = (order_type.upper() == "BUY")
         if is_buy:
             state = read_order_state()
-            readiness = order_readiness(state)
+            readiness = order_readiness(state, expected_account=self.account_no + "-" + self.account_type,
+                                        expected_environment="SIMULATION" if self.is_simulation else "REAL")
             if state.get("status") != "NORMAL" or not readiness["ready"]:
                 logger.warning("Order deferred: migration and complete order history verification required")
                 raise RuntimeError("Order deferred: migration not operationally READY")
@@ -1380,7 +1166,7 @@ class KiwoomBroker:
         stex = exchange or self._resolve_exchange(sym_clean)
 
         # 현재가 조회
-        quote = self.get_stock_quote(sym_clean, exchange=stex)
+        quote = {} if is_buy and price_resolver is not None else self.get_stock_quote(sym_clean, exchange=stex)
         cur_px = float(quote.get("last_price", 0.0))
 
         # 매도 주문인 경우 기존에 걸려있는 미체결 주문(예: 예약매도) 전량 취소하여 매도가능수량 100% 확보
@@ -1421,7 +1207,10 @@ class KiwoomBroker:
         logger.info(f"📤 [키움 미국주식 주문 전송] {self.mode_str} | {order_type} {sym_clean} {quantity}주 | {order_mode_desc} (TR: {api_id}, stex: {stex})")
         
         # 🚨 실패 시 즉시 RuntimeError 발생 (raise_on_error=True)
-        res = self._send_tr_request(endpoint="/api/us/ordr", api_id=api_id, body_dict=body, raise_on_error=True)
+        res = self._send_tr_request(endpoint="/api/us/ordr", api_id=api_id, body_dict=body, raise_on_error=True,
+                                   **({'price_resolver': price_resolver} if price_resolver is not None else {}))
+        if price_resolver is not None:
+            exec_px = float(body['ord_uv'])
 
         return_code = res.get("return_code", -1)
         return_msg = res.get("return_msg", "")

@@ -1,0 +1,196 @@
+{
+  "snapshot_date_kst": "2026-10-18",
+  "not_live_readiness_approval": true,
+  "B03": "NOT_CLEARED",
+  "live_ready": false,
+  "read_only_api_calls_for_documentation": 0,
+  "source_hashes": {
+    "AGENTS.md": "ea9d811d7018b1cfd93f5b2614ffc7fec88f6c7b3e0b3362a79f1be05ad1ead2",
+    "docs/MAINTENANCE_GUIDE.md": "d9044444a24d3a4d59895901a77f2ef08fd79e4bae06259f2c2d563c54452dda",
+    "docs/SHADOW_AND_MODEL_STATE_20261018.md": "4c87f0979af2637193df6e763e28a65642bcc15a5699d323eef6496798b60ce4",
+    "config.py": "c19b470a5e4db73fb3c2ffc3789d329925a34badc3ccc44f8c1ca88e2317c3ca",
+    "models/active_model_manifest.json": "3a5958d3c1199f39592e52ef46e9d71ea1cef17cde62610fcdac961640a42a4d",
+    "core/learning_audit.py": "fe7a4cf284036f3e5de94ba947b489742fbb10550c548b545fd11def4250f8ba",
+    "core/ml_engine.py": "d25526bdec052e0813d1b87858d93420c900d3e3818540ed1bc26fea538ba1a9",
+    "core/moe_orchestrator.py": "ade66957a18cd9a4eba755a2869881078278ab17f1a203efaa203a9a55423809",
+    "core/live_runner.py": "4bfd9124021b0a58c3ec9b5301246d4253b5090488112b28ef7b44f7e6bcf6ac",
+    "core/kiwoom_ws_streamer.py": "55eb9d564bbec42fd9c9b956597b9e80f2d7f90a5008f86d10c542e46e5d4280",
+    "core/live_experience_logger.py": "ad749a0d0bfb792f3680987c416e9c8d2819b0b7f964c4f15e93e437f25f3efb",
+    "tests/test_system_integrity.py": "8de6726b3ded6e75d19c90ff69006463b53a414c9090cfaf0dd767622dc4820b",
+    "tests/test_learning_capture.py": "6a7e7c0c69b7620ec0b84d2e1668fbbf4ce103c97b39a3e9b8eb3e3c88b7ccd8",
+    "scripts/run_weekly_rolling_wfa.py": "49e9f96802638ee82700716d04750772f38b2043ca7b9e2feb03cfc30e95aee5",
+    "research/shadow_five_full15m_20261018/common.py": "1c6d8aaf3b2edc9e27dffd54fa46452c82fa8745cf66d7c7c0c1c8dd75137ce9",
+    "research/shadow_five_full15m_20261018/policy.json": "d28275bf5aa214824ce84904cdba309e6e05787c26a79111e3c6f068a241cf3a",
+    "research/shadow_five_full15m_20261018/inputs/schema.json": "aa3cc1643351129c11a9188ea0373136eeb10253fdef3d1a0e5b27ecd1dc00af",
+    "research/shadow_five_full15m_20261018/adapters.py": "0e4b6c2421d56f25a035e1449c42be74d745c4325ee11af58501fdaf11eda284",
+    "research/shadow_five_full15m_20261018/runtime.py": "243f008f5d569fb8bc1111d312566dfddd836899af6a8259d43c8446e586c8c8",
+    "research/shadow_five_full15m_20261018/storage.py": "b7ca242dc28beacf50ec03344e3c488ca888f9d10b6e264b1c5e05a23d3a1994",
+    "research/shadow_five_full15m_20261018/feed_bridge.py": "2ea3d967d562273fc2a22f4f13a5df513c4cad1c280780b21832930ad5e3024b",
+    "research/shadow_five_full15m_20261018/start_shadow.py": "e2bc01c62eb25929141e7bab39d7ded1897876144ed697e0ec993cd76d7a6a0b",
+    "research/shadow_five_full15m_20261018/live_feed.py": "b7f3da16d9a657b90a977ffd5057f35395ea66c16caf13b2afb7185580695230",
+    "research/shadow_five_full15m_20261018/prepare.py": "a0273ecc1f5fa6e83aa8f60d57b658a2402c29189d88220110570f823d8b3143",
+    "research/shadow_five_full15m_20261018/train.py": "ab03b9084df63c2ed8ebd4cea5f3b20cc840b225903de801020807b8d16b0919",
+    "research/shadow_five_full15m_20261018/feature_source.py": "e69832f19b75aa86282b980e0bc9f6b68fde2adb8b58802e9653303ff79a2d7e",
+    "research/shadow_five_full15m_20261018/network.py": "222075b56d9e61d1f7347de56a3d66a1bded8420fd7b36bcb7cd0b018906a9dd",
+    "research/shadow_five_full15m_20261018/refit_selectors_all_labels.py": "6405ce9a4ed2d77db3dab7397f03a7658a57cc9f5c7bfcd9bef20c601cff0679",
+    "research/shadow_five_full15m_20261018/refit_live_weighted.py": "759a42120b3fcd386d771a5b989df477070533a9361eed0669fb6f2f5df3652c",
+    "research/shadow_five_full15m_20261018/promote_live_weighted.py": "95ae4f16c1c59c34fd6c17ec7535aef6bf940f6f069b5a2db15e04a7068c1333",
+    "research/shadow_five_full15m_20261018/artifacts/manifest.json": "6ddee4f0d2d9055938a03dbac846de223602224c3d6aad225f574e9b25b0f45a",
+    "research/shadow_five_full15m_20261018/artifacts/live_weighted_v1/training_qa.json": "417f4803355306f461a42790346a38594b6050c80ecee0dd18c3e2fa187dfe80",
+    "research/shadow_five_full15m_20261018/artifacts/live_weighted_v1/deployment.json": "c5eb8acc09f43dc7565057051341c88a1d55faa867cb1568b7d224732381f569",
+    "research/shadow_five_full15m_20261018/qa.py": "ddfb4c08a6b87879f993c7c20144610bd78b251785f694c4f6af719dff89851e",
+    "research/shadow_five_full15m_20261018/qa_feed_hooks.py": "c99b9f6467e391446d9a6c290405fbcdcce8199a2e4f3533f5859af69fa7efac",
+    "research/shadow_five_full15m_20261018/capture_ast.py": "ca6c30056c8b0541a306bf9314f19c82ac8b2eb4e7e95e69b6501eb3dea649e0",
+    "research/shadow_five_full15m_20261018/threshold_64_704.py": "054b3d3e1f93c0be35a8395b226b1e954feb7ed02f84735ac534c565899eef85",
+    "research/shadow_five_full15m_20261018/replay_active_live17_thresholds.py": "71397cbcb340e1ccd6cfd246e38725fcb3bde855b4b4432f363451b6f128d7c1",
+    "research/shadow_five_full15m_20261018/qa_threshold_paths.py": "330e33d44d837e647b92f87b9a1fe091d132652327a00e1c16e7932a7d0d9b30",
+    "research/shadow_five_full15m_20261018/threshold_64_704_20261018/results.json": "28205b4b76e0ef14d4ca971ff03d5453e668f36d94dc8be4773a85047683f27d",
+    "research/shadow_five_full15m_20261018/threshold_64_704_live17_20261018/results.json": "ec101ded0fd0bc3c8a409e1f61382f657d360201bf4d647e0d572fe00d9abeac",
+    "research/live_retrain_20261018/train_candidate.py": "b500b85bce92f85147e0546d4d36b918bafcaaa7e2313c82b446c14cfb8ca465",
+    "research/live_retrain_20261018/activate_candidate_v2.py": "12b52265f53192a694c5b8e5561bfd33270ab696a3a6e8fa7824fec1bc9b7a12",
+    "research/live_retrain_20261018/training_result_v2.json": "1d703a89cbe0a800412ab9c92cb87b79c25a87d5d6e6272447610de9b4104d17",
+    "research/live_retrain_20261018/final_validation_v2.json": "df9dd917e9791e66129ef3bdd8368998742a5dcf783b2803ff8240a2d8ad1c52",
+    "research/live_retrain_20261018/activation_live17_v2_20261018/activation_result.json": "5f1b2f127a699bb806439fe1189656605b15f520e648b86a7ffc9b50e790af0b",
+    "research/live_retrain_20261018/activation_live17_v2_20261018/isolated_loader_qa.json": "e367f5db5a7ede715606347e426f647a9a658ecf7645418febadd835f0cd9439"
+  },
+  "settings_snapshot": {
+    "GBDT_CONFIDENCE_THRESHOLD": 0.64,
+    "USE_CROSS_ASSET_VETO": false,
+    "USE_60M_TREND_FILTER": false,
+    "ROLLING_TRAINING_WEEKS": 520,
+    "GBDT_MAX_DEPTH": 4,
+    "GBDT_N_ESTIMATORS": 120,
+    "GBDT_LEARNING_RATE": 0.02,
+    "GBDT_FEATURE_FRACTION": 0.5,
+    "SL_MIN_PCT": 0.02,
+    "SL_MAX_PCT": 0.032,
+    "SL_ATR_MULTIPLIER": 1.5,
+    "MAX_TP_PCT": 0.1,
+    "TRAILING_TRIGGER_PCT": 0.015,
+    "TRAILING_DROP_PCT": 0.003,
+    "TIME_STOP_MINUTES": 90,
+    "PHASE_MAIN_END": "15:30",
+    "PHASE_EOD_CLEAR": "15:55",
+    "MAX_ALLOCATION_RATIO": 0.98,
+    "QTY_CALC_BUFFER": 0.05,
+    "BACKTEST_FEE_SLIPPAGE": 0.002,
+    "CALIB_BASE": 0.5,
+    "CALIB_PIVOT": 0.333,
+    "CALIB_SCALE": 1.15
+  },
+  "production_model": {
+    "active_model_id": "B_Normalized_72",
+    "model_path": "models/versions/model_normalized_72_live17_20261016_0deb9282eab7.pkl",
+    "expected_sha256": "0deb9282eab7e1bf1a5b2d694878f13534ea0cc2632f9b57676d46d906b24932",
+    "previous_model_path": "models/versions/model_normalized_72_20261017_050941_4bb24c5217cd.pkl",
+    "previous_model_sha256": "4bb24c5217cd810a95dc467fcfdbfa227c912bfde7fe48e27f35507a726dc3f7",
+    "fallback_model_path": "models/model_champion.pkl",
+    "fallback_expected_sha256": "e1982612a986d08a69044551b92c96ba5f8508375187466af9a9966e63b3ed5f",
+    "live_experience_rows": 17,
+    "live_experience_weight": 2.5,
+    "training_cutoff": "2026-10-16T16:00:00-04:00"
+  },
+  "shadow_models": {
+    "NET_GBDT": {
+      "path": "research/shadow_five_full15m_20261018/artifacts/live_weighted_v1/NET_GBDT.pkl",
+      "sha256": "1cbd639fcc1dc1ce13ce545fd343c4b23e5c1882eafd69d47700f035284da797",
+      "threshold": 0.0,
+      "training_rows_per_side": [
+        13206,
+        24405
+      ],
+      "live_rows_per_side": [
+        0,
+        17
+      ],
+      "live_weight": 2.5
+    },
+    "NET_LAG_GBDT": {
+      "path": "research/shadow_five_full15m_20261018/artifacts/live_weighted_v1/NET_LAG_GBDT.pkl",
+      "sha256": "11d64b74e0f5bb3d7401a60243fb22cf8936acf2f05253c21b55f3e58ad16494",
+      "threshold": 0.0,
+      "training_rows_per_side": [
+        13206,
+        24402
+      ],
+      "live_rows_per_side": [
+        0,
+        17
+      ],
+      "live_weight": 2.5
+    },
+    "NET_TCN": {
+      "path": "research/shadow_five_full15m_20261018/artifacts/live_weighted_v1/NET_TCN.pkl",
+      "sha256": "24315d3537487915e8ca6308fd46cbcfab44768db93513d6a3e5af72c0f34426",
+      "threshold": 0.0,
+      "training_rows_per_side": [
+        13206,
+        24402
+      ],
+      "live_rows_per_side": [
+        0,
+        17
+      ],
+      "live_weight": 2.5
+    },
+    "FULL_COND_PAYOFF_F1.0": {
+      "path": "research/shadow_five_full15m_20261018/artifacts/live_weighted_v1/FULL_COND_PAYOFF_F1.0.pkl",
+      "sha256": "339cdf3a5e8f5a7c61d121cb2638a7e8004d21a652446b1ab1cbd919f439f2cb",
+      "threshold": 0.0,
+      "training_rows_per_side": [
+        13206,
+        24405
+      ],
+      "live_rows_per_side": [
+        0,
+        17
+      ],
+      "live_weight": 2.5
+    },
+    "FULL_HIST_PAYOFF_F1.0": {
+      "path": "research/shadow_five_full15m_20261018/artifacts/live_weighted_v1/FULL_HIST_PAYOFF_F1.0.pkl",
+      "sha256": "d3e88f41a5fb1045910b7411e9df9b1a0945b5c1596f8e0aac79b56cc81ef8c3",
+      "threshold": 0.0,
+      "training_rows_per_side": [
+        13206,
+        24405
+      ],
+      "live_rows_per_side": [
+        0,
+        17
+      ],
+      "live_weight": 2.5
+    }
+  },
+  "shadow_direction_order": [
+    "SOXS",
+    "SOXL"
+  ],
+  "production_class_order": [
+    "SHORT",
+    "NEUTRAL",
+    "LONG"
+  ],
+  "shadow_legacy_manifest_status": "TRAINED_NOT_CONNECTED",
+  "shadow_legacy_runtime_enabled": false,
+  "observed_feed_state": {
+    "status": "LISTENING",
+    "received": 0,
+    "decisions": 0,
+    "updated_at_source_timezone": "2026-10-17T21:45:17.308710-04:00"
+  },
+  "evaluation_week_ny": [
+    "2026-10-19",
+    "2026-10-23"
+  ],
+  "storage": {
+    "shadow": "JSONL_PER_RUN",
+    "production_trades": [
+      "data/live_experience.db",
+      "data/live_trades.csv"
+    ],
+    "learning_journal": "data/live_experience.db.learning.db",
+    "learning_fallback": "data/live_trades.csv.learning.jsonl"
+  },
+  "note": "Whitelisted metadata and hashes only; no account, API keys, raw trades or raw features. Re-read runtime state before use."
+}

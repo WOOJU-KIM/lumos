@@ -1,0 +1,59 @@
+{
+  "pid": 20844,
+  "status": "LISTENING",
+  "stats": {
+    "received": 135344,
+    "decisions": 0,
+    "quotes": 63407,
+    "ticks": 0,
+    "marks": 63407,
+    "polls": 21218,
+    "ignored_rest": 0,
+    "rejected_market": 0,
+    "max_arrival_age_ms": 47.22857475280762,
+    "api_calls": 0,
+    "receiver_losses": 0,
+    "ring_recoveries": 0,
+    "max_queue_depth": 72,
+    "max_build_ms": 0.0,
+    "max_engine_ms": 16.00000000325963,
+    "max_audit_write_ms": 16.00000000325963
+  },
+  "feed_health": {
+    "degraded": false,
+    "data_complete": true,
+    "gap_episodes": 0,
+    "skipped_frames": 0,
+    "skipped_decisions": 0,
+    "max_transport_ms": 47.22857475280762,
+    "max_queue_ms": 15.009164810180664,
+    "audit_max_write_ms": 16.00000000325963
+  },
+  "updated_at": "2026-11-19T17:48:22.604256-05:00",
+  "feed_received": true,
+  "real_orders_possible": false,
+  "live_runner_started": false,
+  "background_io_mode": false,
+  "runtime_control": {
+    "schema_version": 1,
+    "enabled": true,
+    "start_date_ny": "2026-10-19",
+    "end_date_ny": null,
+    "operation": "FOLLOW_LIVE_RUNNER",
+    "scope": "SHADOW_ONLY",
+    "real_orders_allowed": false
+  },
+  "price_monitoring": {
+    "SOXL": true,
+    "SOXS": true
+  },
+  "open_positions": {
+    "SOXX_ORB_VWAP_RVOL_M15": 0
+  },
+  "pending_exits": 0,
+  "owner": {
+    "pid": 10848,
+    "created_filetime": 134395641271412919,
+    "token": "d461744a1ea642d28287c8f7cfa69d69"
+  }
+}

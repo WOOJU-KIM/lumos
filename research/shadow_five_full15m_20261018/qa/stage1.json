@@ -1,0 +1,8 @@
+{
+  "stage": 1,
+  "status": "PASS",
+  "protected_files": 879,
+  "changed": [],
+  "no_live_import_hook": true,
+  "no_live_runner_started": true
+}

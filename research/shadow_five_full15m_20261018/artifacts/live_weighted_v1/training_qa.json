@@ -1,0 +1,112 @@
+{
+  "status": "PASS_NOT_YET_PROMOTED",
+  "live_weight": 2.5,
+  "live_rows": 17,
+  "side_counts": {
+    "SOXL": 17,
+    "SOXS": 0
+  },
+  "excluded": {
+    "OTHER_ASSET": 8,
+    "INCOMPLETE_FEATURES": 10
+  },
+  "replaced_historical_chosen_side_labels": 17,
+  "base_rows": 34429,
+  "fit_audit": {
+    "NET_GBDT": {
+      "live_rows_per_side": [
+        0,
+        17
+      ],
+      "weight": 2.5
+    },
+    "NET_LAG_GBDT": {
+      "live_rows_per_side": [
+        0,
+        17
+      ],
+      "weight": 2.5
+    },
+    "FULL_COND_PAYOFF_F1.0": {
+      "live_rows_per_side": [
+        0,
+        17
+      ],
+      "live_rows_per_head": [
+        17,
+        9,
+        8
+      ],
+      "weight": 2.5
+    },
+    "FULL_HIST_PAYOFF_F1.0": {
+      "live_rows_per_side": [
+        0,
+        17
+      ],
+      "live_rows_per_head": [
+        17,
+        9,
+        8
+      ],
+      "weight": 2.5
+    },
+    "NET_TCN": {
+      "live_rows_per_side": [
+        0,
+        17
+      ],
+      "weight": 2.5,
+      "weighted_loss": true,
+      "deterministic_repeat": true
+    }
+  },
+  "prediction_qa": {
+    "NET_GBDT": {
+      "real_input_probes": 120,
+      "deterministic_predictions": true,
+      "mean_absolute_ev_change": 0.00012789514407252308,
+      "performance_claim": false
+    },
+    "NET_LAG_GBDT": {
+      "real_input_probes": 120,
+      "deterministic_predictions": true,
+      "mean_absolute_ev_change": 0.0002317805260261836,
+      "performance_claim": false
+    },
+    "FULL_COND_PAYOFF_F1.0": {
+      "real_input_probes": 120,
+      "deterministic_predictions": true,
+      "mean_absolute_ev_change": 0.0001931752524946487,
+      "performance_claim": false
+    },
+    "FULL_HIST_PAYOFF_F1.0": {
+      "real_input_probes": 120,
+      "deterministic_predictions": true,
+      "mean_absolute_ev_change": 0.0001444418016004922,
+      "performance_claim": false
+    },
+    "NET_TCN": {
+      "real_input_probes": 120,
+      "deterministic_predictions": true,
+      "mean_absolute_ev_change": 0.0012703077862928089,
+      "performance_claim": false
+    }
+  },
+  "source_sha256": "759a42120b3fcd386d771a5b989df477070533a9361eed0669fb6f2f5df3652c",
+  "protected_files": 169,
+  "protected_changes": [],
+  "api_calls": 0,
+  "warnings": [
+    "Legacy snapshots rounded and not guaranteed exact inference tensors",
+    "Sequence context REPLAY, not observed live 32-row tensors",
+    "Gross quote-proxy outcomes minus estimated cost, not broker-reconciled net",
+    "All usable real outcomes SOXL; no invented SOXS outcomes",
+    "Calibrators, thresholds, TCN epochs frozen from prior purged OOF; require new OOS validation"
+  ],
+  "calibration_reuse_proof": {
+    "fold_count": 12,
+    "latest_training_cut": "2026-10-12 00:00:00",
+    "earliest_live_cycle": "2026-10-15 09:30:00"
+  }
+}

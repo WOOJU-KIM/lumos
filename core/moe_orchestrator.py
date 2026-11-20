@@ -282,6 +282,7 @@ class MoEMetaOrchestrator:
         prev_snap = None
         model_hot_reloaded = False
         consistency_res = {"ok": True, "reason": "CONSISTENT"}
+        learning_inference_completed = False
         try:
             if hasattr(self, "gbdt_engine"):
                 if hasattr(self.gbdt_engine, "get_model_snapshot"):
@@ -300,6 +301,7 @@ class MoEMetaOrchestrator:
                     gbdt_sig, gbdt_conf, _, gbdt_probs = self.gbdt_engine.predict_signal_full(live_long_15m, snapshot=gbdt_snap)
                 else:
                     gbdt_sig, gbdt_conf, _, gbdt_probs = self.gbdt_engine.predict_signal_full(live_long_15m)
+                learning_inference_completed = True
                 conf_gbdt = gbdt_conf
                 if gbdt_sig == 1:
                     dir_gbdt = "LONG"
@@ -420,8 +422,17 @@ class MoEMetaOrchestrator:
         try:
             for col in df_feat.columns:
                 val = last_row[col]
-                if isinstance(val, (int, float)) and not pd.isna(val):
+                if isinstance(val, (int, float, np.integer, np.floating)) and np.isfinite(val):
                     feat_dict[col] = round(float(val), 4)
+        except Exception:
+            pass
+
+        learning_snapshot = None
+        try:
+            captured = self.gbdt_engine._get_thread_local().last_learning_snapshot
+            if learning_inference_completed and isinstance(captured, dict) and gbdt_snap is not None and captured.get("model_sha256") == gbdt_snap.active_model_sha256:
+                learning_snapshot = captured
+                feat_dict = dict(captured["features"])
         except Exception:
             pass
 
@@ -451,6 +462,7 @@ class MoEMetaOrchestrator:
             "all_gating_confidences": all_confidences,
             "gbdt_probs": gbdt_probs,
             "features": feat_dict,
+            "learning_snapshot": learning_snapshot,
             "active_model_id": snap_id,
             "active_model_sha256": snap_sha,
             "active_model_version": (snap_sha or "")[:12] if snap_sha else "NONE",
@@ -528,7 +540,7 @@ def _write_json_atomic_temp(tmp_path: Path, payload: Dict[str, Any]) -> None:
 def train_and_save_moe_orchestrator(
     confidence_threshold: float = GBDT_CONFIDENCE_THRESHOLD,
     mode: str = "hybrid_v3",
-    schema: str = "B_normalized",
+    schema: Optional[str] = None,
     df_15m: Optional[pd.DataFrame] = None,
     models_dir_override: Optional[Path] = None,
     live_experience_df: Optional[pd.DataFrame] = None,
@@ -548,17 +560,22 @@ def train_and_save_moe_orchestrator(
 
     job_started_at_ns = int(_job_started_at_ns if _job_started_at_ns is not None else time.time_ns())
 
-    if schema in MLFeatureEngine.LIVE_FORBIDDEN_SCHEMAS or schema != "B_normalized":
-        raise ValueError(f"Live retraining strictly requires schema='B_normalized' (got '{schema}')")
-
     target_dir = Path(models_dir_override) if models_dir_override is not None else MODELS_DIR
     target_dir.mkdir(parents=True, exist_ok=True)
     versions_dir = target_dir / "versions"
     versions_dir.mkdir(parents=True, exist_ok=True)
 
     manifest_path = target_dir / "active_model_manifest.json"
+    # Default retraining preserves the explicitly selected live representation.
+    selected_manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {}
+    if schema is None:
+        schema = selected_manifest.get("expected_schema", "B_normalized")
+    if schema not in ("B_normalized", "v4_champion"):
+        raise ValueError(f"Unsupported live retraining schema: {schema}")
+    model_id = "B_Normalized_72" if schema == "B_normalized" else "Absolute_72"
+    model_stem = "model_normalized_72" if schema == "B_normalized" else "model_absolute_72"
     unique_tag = f"{os.getpid()}.{threading.get_ident()}.{job_started_at_ns}"
-    tmp_model_path = versions_dir / f".model_normalized_72.pkl.tmp.{unique_tag}"
+    tmp_model_path = versions_dir / f".{model_stem}.pkl.tmp.{unique_tag}"
     tmp_manifest_path = target_dir / f".active_model_manifest.json.tmp.{unique_tag}"
 
     def _safe_notify_retrain(status_code: str, **kwargs):
@@ -588,7 +605,7 @@ def train_and_save_moe_orchestrator(
         system_logger.log("ERROR", "ModelActivation", f"MODEL_ACTIVATION_FAILED | reason={err_msg}")
         _safe_notify_retrain(
             "MODEL_ACTIVATION_FAILED",
-            model_id="B_Normalized_72",
+            model_id=model_id,
             schema=schema,
             num_features=72,
             error_reason=err_msg,
@@ -606,19 +623,19 @@ def train_and_save_moe_orchestrator(
         system_logger.log("ERROR", "ModelActivation", f"MODEL_ACTIVATION_FAILED | reason={err_msg}")
         _safe_notify_retrain(
             "MODEL_ACTIVATION_FAILED",
-            model_id="B_Normalized_72",
+            model_id=model_id,
             schema=schema,
             num_features=72,
             error_reason=err_msg,
         )
         raise RuntimeError(err_msg)
 
-    canonical_features = list(MLFeatureEngine.CANONICAL_B_NORMALIZED_72_FEATURES)
+    canonical_features = list(MLFeatureEngine.CANONICAL_B_NORMALIZED_72_FEATURES if schema == "B_normalized" else MLFeatureEngine.LEGACY_PKL_CHAMPION_72_FEATURES)
     canonical_features_sha256 = MLFeatureEngine.compute_feature_names_sha256(canonical_features)
 
     try:
         # 1. 임시 파일로 신규 모델 저장 + 디스크 flush/fsync
-        orchestrator.gbdt_engine.active_model_id = "B_Normalized_72"
+        orchestrator.gbdt_engine.active_model_id = model_id
         with open(tmp_model_path, "wb") as f_out:
             joblib.dump(orchestrator, f_out)
             f_out.flush()
@@ -633,7 +650,7 @@ def train_and_save_moe_orchestrator(
         )
         _safe_notify_retrain(
             "RETRAIN_COMPLETED",
-            model_id="B_Normalized_72",
+            model_id=model_id,
             schema=schema,
             num_features=72,
             new_sha256=cand_sha256,
@@ -643,7 +660,7 @@ def train_and_save_moe_orchestrator(
         # 2~5. SHA256, 스키마·피처 수·순서, 클래스 매핑([0,1,2]), 추론 self-test 검증
         ver = MLFeatureEngine.verify_model_artifact(
             tmp_model_path,
-            expected_schema="B_normalized",
+            expected_schema=schema,
             expected_num_features=72,
             expected_feature_names=canonical_features,
             expected_feature_names_sha256=canonical_features_sha256,
@@ -660,11 +677,11 @@ def train_and_save_moe_orchestrator(
         actual_sha256 = ver["actual_sha256"]
         sha_prefix = actual_sha256[:12]
         ts_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-        versioned_filename = f"model_normalized_72_{ts_str}_{sha_prefix}.pkl"
+        versioned_filename = f"{model_stem}_{ts_str}_{sha_prefix}.pkl"
         versioned_model_path = versions_dir / versioned_filename
         if versioned_model_path.exists():
             # 기존 불변 버전 파일 절대 덮어쓰기 금지: 동일 초 내 생성 시 고유 타임스탬프 접미사 부여
-            versioned_filename = f"model_normalized_72_{ts_str}_{job_started_at_ns % 1000000:06d}_{sha_prefix}.pkl"
+            versioned_filename = f"{model_stem}_{ts_str}_{job_started_at_ns % 1000000:06d}_{sha_prefix}.pkl"
             versioned_model_path = versions_dir / versioned_filename
 
         # 7. 불변 버전 파일로 확정 (기존 활성 모델 PKL 덮어쓰기 없음)
@@ -674,7 +691,7 @@ def train_and_save_moe_orchestrator(
         ver_final = MLFeatureEngine.verify_model_artifact(
             versioned_model_path,
             expected_sha256=actual_sha256,
-            expected_schema="B_normalized",
+            expected_schema=schema,
             expected_num_features=72,
             expected_feature_names=canonical_features,
             expected_feature_names_sha256=canonical_features_sha256,
@@ -686,12 +703,12 @@ def train_and_save_moe_orchestrator(
         system_logger.log(
             "INFO",
             "ModelValidation",
-            f"MODEL_VALIDATION_PASSED | model_id=B_Normalized_72 | schema=B_normalized | num_features=72 | sha256={actual_sha256} | path={versioned_model_path}"
+            f"MODEL_VALIDATION_PASSED | model_id={model_id} | schema={schema} | num_features=72 | sha256={actual_sha256} | path={versioned_model_path}"
         )
         _safe_notify_retrain(
             "MODEL_VALIDATION_PASSED",
-            model_id="B_Normalized_72",
-            schema="B_normalized",
+            model_id=model_id,
+            schema=schema,
             num_features=72,
             new_sha256=actual_sha256,
             training_window_meta=window_meta,
@@ -704,6 +721,8 @@ def train_and_save_moe_orchestrator(
             if manifest_path.exists():
                 try:
                     existing_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    if existing_manifest.get("expected_schema", schema) != selected_manifest.get("expected_schema", schema):
+                        raise RuntimeError("STALE_RETRAIN_IGNORED: Live feature schema changed during training")
                     existing_job_ns = int(existing_manifest.get("job_started_at_ns", 0) or 0)
                     if existing_job_ns > job_started_at_ns:
                         active_sha = str(existing_manifest.get("expected_sha256") or "")
@@ -714,8 +733,8 @@ def train_and_save_moe_orchestrator(
                         )
                         _safe_notify_retrain(
                             "STALE_RETRAIN_IGNORED",
-                            model_id="B_Normalized_72",
-                            schema="B_normalized",
+                            model_id=model_id,
+                            schema=schema,
                             num_features=72,
                             new_sha256=actual_sha256,
                             prev_sha256=active_sha,
@@ -752,11 +771,11 @@ def train_and_save_moe_orchestrator(
 
             activated_at_iso = datetime.now().astimezone().isoformat()
             manifest_data = {
-                "active_model_id": "B_Normalized_72",
+                "active_model_id": model_id,
                 "model_path": rel_active_path,
                 "active_model_path": rel_active_path,
                 "expected_sha256": actual_sha256,
-                "expected_schema": "B_normalized",
+                "expected_schema": schema,
                 "num_features": 72,
                 "expected_num_features": 72,
                 "feature_names": canonical_features,
@@ -780,7 +799,8 @@ def train_and_save_moe_orchestrator(
                     "span_days": window_meta.get("span_days"),
                     "excluded_older_than_10y_rows": window_meta.get("excluded_older_than_10y_rows"),
                     "excluded_warmup_nan_rows": window_meta.get("excluded_warmup_nan_rows"),
-                    "excluded_unconfirmed_tail_rows": window_meta.get("excluded_unconfirmed_tail_rows")
+                    "excluded_unconfirmed_tail_rows": window_meta.get("excluded_unconfirmed_tail_rows"),
+                    "feature_gain_weights": window_meta.get("feature_gain_weights", {})
                 },
                 "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             }
@@ -788,9 +808,9 @@ def train_and_save_moe_orchestrator(
             _write_json_atomic_temp(tmp_manifest_path, manifest_data)
             parsed_manifest = json.loads(tmp_manifest_path.read_text(encoding="utf-8"))
             if (
-                parsed_manifest.get("active_model_id") != "B_Normalized_72"
+                parsed_manifest.get("active_model_id") != model_id
                 or parsed_manifest.get("model_path") != rel_active_path
-                or parsed_manifest.get("expected_schema") != "B_normalized"
+                or parsed_manifest.get("expected_schema") != schema
                 or int(parsed_manifest.get("num_features", 0)) != 72
                 or parsed_manifest.get("expected_sha256") != actual_sha256
                 or parsed_manifest.get("feature_names_sha256") != canonical_features_sha256
@@ -800,7 +820,7 @@ def train_and_save_moe_orchestrator(
             # 단일 원자적 교체: 오직 manifest_path 1개만 os.replace 수행
             os.replace(tmp_manifest_path, manifest_path)
 
-        orchestrator.gbdt_engine.active_model_id = "B_Normalized_72"
+        orchestrator.gbdt_engine.active_model_id = model_id
         orchestrator.gbdt_engine.active_model_path = str(versioned_model_path)
         orchestrator.gbdt_engine.active_model_sha256 = actual_sha256
         orchestrator.gbdt_engine.active_model_activated_at = activated_at_iso
@@ -813,18 +833,18 @@ def train_and_save_moe_orchestrator(
         system_logger.log(
             "INFO",
             "ModelActivation",
-            f"MODEL_ACTIVATION_SUCCEEDED | model_id=B_Normalized_72 | path={versioned_model_path} | sha256={actual_sha256} | previous_path={prev_model_path}"
+            f"MODEL_ACTIVATION_SUCCEEDED | model_id={model_id} | path={versioned_model_path} | sha256={actual_sha256} | previous_path={prev_model_path}"
         )
         _safe_notify_retrain(
             "MODEL_ACTIVATION_SUCCEEDED",
-            model_id="B_Normalized_72",
-            schema="B_normalized",
+            model_id=model_id,
+            schema=schema,
             num_features=72,
             new_sha256=actual_sha256,
             prev_sha256=prev_model_sha256,
             training_window_meta=window_meta,
         )
-        logger.info(f"✅ [B_Normalized_72 불변 버전 저장 및 단일 매니페스트 원자적 활성화 완료] ➔ {versioned_model_path} (SHA256={actual_sha256[:16]}...)")
+        logger.info(f"✅ [{model_id} 불변 버전 저장 및 단일 매니페스트 원자적 활성화 완료] ➔ {versioned_model_path} (SHA256={actual_sha256[:16]}...)")
     except Exception as act_err:
         if "STALE_RETRAIN_IGNORED" not in str(act_err):
             existing_sha = ""
@@ -840,8 +860,8 @@ def train_and_save_moe_orchestrator(
             )
             _safe_notify_retrain(
                 "MODEL_ACTIVATION_FAILED",
-                model_id="B_Normalized_72",
-                schema="B_normalized",
+                model_id=model_id,
+                schema=schema,
                 num_features=72,
                 prev_sha256=existing_sha,
                 error_reason=str(act_err),

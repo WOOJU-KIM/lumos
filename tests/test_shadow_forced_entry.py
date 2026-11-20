@@ -1,6 +1,7 @@
 import sys
 import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 import datetime
@@ -12,12 +13,9 @@ from core.shadow_tracker import ShadowTracker, MAX_SHADOW_SLOTS, SLOT_KEYS
 class TestShadowForcedEntry(unittest.TestCase):
     def setUp(self):
         # 테스트용 임시 DB 경로 지정 (실운영 DB 접근 차단)
-        self.test_db_path = config.DATA_DIR / "test_shadow_temp.db"
-        if self.test_db_path.exists():
-            try:
-                self.test_db_path.unlink()
-            except Exception:
-                pass
+        self._tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(self._tmp.cleanup)
+        self.test_db_path = Path(self._tmp.name) / "shadow.db"
         self.tracker = ShadowTracker(db_path=self.test_db_path)
 
     def tearDown(self):
@@ -74,10 +72,24 @@ class TestShadowForcedEntry(unittest.TestCase):
         self.assertEqual(slot0["entry_price"], 30.0)
         self.assertEqual(slot0["qty"], 1)
         self.assertEqual(slot0["highest_price"], 30.0)
-        # 손절가: max(0.02, min(0.032, 0.015 * 1.5)) = 0.0225 -> 30.0 * (1 - 0.0225) = 29.325
-        self.assertAlmostEqual(slot0["stop_price"], 30.0 * (1.0 - 0.0225), places=2)
+        # ATR 크기와 무관하게 초기 손절은 2% 고정
+        self.assertAlmostEqual(slot0["stop_price"], 30.0 * (1.0 - config.SL_MIN_PCT), places=2)
         # 키 개수 불변 확인
         self.assertEqual(set(slot0.keys()), set(SLOT_KEYS))
+
+    def test_high_atr_fixed_stop_boundary_both_symbols(self):
+        ny_tz = ZoneInfo("America/New_York")
+        for index, symbol in enumerate(("SOXL", "SOXS")):
+            at = datetime.datetime(2026, 10, 14, 10, 15 * index, tzinfo=ny_tz)
+            self.assertTrue(self.tracker.try_enter_shadow_trade(symbol,100.,current_time=at,atr_pct=.10))
+            slot = next(s for s in self.tracker.slots if s['active'] and s['symbol']==symbol)
+            self.assertEqual(slot['stop_price'],98.)
+            self.tracker.check_ticks(symbol,98.01,current_time=at)
+            self.assertTrue(slot['active'])
+            with patch.object(self.tracker,'_close_slot') as close:
+                self.tracker.check_ticks(symbol,97.99,current_time=at)
+                close.assert_called_once()
+                self.assertEqual(close.call_args.args[3],'STOP_LOSS')
 
     def test_duplicate_candle_entry_blocked(self):
         """동일한 15분봉에 대한 중복 진입 시도 시 차단 검증"""

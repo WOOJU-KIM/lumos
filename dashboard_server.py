@@ -492,60 +492,19 @@ class CockpitHTTPHandler(BaseHTTPRequestHandler):
 
                 trades_df['entry_time'] = pd.to_datetime(trades_df['entry_time'])
                 trades_df['entry_time_ny'] = trades_df['entry_time'].dt.tz_localize('Asia/Seoul').dt.tz_convert('America/New_York').dt.tz_localize(None)
+                trades_df['month_key'] = trades_df['entry_time_ny'].apply(lambda dt: f"{dt.year}-{dt.month:02d}")
+                trades_df['week_key'] = trades_df['entry_time_ny'].apply(lambda dt: f"{dt.isocalendar().year}-W{dt.isocalendar().week:02d}")
+                trades_df['day_key'] = trades_df['entry_time_ny'].dt.strftime('%Y-%m-%d')
                 
-                def get_stats_and_trades(tdf, start_dt, end_dt, period_type="daily"):
-                    if tdf.empty: return "거래 없음", []
-                    mask = (tdf['entry_time_ny'] >= pd.to_datetime(start_dt)) & (tdf['entry_time_ny'] < pd.to_datetime(end_dt) + pd.Timedelta(days=1))
-                    sub = tdf[mask]
-                    if sub.empty: return "거래 없음", []
+                def build_grouped_summary(tdf, labels, usd_list, pct_list, period_type="daily"):
+                    if not labels:
+                        return "거래 없음", []
+                    key_col = "month_key" if period_type == "monthly" else ("week_key" if period_type == "weekly" else "day_key")
                     
-                    sub = sub.sort_values(by='entry_time_ny', ascending=False)
-                    stats = {}
-                    trades_list = []
-                    
-                    for _, row in sub.iterrows():
-                        sym = row['symbol']
-                        entry_dt = row['entry_time_ny']
-                        
-                        if period_type == "monthly":
-                            date_str = f"{entry_dt.year}-{entry_dt.month:02d}"
-                        elif period_type == "weekly":
-                            iso = entry_dt.isocalendar()
-                            date_str = f"{iso.year}-W{iso.week:02d}"
-                        else:
-                            date_str = entry_dt.strftime('%Y-%m-%d')
-                            
-                        buy_amt = row['actual_entry_price']
-                        sell_amt = row['actual_exit_price']
-                        pct = row['pnl_pct']
-                        pnl = row['pnl_usd']
-                        res = "승" if pnl > 0 else "패"
-                        qty = row['quantity']
-                        
-                        trades_list.append({
-                            "date": date_str,
-                            "symbol": sym,
-                            "qty": qty,
-                            "result": res,
-                            "buy": buy_amt,
-                            "sell": sell_amt,
-                            "pct": pct
-                        })
-                        
-                    if trades_list:
-                        latest_date = trades_list[0]['date']
-                        
-                        # 최신 기간(월/주/일)에 해당하는 row만 필터링하여 승률 계산
-                        latest_sub = sub.copy()
-                        if period_type == "monthly":
-                            latest_sub['date_str'] = latest_sub['entry_time_ny'].apply(lambda dt: f"{dt.year}-{dt.month:02d}")
-                        elif period_type == "weekly":
-                            latest_sub['date_str'] = latest_sub['entry_time_ny'].apply(lambda dt: f"{dt.isocalendar().year}-W{dt.isocalendar().week:02d}")
-                        else:
-                            latest_sub['date_str'] = latest_sub['entry_time_ny'].dt.strftime('%Y-%m-%d')
-                            
-                        latest_sub = latest_sub[latest_sub['date_str'] == latest_date]
-                        
+                    latest_label = labels[-1]
+                    latest_sub = tdf[tdf[key_col] == latest_label] if not tdf.empty else pd.DataFrame()
+                    if not latest_sub.empty:
+                        stats = {}
                         for sym in latest_sub['symbol'].unique():
                             sym_sub = latest_sub[latest_sub['symbol'] == sym]
                             tot = len(sym_sub)
@@ -553,16 +512,49 @@ class CockpitHTTPHandler(BaseHTTPRequestHandler):
                             l = tot - w
                             rate = (w / tot * 100) if tot > 0 else 0
                             stats[sym] = f"{tot}전 {w}승 {l}패 ({rate:.1f}%)"
-                            
-                        stats_str = f"[{latest_date}]\n" + "\n".join([f"{k}: {v}" for k, v in stats.items()])
+                        stats_str = f"[{latest_label}]\n" + "\n".join([f"{k}: {v}" for k, v in stats.items()])
                     else:
-                        stats_str = "거래 없음"
+                        stats_str = f"[{latest_label}]\n거래 없음"
                         
-                    return stats_str, trades_list
+                    grouped_rows = []
+                    combined = list(zip(labels, usd_list, pct_list))
+                    combined.reverse()
+                    
+                    for lbl, bal, pct_val in combined:
+                        sub = tdf[tdf[key_col] == lbl] if not tdf.empty else pd.DataFrame()
+                        tot = len(sub)
+                        if tot > 0:
+                            w_cnt = len(sub[sub['pnl_usd'] > 0])
+                            l_cnt = tot - w_cnt
+                            wr = round(w_cnt / tot * 100, 1)
+                            pnl_sum = round(float(sub['pnl_usd'].sum()), 2)
+                            syms = ", ".join(list(sub['symbol'].unique()))
+                            qty_sum = int(sub['quantity'].sum()) if 'quantity' in sub else 0
+                        else:
+                            w_cnt = 0
+                            l_cnt = 0
+                            wr = 0.0
+                            pnl_sum = 0.0
+                            syms = "-"
+                            qty_sum = 0
+                            
+                        grouped_rows.append({
+                            "date": lbl,
+                            "symbol": syms,
+                            "total": tot,
+                            "wins": w_cnt,
+                            "losses": l_cnt,
+                            "win_rate": wr,
+                            "pnl": pnl_sum,
+                            "qty": qty_sum,
+                            "balance": bal if bal is not None else 0.0,
+                            "pct": pct_val if pct_val is not None else 0.0
+                        })
+                    return stats_str, grouped_rows
 
-                d_stats, d_trades = get_stats_and_trades(trades_df, today - timedelta(days=13), today, "daily")
-                w_stats, w_trades = get_stats_and_trades(trades_df, today - timedelta(days=34), today, "weekly")
-                m_stats, m_trades = get_stats_and_trades(trades_df, today - timedelta(days=89), today, "monthly")
+                m_stats, m_trades = build_grouped_summary(trades_df, monthly_labels, monthly_usd, monthly_pct, "monthly")
+                w_stats, w_trades = build_grouped_summary(trades_df, weekly_labels, weekly_usd, weekly_pct, "weekly")
+                d_stats, d_trades = build_grouped_summary(trades_df, daily_labels, daily_usd, daily_pct, "daily")
 
                 self._send_json({
                     "monthly": {"labels": monthly_labels, "usd": monthly_usd, "pct": monthly_pct, "stats": m_stats, "trades": m_trades},

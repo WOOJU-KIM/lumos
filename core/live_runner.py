@@ -38,6 +38,7 @@ from core.state_hub import StateHub
 from core.data_lake import MarketDataLake
 from core.shadow_sandbox import ShadowSandboxEngine
 from core.shadow_tracker import ShadowTracker
+from research.shadow_five_full15m_20261018.comparison_control import legacy_tracker_enabled
 from core.circuit_breaker import CircuitBreakerEngine
 from core.system_logger import system_logger
 from core.moe_orchestrator import MoEMetaOrchestrator
@@ -96,7 +97,7 @@ class KiwoomLiveRunner:
         self.state_hub = StateHub()
         self.data_lake = MarketDataLake()
         self.shadow_sandbox = ShadowSandboxEngine()
-        self.shadow_tracker = ShadowTracker()
+        self.shadow_tracker = ShadowTracker(enabled=legacy_tracker_enabled())
 
         self.circuit_breaker = CircuitBreakerEngine()
         self.moe_orchestrator = MoEMetaOrchestrator(confidence_threshold=config.GBDT_CONFIDENCE_THRESHOLD, gbdt_threshold=config.GBDT_CONFIDENCE_THRESHOLD)
@@ -119,6 +120,13 @@ class KiwoomLiveRunner:
         self.ws_streamer.register_callback(self._on_websocket_tick)
         self.ws_streamer.register_execution_callback(self._on_websocket_execution)
 
+        # Bind only this real runner's observer inputs; simulation/research stays isolated.
+        try:
+            from research.shadow_five_full15m_20261018.feed_bridge import bind as _shadow_bind
+            _shadow_bind(self.moe_orchestrator.gbdt_engine, self.ws_streamer, self.broker.is_simulation)
+        except Exception:
+            pass
+
         self.is_running = False
         self._last_market_session = None
         self._active_position: Optional[Dict[str, Any]] = None  # ? ??????
@@ -140,7 +148,9 @@ class KiwoomLiveRunner:
         self._last_moe_res: Optional[Dict[str, Any]] = None
         self._empty_balance_streak: int = 0
         self._unreconciled_holding_mismatch: Optional[Dict[str, Any]] = None
-        self._unconfirmed_buy_order: Optional[Dict[str, Any]] = None
+        # Do not erase unresolved orders on construction; recover lazily from disk.
+        self._pending_buy_cache = None
+        self._pending_buy_write_failed = False
 
     def get_active_model_info(self, is_daemon_running: Optional[bool] = None) -> Dict[str, Any]:
         """단일 모델 메타데이터 공급원(MLFeatureEngine.get_active_model_info) 위임 조회"""
@@ -473,8 +483,9 @@ class KiwoomLiveRunner:
                 active_pos["price"] = h_px
                 active_pos["buy_price"] = h_px
                 tp_pct = float(active_pos.get("tp_pct", config.MAX_TP_PCT * 100.0))
-                sl_pct = float(active_pos.get("sl_pct", config.SL_MIN_PCT * 100.0))
+                sl_pct = config.SL_MIN_PCT * 100.0
                 active_pos["tp_px"] = round(h_px * (1.0 + tp_pct / 100.0), 2)
+                active_pos["sl_pct"] = sl_pct
                 active_pos["sl_px"] = round(h_px * (1.0 - sl_pct / 100.0), 2)
                 self._save_active_position(active_pos)
             return
@@ -568,7 +579,7 @@ class KiwoomLiveRunner:
             return
 
         atr_pct = self._get_5m_atr_pct(h_sym, h_px)
-        sl_pct = max(config.SL_MIN_PCT * 100.0, min(config.SL_MAX_PCT * 100.0, atr_pct * config.SL_ATR_MULTIPLIER))
+        sl_pct = config.SL_MIN_PCT * 100.0
         tp_pct = config.MAX_TP_PCT * 100.0
         tp_px_calc = round(h_px * (1.0 + tp_pct / 100.0), 2)
         sl_px_calc = round(h_px * (1.0 - sl_pct / 100.0), 2)
@@ -600,7 +611,23 @@ class KiwoomLiveRunner:
         self._save_active_position(recovered_pos)
         logger.info(f"✅ [원장-체결 대조 포지션 복구 완료] {h_sym} {h_qty}주 @ ${h_px:.2f} (매수시각: {verified_buy_time})")
 
+    def _scan_closed_order_rows(self, rows, order_no, symbol, side, quantity, cancel_order_no):
+        """Return terminal row facts, or None when quantities cannot authorize a retry."""
+        from core.order_ledger import scan_order_rows
+
+        facts = scan_order_rows(
+            rows, order_no, symbol, side, quantity,
+            self._get_current_ny_date().replace("-", ""), cancel_order_no,
+        )
+        if facts["error"] or facts["remaining"]:
+            return None
+        return facts["found"], facts["filled"], facts["parent_cancel"], facts["child_cancel"]
+
     def _verify_pre_buy_ledger_clean(self, symbol: str) -> bool:
+        pending_buy = self._load_pending_buy_order()
+        if getattr(self, "_pending_buy_write_failed", False) or (pending_buy and pending_buy.get("recovery_error")):
+            logger.error("New BUY blocked: unresolved or unavailable pending-order journal")
+            return False
         if self._get_active_position() is not None:
             logger.warning("⚠️ [매수 중단] 이미 활성 포지션(active_position)이 존재합니다.")
             return False
@@ -649,7 +676,23 @@ class KiwoomLiveRunner:
                     logger.warning(f"⚠️ [매수 중단] 실계좌 미체결 주문({o_sym} {rem_q}주)이 존재하여 신규 매수를 차단합니다.")
                     return False
 
-        if getattr(self, "_unconfirmed_buy_order", None) is not None:
+        if self._load_pending_buy_order() is not None:
+            pending = self._load_pending_buy_order()
+            pending_day = str(pending.get("trade_date") or "").replace("-", "")
+            current_day = self._get_current_ny_date().replace("-", "")
+            if pending_day and pending_day != current_day:
+                if not pending.get("order_no") or not self._can_query_broker_method("resolve_order_ledger_status"):
+                    return False
+                prior = self.broker.resolve_order_ledger_status(
+                    pending["order_no"], pending.get("symbol", ""), "BUY",
+                    expected_qty=pending.get("target_qty"), trade_date=pending_day)
+                if prior["status"] == "CANCELED_ZERO_FILL":
+                    self._clear_pending_buy_order()
+                    return True
+                # Old fills need explicit position/closing-trade reconciliation;
+                # an empty current-day execution feed is not proof of closure.
+                logger.warning("Prior-day pending BUY remains unresolved; new entry blocked")
+                return False
             if not (self._can_query_broker_method("get_open_orders") and self._can_query_broker_method("get_daily_execution_history")):
                 logger.error("❌ [매수 중단] 이전 매수 주문의 접수 여부를 원장으로 확인할 수 없어 신규 매수를 차단합니다.")
                 return False
@@ -657,9 +700,9 @@ class KiwoomLiveRunner:
             if not isinstance(hist_res, dict) or hist_res.get("ok") is not True or not isinstance(hist_res.get("executions"), list):
                 logger.error("❌ [매수 중단] 이전 미확정 매수 주문 대조를 위한 체결원장 조회 실패로 신규 매수를 차단합니다.")
                 return False
-            unconf_sym = str(self._unconfirmed_buy_order.get("symbol") or "").strip().upper()
-            unconf_ord_no = str(self._unconfirmed_buy_order.get("order_no") or "").strip()
-            unconf_target_qty = self._parse_int_strict(self._unconfirmed_buy_order.get("target_qty"))
+            unconf_sym = str(self._load_pending_buy_order().get("symbol") or "").strip().upper()
+            unconf_ord_no = str(self._load_pending_buy_order().get("order_no") or "").strip()
+            unconf_target_qty = self._parse_int_strict(self._load_pending_buy_order().get("target_qty"))
 
             buy_filled_by_sym: Dict[str, int] = {}
             sell_filled_by_sym: Dict[str, int] = {}
@@ -808,13 +851,65 @@ class KiwoomLiveRunner:
                     logger.error(f"❌ [매수 중단] 주문내역(ust21180)에서 미확정 매수 주문(#{unconf_ord_no})의 종결 상태가 확인되지 않아 중복 매수를 차단합니다.")
                     return False
 
-            self._unconfirmed_buy_order = None
+            self._clear_pending_buy_order()
 
         return True
+
+    def _load_pending_buy_order(self):
+        """Read recovery evidence from disk, retaining the in-memory fallback."""
+        from core.pending_order import binding_for, journal_path, read_pending
+        recovered = read_pending(journal_path(self._resolve_pos_file()), binding_for(self.broker))
+        if recovered is not None:
+            return recovered
+        return getattr(self, "_pending_buy_cache", None)
+
+    def _store_pending_buy_order(self, value):
+        """Persist pending BUY evidence before allowing the caller to proceed."""
+        from core.pending_order import binding_for, journal_path, write_pending
+        if value is not None:
+            value = dict(value)
+            value.setdefault("trade_date", self._get_current_ny_date().replace("-", ""))
+        # Keep the memory evidence even when persistence fails. Raising prevents
+        # an order send after an unjournaled PREPARE or an unsafe state release.
+        if value is not None:
+            self._pending_buy_cache = value
+        try:
+            write_pending(journal_path(self._resolve_pos_file()), binding_for(self.broker), value)
+        except Exception:
+            self._pending_buy_write_failed = True
+            logger.error("Pending BUY journal persistence failed; new entries blocked", exc_info=True)
+            raise
+        self._pending_buy_cache = value
+        self._pending_buy_write_failed = False
+
+    def _clear_pending_buy_order(self):
+        """Remove recovery evidence only after the caller verifies completion."""
+        self._store_pending_buy_order(None)
+
+    @property
+    def _unconfirmed_buy_order(self):
+        """Compatibility access for existing callers; internal code uses explicit I/O."""
+        return self._load_pending_buy_order()
+
+    @_unconfirmed_buy_order.setter
+    def _unconfirmed_buy_order(self, value):
+        self._store_pending_buy_order(value)
 
     def _resolve_pos_file(self) -> Path:
         custom = getattr(self, "pos_file_path", None)
         return Path(custom) if custom else (DATA_DIR / "active_position.json")
+
+    def _release_filled_buy_journal(self, position):
+        """Release only after full-fill verification AND durable position storage."""
+        try:
+            stored = json.loads(self._resolve_pos_file().read_text(encoding="utf-8"))
+            if any(stored.get(key) != position.get(key) for key in ("symbol", "quantity", "order_no", "buy_time")):
+                return False
+            self._clear_pending_buy_order()
+            return True
+        except (OSError, ValueError, TypeError):
+            logger.error("Filled BUY position persistence unverified; pending journal retained")
+            return False
 
     def _save_active_position(self, pos_data: Dict[str, Any]):
         """???? ? ???? ???? ? ???"""
@@ -856,12 +951,22 @@ class KiwoomLiveRunner:
         ny_tz = ZoneInfo("America/New_York")
         return datetime.now().astimezone().astimezone(ny_tz).strftime("%Y-%m-%d")
 
+    @staticmethod
+    def _learning_order_reference(order_no):
+        import hashlib
+        return hashlib.sha256(str(order_no).encode()).hexdigest() if order_no else None
+
     def _on_websocket_execution(self, exec_data: Dict[str, Any]):
         """
         """
         logger.info(self._redact_log(f"? [WebSocket ?? ? ?]: {self._redact_log(exec_data)}"))
         if not exec_data:
             return
+
+        try:
+            self.experience_logger.record_learning_execution(exec_data)
+        except Exception:
+            logger.error("Execution learning evidence enqueue failed")
 
         #  values  ?   ?
         vals = exec_data.get("values", {}) if isinstance(exec_data.get("values"), dict) else {}
@@ -923,14 +1028,16 @@ class KiwoomLiveRunner:
         while time.time() - start_t < timeout_sec:
             ws_filled = self._order_fills.get(order_no, 0)
             if ws_filled >= target_qty:
-                return True, ws_filled, 0
+                # WS quantities can be duplicated and balance propagation can lag.
+                # Treat them as a prompt for a fresh ledger check, not completion.
+                break
             time.sleep(config.WS_FILL_POLL_INTERVAL)
 
         # 타임아웃 발생시 실제 계좌 잔고를 조회하여 체결 여부 이중 확인
         stk_bal = self.broker.get_overseas_stock_balance(force_refresh=True)
         self._last_wait_fill_stk_bal = stk_bal if isinstance(stk_bal, dict) and stk_bal.get("ok") is True else None
         actual_qty = 0
-        if stk_bal.get("ok"):
+        if isinstance(stk_bal, dict) and stk_bal.get("ok") is True and isinstance(stk_bal.get("holdings"), list):
             for h in stk_bal.get("holdings", []):
                 if str(h.get("symbol") or h.get("stk_cd") or "").strip().upper() == symbol:
                     actual_qty = int(float(str(h.get("quantity") or h.get("poss_qty") or 0).replace(",", "")))
@@ -945,7 +1052,7 @@ class KiwoomLiveRunner:
             logger.error(f"❌ [잔고 조회 실패] {symbol} 체결 확인 중 잔고 조회 실패.")
             ws_filled = self._order_fills.get(order_no, 0)
             unfilled = max(0, target_qty - ws_filled)
-            return (ws_filled >= target_qty), ws_filled, unfilled
+            return False, ws_filled, unfilled
 
     def _on_websocket_tick(self, symbol: str, price: float, extra: Dict[str, Any]):
         """
@@ -987,7 +1094,7 @@ class KiwoomLiveRunner:
             pnl_pct = (price - buy_px) / buy_px
 
             tp_threshold = float(active_pos.get("tp_pct", config.MAX_TP_PCT * 100)) / 100.0 if active_pos.get("tp_pct") else config.MAX_TP_PCT
-            sl_threshold = float(active_pos.get("sl_pct", config.SL_MIN_PCT * 100)) / 100.0 if active_pos.get("sl_pct") else config.SL_MIN_PCT
+            sl_threshold = config.SL_MIN_PCT
             time_stop_minutes = float(active_pos.get("time_stop_minutes", 90))
 
             # 1.  ?
@@ -1047,7 +1154,7 @@ class KiwoomLiveRunner:
 
         active_pos = self._get_active_position()
         tp_max_pct = float(active_pos.get("tp_pct", config.MAX_TP_PCT * 100)) / 100.0 if active_pos else config.MAX_TP_PCT
-        sl_initial_pct = float(active_pos.get("sl_pct", config.SL_MIN_PCT * 100)) / 100.0 if active_pos else config.SL_MIN_PCT
+        sl_initial_pct = config.SL_MIN_PCT
 
         for h in holdings:
             sym = str(h.get("symbol") or h.get("stk_cd") or "").strip().upper()
@@ -1300,6 +1407,7 @@ class KiwoomLiveRunner:
 
         if bal_ok and v_qty is not None and v_qty > 0 and v_px is not None and v_px > 0:
             tp_px_dyn = round(v_px * (1.0 + tp_pct / 100.0), 2)
+            sl_pct = config.SL_MIN_PCT * 100.0
             sl_px_dyn = round(v_px * (1.0 - sl_pct / 100.0), 2)
             filled_pos = {
                 "symbol": symbol,
@@ -1321,6 +1429,8 @@ class KiwoomLiveRunner:
                 "gbdt_confidence": float(moe_res.get("gating_confidence", 0.60)),
                 "cross_dir": moe_res.get("cross_dir", "HOLD"),
                 "features": moe_res.get("features", {}),
+                "learning_snapshot_id": (moe_res.get("learning_snapshot") or {}).get("event_id"),
+                "learning_feature_names": (moe_res.get("learning_snapshot") or {}).get("feature_names", []),
                 "active_model_id": moe_res.get("active_model_id"),
                 "active_model_sha256": moe_res.get("active_model_sha256"),
                 "active_model_version": moe_res.get("active_model_version"),
@@ -1404,9 +1514,9 @@ class KiwoomLiveRunner:
         stk_bal_wait_1 = None
         stk_bal_1 = None
         tp_pct = targets.get("tp_pct", 3.0) if isinstance(targets, dict) else 3.0
-        sl_pct = targets.get("sl_pct", 2.0) if isinstance(targets, dict) else 2.0
+        sl_pct = config.SL_MIN_PCT * 100.0
         tp_px = targets.get("dynamic_tp_px", 0.0) if isinstance(targets, dict) else 0.0
-        sl_px = targets.get("dynamic_sl_px", 0.0) if isinstance(targets, dict) else 0.0
+        sl_px = round(ref_price * (1.0 - config.SL_MIN_PCT), 2)
         time_stop_min = targets.get("time_stop_minutes", 90) if isinstance(targets, dict) else 90
         strategy_tag = targets.get("strategy_tag", "Lumos V3") if isinstance(targets, dict) else "Lumos V3"
 
@@ -1421,9 +1531,9 @@ class KiwoomLiveRunner:
             exp_name = moe_res.get("expert_desc", "MoE Gating")
             top_conf = float(moe_res.get("gating_confidence", 0.0)) * 100.0
             tp_px = targets["dynamic_tp_px"]
-            sl_px = targets["dynamic_sl_px"]
+            sl_px = round(ref_price * (1.0 - config.SL_MIN_PCT), 2)
             tp_pct = targets.get("tp_pct", 3.0)
-            sl_pct = targets.get("sl_pct", 2.0)
+            sl_pct = config.SL_MIN_PCT * 100.0
             time_stop_min = targets.get("time_stop_minutes", 90)
             strategy_tag = targets.get("strategy_tag", "Lumos V3")
             atr_14 = targets.get("atr_14", 0.0)
@@ -1440,23 +1550,24 @@ class KiwoomLiveRunner:
             self._last_wait_fill_stk_bal = None
 
             logger.info(f"?? [1? ] {symbol} {target_qty}?@ ${order_px_1:.2f} ({self.order_timeout_buy_sec:.0f}? ???)")
-            self._unconfirmed_buy_order = {
+            self._store_pending_buy_order({
                 "symbol": symbol,
                 "target_qty": target_qty,
                 "price": order_px_1,
                 "timestamp": buy_time_1,
-            }
+            })
             try:
                 ord_res_1 = self.broker.send_order(symbol=symbol, order_type="BUY", quantity=target_qty, price=order_px_1)
             except Exception as send_err_1:
                 err_s1 = str(send_err_1)
                 if "BUY blocked:" in err_s1 or "Order deferred:" in err_s1:
-                    self._unconfirmed_buy_order = None
+                    self._clear_pending_buy_order()
                 raise
             ord_no_1 = str(ord_res_1.get("order_no", "")).strip() if isinstance(ord_res_1, dict) else ""
             if not ord_no_1:
                 raise RuntimeError("1차 매수 응답에 주문번호(order_no)가 없어 접수 여부를 확정할 수 없습니다.")
-            self._unconfirmed_buy_order = None
+            order_px_1 = float(ord_res_1.get('price', order_px_1))
+            self._store_pending_buy_order(dict(self._load_pending_buy_order() or {}, order_no=ord_no_1, price=order_px_1))
 
             # ?  ?  (1? )
             mode_title = "? [?? ?]" if self.broker.is_simulation else "? [?? ??]"
@@ -1496,6 +1607,8 @@ class KiwoomLiveRunner:
                     "gbdt_confidence": float(moe_res.get("gating_confidence", 0.60)),
                     "cross_dir": moe_res.get("cross_dir", "HOLD"),
                     "features": moe_res.get("features", {}),
+                "learning_snapshot_id": (moe_res.get("learning_snapshot") or {}).get("event_id"),
+                "learning_feature_names": (moe_res.get("learning_snapshot") or {}).get("feature_names", []),
                     "active_model_id": moe_res.get("active_model_id"),
                     "active_model_sha256": moe_res.get("active_model_sha256"),
                     "active_model_version": moe_res.get("active_model_version"),
@@ -1530,6 +1643,7 @@ class KiwoomLiveRunner:
                     )
                 except Exception as te:
                     logger.warning(self._redact_log(f"텔레그램 매수 체결 알림 발송 에러(무시됨): {te}"))
+                self._release_filled_buy_journal(filled_pos)
                 return True
 
             # ----------------------------------------------------
@@ -1549,7 +1663,7 @@ class KiwoomLiveRunner:
             already_filled_qty = 0
 
             def _abort_second_buy_and_preserve(bal_snap: Optional[Dict[str, Any]] = None) -> bool:
-                self._unconfirmed_buy_order = {"symbol": symbol, "order_no": ord_no_1, "target_qty": target_qty}
+                self._store_pending_buy_order({"symbol": symbol, "order_no": ord_no_1, "target_qty": target_qty})
                 self._preserve_verified_partial_buy(
                     symbol=symbol,
                     order_no=ord_no_1,
@@ -1632,76 +1746,10 @@ class KiwoomLiveRunner:
                     logger.error("❌ [2차 매수 중단] 1차 매수 취소 후 체결원장 조회 실패로 2차 추격 매수를 중단합니다.")
                     return _abort_second_buy_and_preserve(stk_bal_1)
 
-                def _scan_buy_ledger_rows(rows_to_scan: list):
-                    found_ev = False
-                    sum_fil = 0
-                    cum_fil = 0
-                    used_cum = False
-                    max_can = 0
-                    child_can = 0
-                    for ex in rows_to_scan:
-                        if not isinstance(ex, dict):
-                            return None
-                        ex_no = str(ex.get("ord_no") or ex.get("order_no") or "").strip()
-                        ex_orig = str(ex.get("orig_ord_no") or ex.get("original_order_no") or "").strip()
-                        ex_orig_clean = "" if ex_orig in ("", "000000000") else ex_orig
-                        ex_sym = str(ex.get("stk_cd") or ex.get("symbol") or "").strip().upper()
-                        ex_cntr_tp = str(ex.get("ord_cntr_tp") or "").strip()
 
-                        if cancel_ord_no_1 and cancel_ord_no_1 != ord_no_1 and ex_no == cancel_ord_no_1 and ex_orig_clean and ex_orig_clean != ord_no_1:
-                            logger.error(f"❌ [2차 매수 중단] 원장 취소주문(#{cancel_ord_no_1})의 원주문번호({ex_orig_clean})가 1차 매수(#{ord_no_1})와 불일치합니다.")
-                            return None
-                        if ex_orig_clean == ord_no_1 and cancel_ord_no_1 and cancel_ord_no_1 != ord_no_1 and ex_no and ex_no not in (cancel_ord_no_1, ord_no_1):
-                            logger.error(f"❌ [2차 매수 중단] 원주문(#{ord_no_1})에 연결된 취소주문번호({ex_no})가 응답 취소번호(#{cancel_ord_no_1})와 불일치합니다.")
-                            return None
-
-                        is_cancel_row = (
-                            (ex_orig_clean == ord_no_1 and ex_no != ord_no_1)
-                            or (bool(cancel_ord_no_1) and cancel_ord_no_1 != ord_no_1 and ex_no == cancel_ord_no_1)
-                            or (ex_no == ord_no_1 and ex_cntr_tp == "12")
-                        )
-                        is_orig_row = (ex_no == ord_no_1 and not is_cancel_row)
-                        if not is_cancel_row and not is_orig_row:
-                            continue
-
-                        found_ev = True
-                        if ex_sym and ex_sym != sym_up:
-                            logger.error(f"❌ [2차 매수 중단] 원장 주문(#{ex_no})의 종목({ex_sym})이 요청 종목({sym_up})과 불일치합니다.")
-                            return None
-                        if self._norm_exec_side(ex) == "SELL":
-                            logger.error(f"❌ [2차 매수 중단] 원장 주문(#{ex_no})의 매수/매도 구분이 불일치합니다.")
-                            return None
-
-                        req_q = self._parse_int_strict(ex.get("ord_qty"))
-                        fil_q = self._parse_exec_filled_qty(ex)
-                        can_q = self._parse_int_strict(
-                            ex.get("cancelled_qty")
-                            if "cancelled_qty" in ex
-                            else (ex.get("cncl_cfrm_qty") if "cncl_cfrm_qty" in ex else ex.get("cncl_qty", 0))
-                        )
-                        rem_q = self._parse_int_strict(ex.get("nccs_qty") if "nccs_qty" in ex else ex.get("ord_remnq", 0))
-                        if None in (req_q, fil_q, can_q, rem_q) or rem_q > 0:
-                            logger.error(f"❌ [2차 매수 중단] 원장에서 1차 매수(#{ord_no_1}) 관련 행의 수량 미확정 또는 잔량({rem_q}) 존재로 2차 추격 매수를 중단합니다.")
-                            return None
-
-                        if is_cancel_row:
-                            if fil_q > 0 or (can_q > 0 and can_q != req_q):
-                                logger.error(f"❌ [2차 매수 중단] 취소주문 행(#{ex_no})의 취소수량({can_q}/{req_q})이 모순되어 2차 추격 매수를 중단합니다.")
-                                return None
-                            child_can += can_q
-                        else:
-                            if (ex_orig_clean and ex_orig_clean != ord_no_1) or req_q != target_qty:
-                                logger.error(f"❌ [2차 매수 중단] 원주문(#{ord_no_1})의 주문수량({req_q} != {target_qty}) 또는 원주문번호가 모순되어 2차 추격 매수를 중단합니다.")
-                                return None
-                            if "tot_che_qty" in ex and "cntr_qty" not in ex:
-                                used_cum = True
-                                cum_fil = max(cum_fil, fil_q)
-                            else:
-                                sum_fil += fil_q
-                            max_can = max(max_can, can_q)
-                    return (found_ev, cum_fil if used_cum else sum_fil, max_can, child_can)
-
-                exec_scan = _scan_buy_ledger_rows(hist_1.get("executions", []))
+                exec_scan = self._scan_closed_order_rows(
+                    hist_1.get("executions", []), ord_no_1, sym_up, "BUY", target_qty, cancel_ord_no_1,
+                )
                 if exec_scan is None:
                     return _abort_second_buy_and_preserve(stk_bal_1)
                 found_ord_1_evidence, hist_filled_qty, orig_max_cancel, child_cancel_qty = exec_scan
@@ -1710,16 +1758,15 @@ class KiwoomLiveRunner:
                     return _abort_second_buy_and_preserve(stk_bal_1)
 
                 confirmed_cancel_qty = max(orig_max_cancel, child_cancel_qty, open_confirmed_cancel_qty)
-                if (
-                    (not found_ord_1_evidence or confirmed_cancel_qty <= 0 or hist_filled_qty + confirmed_cancel_qty != target_qty)
-                    and self._can_query_broker_method("get_order_history")
-                ):
+                if self._can_query_broker_method("get_order_history"):
                     ny_compact = self._get_current_ny_date().replace("-", "")
                     oh_1 = self.broker.get_order_history(ny_compact, ny_compact)
                     if not isinstance(oh_1, dict) or oh_1.get("ok") is not True or not isinstance(oh_1.get("orders"), list):
                         logger.error("❌ [2차 매수 중단] 1차 매수 취소 후 주문내역(ust21180) 조회 실패로 2차 추격 매수를 중단합니다.")
                         return _abort_second_buy_and_preserve(stk_bal_1)
-                    oh_scan = _scan_buy_ledger_rows(oh_1.get("orders", []))
+                    oh_scan = self._scan_closed_order_rows(
+                        oh_1.get("orders", []), ord_no_1, sym_up, "BUY", target_qty, cancel_ord_no_1,
+                    )
                     if oh_scan is None:
                         return _abort_second_buy_and_preserve(stk_bal_1)
                     oh_found, oh_filled_qty, oh_orig_can, oh_child_can = oh_scan
@@ -1768,6 +1815,8 @@ class KiwoomLiveRunner:
                     "gbdt_confidence": float(moe_res.get("gating_confidence", 0.60)),
                     "cross_dir": moe_res.get("cross_dir", "HOLD"),
                     "features": moe_res.get("features", {}),
+                "learning_snapshot_id": (moe_res.get("learning_snapshot") or {}).get("event_id"),
+                "learning_feature_names": (moe_res.get("learning_snapshot") or {}).get("feature_names", []),
                     "active_model_id": moe_res.get("active_model_id"),
                     "active_model_sha256": moe_res.get("active_model_sha256"),
                     "active_model_version": moe_res.get("active_model_version"),
@@ -1801,24 +1850,25 @@ class KiwoomLiveRunner:
                     )
                 except Exception as te:
                     logger.warning(self._redact_log(f"텔레그램 매수 체결 알림 발송 에러(무시됨): {te}"))
+                self._release_filled_buy_journal(filled_pos)
                 return True
 
             # 2??? ???
             latest_px_2 = float(self.ws_streamer.get_latest_price(symbol, cur_px))
-            order_px_2 = round(latest_px_2 + 0.03, 2)
+            order_px_2 = round(latest_px_2 + config.BUY_SLIPPAGE_ADJUST, 2)
             logger.info(f"??[2? ??(1/1)] {symbol} {remaining_qty}?@ ${order_px_2:.2f} ({self.order_timeout_buy_sec:.0f}? ???)")
-            self._unconfirmed_buy_order = {
+            self._store_pending_buy_order({
                 "symbol": symbol,
                 "target_qty": remaining_qty,
                 "price": order_px_2,
                 "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            }
+            })
             try:
                 ord_res_2 = self.broker.send_order(symbol=symbol, order_type="BUY", quantity=remaining_qty, price=order_px_2)
             except Exception as send_err_2:
                 err_s2 = str(send_err_2)
                 if "BUY blocked:" in err_s2 or "Order deferred:" in err_s2:
-                    self._unconfirmed_buy_order = None
+                    self._clear_pending_buy_order()
                 if already_filled_qty > 0:
                     self._preserve_verified_partial_buy(
                         symbol=symbol,
@@ -1841,7 +1891,8 @@ class KiwoomLiveRunner:
             ord_no_2 = str(ord_res_2.get("order_no", "")).strip() if isinstance(ord_res_2, dict) else ""
             if not ord_no_2:
                 raise RuntimeError("2차 매수 응답에 주문번호(order_no)가 없어 접수 여부를 확정할 수 없습니다.")
-            self._unconfirmed_buy_order = None
+            order_px_2 = float(ord_res_2.get('price', order_px_2))
+            self._store_pending_buy_order(dict(self._load_pending_buy_order() or {}, order_no=ord_no_2, price=order_px_2))
             system_logger.log("TRADE", "OrderChasing", f"??[ 2??? ?? {symbol} {remaining_qty}?@ ${order_px_2:.2f} (???1/1)")
 
             # 2. ???(?  ??0ms   ?)
@@ -1877,6 +1928,8 @@ class KiwoomLiveRunner:
                     "gbdt_confidence": float(moe_res.get("gating_confidence", 0.60)),
                     "cross_dir": moe_res.get("cross_dir", "HOLD"),
                     "features": moe_res.get("features", {}),
+                "learning_snapshot_id": (moe_res.get("learning_snapshot") or {}).get("event_id"),
+                "learning_feature_names": (moe_res.get("learning_snapshot") or {}).get("feature_names", []),
                     "active_model_id": moe_res.get("active_model_id"),
                     "active_model_sha256": moe_res.get("active_model_sha256"),
                     "active_model_version": moe_res.get("active_model_version"),
@@ -1911,6 +1964,7 @@ class KiwoomLiveRunner:
                     )
                 except Exception as te:
                     logger.warning(self._redact_log(f"텔레그램 매수 체결 알림 발송 에러(무시됨): {te}"))
+                self._release_filled_buy_journal(filled_pos)
                 return True
 
             # ----------------------------------------------------
@@ -1931,7 +1985,7 @@ class KiwoomLiveRunner:
             stk_bal_final = self.broker.get_overseas_stock_balance(force_refresh=True)
             if not isinstance(stk_bal_final, dict) or stk_bal_final.get("ok") is not True or not isinstance(stk_bal_final.get("holdings"), list):
                 logger.error("❌ [2차 매수 취소 후 잔고 조회 실패] 체결 여부를 확정할 수 없어 미확정 매수 상태로 기록합니다.")
-                self._unconfirmed_buy_order = {"symbol": symbol, "order_no": ord_no_2, "target_qty": remaining_qty}
+                self._store_pending_buy_order({"symbol": symbol, "order_no": ord_no_2, "target_qty": remaining_qty})
                 saved_partial = self._preserve_verified_partial_buy(
                     symbol=symbol,
                     order_no=ord_no_1,
@@ -1960,7 +2014,7 @@ class KiwoomLiveRunner:
                     break
 
             if isinstance(cancel_res_2, dict) and cancel_res_2.get("ok") is False:
-                self._unconfirmed_buy_order = {"symbol": symbol, "order_no": ord_no_2, "target_qty": remaining_qty}
+                self._store_pending_buy_order({"symbol": symbol, "order_no": ord_no_2, "target_qty": remaining_qty})
 
             if final_filled > 0:
                 real_buy_px, real_qty = self._sync_real_ledger_entry(symbol, order_px_2, final_filled)
@@ -1983,6 +2037,8 @@ class KiwoomLiveRunner:
                     "gbdt_confidence": float(moe_res.get("gating_confidence", 0.60)),
                     "cross_dir": moe_res.get("cross_dir", "HOLD"),
                     "features": moe_res.get("features", {}),
+                "learning_snapshot_id": (moe_res.get("learning_snapshot") or {}).get("event_id"),
+                "learning_feature_names": (moe_res.get("learning_snapshot") or {}).get("feature_names", []),
                     "active_model_id": moe_res.get("active_model_id"),
                     "active_model_sha256": moe_res.get("active_model_sha256"),
                     "active_model_version": moe_res.get("active_model_version"),
@@ -2090,10 +2146,11 @@ class KiwoomLiveRunner:
                 if actual_qty <= 0:
                     logger.info(f"? [? ? 0??] {symbol} ?? 100% ? ? ? ?? ? ?AI ???? ?")
                     self._reconcile_active_position_with_ledger(stk_bal_check)
-                    return True
+                    return self._get_active_position() is None
                 quantity = min(quantity, actual_qty)
             else:
-                logger.warning(f"초기 잔고 조회 실패. 전달받은 수량({quantity})으로 매도 진행.")
+                logger.warning("SELL deferred: fresh holdings unavailable; position retained")
+                return False
 
             while True:
                 loop_retry += 1
@@ -2107,7 +2164,7 @@ class KiwoomLiveRunner:
                     order_label = "? ? ?(Market Order)"
                 else:
                     # ? ? ? (? ?? ? ?? ? ): Bid - $0.05 ????
-                    sell_px = max(0.01, round(latest_px - 0.05, 2)) if latest_px > 0 else 0.0
+                    sell_px = max(0.01, round(latest_px - config.SELL_SLIPPAGE_ADJUST, 2)) if latest_px > 0 else 0.0
                     order_label = f"?  ??(${sell_px:.2f})"
 
                 logger.info(f"? [ ?  ({loop_retry}?)] {symbol} {quantity}?| {order_label} | ?: {reason_desc} ({self.order_timeout_sell_sec:.0f}? ??")
@@ -2167,7 +2224,27 @@ class KiwoomLiveRunner:
                             "cross_dir": active_pos.get("cross_dir", "HOLD"),
                             "buy_attempts": active_pos.get("buy_attempts", 1),
                             "sell_attempts": loop_retry,
-                            "features": active_pos.get("features", {})
+                            "features": active_pos.get("features", {}),
+                            "learning_snapshot_id": active_pos.get("learning_snapshot_id"),
+                            "learning_feature_names": active_pos.get("learning_feature_names", []),
+                            "active_model_sha256": active_pos.get("active_model_sha256"),
+                            "active_model_id": active_pos.get("active_model_id"),
+                            "active_model_schema": active_pos.get("active_model_schema"),
+                            "exit_price_source": "LATEST_QUOTE_PROXY_NOT_BROKER_FILL",
+                            "risk_settings": {
+                                "tp_pct": active_pos.get("tp_pct"), "sl_pct": active_pos.get("sl_pct"),
+                                "time_stop_minutes": active_pos.get("time_stop_minutes"),
+                                "trailing_trigger_pct": active_pos.get("trailing_trigger_pct", config.TRAILING_TRIGGER_PCT),
+                                "relay_role": active_pos.get("relay_role"),
+                                "relay_leg_id": active_pos.get("relay_leg_id"),
+                                "relay_cycle_id": active_pos.get("relay_cycle_id"),
+                                "trailing_drop_pct": config.TRAILING_DROP_PCT,
+                            },
+                            "fee_usd": None,
+                            "execution_order_references": {
+                                "BUY": self._learning_order_reference(active_pos.get("order_no")),
+                                "SELL": self._learning_order_reference(s_ord_no),
+                            }
                         })
                         self.experience_logger.record_order_event(
                             symbol=symbol, action="SELL", attempt=loop_retry, order_no=s_ord_no,
@@ -2191,7 +2268,10 @@ class KiwoomLiveRunner:
                             f"💰 **체결가:** `${latest_px:.2f}` (최종 수익률: {final_pnl_pct:+.2f}%)\n"
                             f"🛡️ **사후 관리:** `100% 현금화 완료 (AI MoE 새 진입 대기)`"
                         )
-                        self.dispatcher.send_telegram_message(sell_msg)
+                        # Relay emits a role-specific leg alert and, only after
+                        # reconciliation, a separate cycle-complete alert.
+                        if not getattr(self, '_uses_relay_notifications', False):
+                            self.dispatcher.send_telegram_message(sell_msg)
                     except Exception as te2:
                         logger.error(self._redact_log(f"텔레그램 매도 알림 2 발송 에러: {te2}"))
                     return True
@@ -2259,65 +2339,15 @@ class KiwoomLiveRunner:
                 s_hist_filled = 0
                 s_confirmed_cancel = open_confirmed_cancel_s
 
-                def _scan_sell_ledger_rows(rows_to_scan: list):
-                    f_ev = False
-                    sum_f = 0
-                    cum_f = 0
-                    use_c = False
-                    max_c = 0
-                    child_c = 0
-                    for ex in rows_to_scan:
-                        if not isinstance(ex, dict):
-                            return None
-                        ex_no = str(ex.get("ord_no") or ex.get("order_no") or "").strip()
-                        ex_orig = str(ex.get("orig_ord_no") or ex.get("original_order_no") or "").strip()
-                        ex_orig_clean = "" if ex_orig in ("", "000000000") else ex_orig
-                        ex_sym = str(ex.get("stk_cd") or ex.get("symbol") or "").strip().upper()
-                        ex_cntr_tp = str(ex.get("ord_cntr_tp") or "").strip()
-                        is_cancel_r = (
-                            (ex_orig_clean == s_ord_no and ex_no != s_ord_no)
-                            or (bool(cancel_ord_no_s) and cancel_ord_no_s != s_ord_no and ex_no == cancel_ord_no_s)
-                            or (ex_no == s_ord_no and ex_cntr_tp == "12")
-                        )
-                        is_orig_r = (ex_no == s_ord_no and not is_cancel_r)
-                        if not is_cancel_r and not is_orig_r:
-                            continue
-                        f_ev = True
-                        if ex_sym and ex_sym != sym_up:
-                            return None
-                        if is_orig_r and self._norm_exec_side(ex) == "BUY":
-                            return None
-                        rq = self._parse_int_strict(ex.get("ord_qty"))
-                        fq = self._parse_exec_filled_qty(ex)
-                        cq = self._parse_int_strict(
-                            ex.get("cancelled_qty")
-                            if "cancelled_qty" in ex
-                            else (ex.get("cncl_cfrm_qty") if "cncl_cfrm_qty" in ex else ex.get("cncl_qty", 0))
-                        )
-                        rmq = self._parse_int_strict(ex.get("nccs_qty") if "nccs_qty" in ex else ex.get("ord_remnq", 0))
-                        if None in (rq, fq, cq, rmq) or rmq > 0:
-                            return None
-                        if is_cancel_r:
-                            if fq > 0 or (cq > 0 and cq != rq):
-                                return None
-                            child_c += cq
-                        else:
-                            if rq != quantity:
-                                return None
-                            if "tot_che_qty" in ex and "cntr_qty" not in ex:
-                                use_c = True
-                                cum_f = max(cum_f, fq)
-                            else:
-                                sum_f += fq
-                            max_c = max(max_c, cq)
-                    return (f_ev, cum_f if use_c else sum_f, max_c, child_c)
 
                 if self._can_query_broker_method("get_daily_execution_history"):
                     hist_s = self.broker.get_daily_execution_history()
                     if not isinstance(hist_s, dict) or hist_s.get("ok") is not True or not isinstance(hist_s.get("executions"), list):
                         logger.error("❌ [2차 매도 중단] 1차 매도 취소 후 체결원장 조회 실패로 2차 추격 매도를 중단합니다.")
                         return False
-                    s_scan = _scan_sell_ledger_rows(hist_s.get("executions", []))
+                    s_scan = self._scan_closed_order_rows(
+                        hist_s.get("executions", []), s_ord_no, sym_up, "SELL", quantity, cancel_ord_no_s,
+                    )
                     if s_scan is None:
                         logger.error(f"❌ [2차 매도 중단] 체결원장에서 1차 매도(#{s_ord_no}) 수량 모순 또는 미체결 잔량이 감지되었습니다.")
                         return False
@@ -2326,16 +2356,15 @@ class KiwoomLiveRunner:
                         return False
                     s_confirmed_cancel = max(s_confirmed_cancel, s_orig_can, s_child_can)
 
-                if (
-                    (not s_found_evidence or s_hist_filled + s_confirmed_cancel != quantity)
-                    and self._can_query_broker_method("get_order_history")
-                ):
+                if self._can_query_broker_method("get_order_history"):
                     ny_compact = self._get_current_ny_date().replace("-", "")
                     oh_s = self.broker.get_order_history(ny_compact, ny_compact)
                     if not isinstance(oh_s, dict) or oh_s.get("ok") is not True or not isinstance(oh_s.get("orders"), list):
                         logger.error("❌ [2차 매도 중단] 1차 매도 취소 후 주문내역(ust21180) 조회 실패로 2차 추격 매도를 중단합니다.")
                         return False
-                    oh_s_scan = _scan_sell_ledger_rows(oh_s.get("orders", []))
+                    oh_s_scan = self._scan_closed_order_rows(
+                        oh_s.get("orders", []), s_ord_no, sym_up, "SELL", quantity, cancel_ord_no_s,
+                    )
                     if oh_s_scan is None:
                         logger.error(f"❌ [2차 매도 중단] 주문내역(ust21180)에서 1차 매도(#{s_ord_no}) 수량 모순 또는 잔량이 감지되었습니다.")
                         return False
@@ -2371,7 +2400,7 @@ class KiwoomLiveRunner:
                         )
                         return False
 
-                quantity = min(new_actual_qty, new_sell_avail if new_sell_avail > 0 else new_actual_qty, quantity - s_hist_filled)
+                quantity = min(new_actual_qty, new_sell_avail, quantity - s_hist_filled)
                 if quantity <= 0:
                     return False
 
@@ -2414,7 +2443,7 @@ class KiwoomLiveRunner:
                 self.notifier.send_model_state_alert(
                     event_type="FALLBACK_TO_CHAMPION",
                     model_info=moe_res,
-                    reason="Primary(B_Normalized_72) 모델 비정상 감지로 Champion 폴백 모델이 활성화되었습니다.",
+                    reason="기본 모델 검증 실패로 Champion 폴백 모델이 활성화되었습니다. 실제 활성 모델은 이 알림의 모델 정보를 확인하세요.",
                 )
             elif hot_reloaded:
                 self.notifier.send_model_state_alert(
@@ -2611,6 +2640,18 @@ class KiwoomLiveRunner:
             "stale_reason": stale_reason,
         }
 
+    def _entry_quantity(self, usd_available, price):
+        return int((usd_available * config.MAX_ALLOCATION_RATIO) / (price + config.QTY_CALC_BUFFER))
+
+    def _prepare_decision_candles(self, candles, ny_dt, is_regular_market):
+        return candles
+
+    def _load_decision_candles(self, ny_dt, is_regular_market, sync_intraday):
+        if sync_intraday:
+            self.data_lake.sync_live_intraday_candles(config.ALL_SYMBOLS)
+        candles = self.data_lake.load_candles(config.BASE_ASSET_LONG, "15m")
+        return self._prepare_decision_candles(candles, ny_dt, is_regular_market)
+
     def evaluate_15m_cycle_once(
         self,
         allow_order_execution: bool = True,
@@ -2665,9 +2706,7 @@ class KiwoomLiveRunner:
                 self.shadow_tracker.increment_candle(exit_prices=shadow_live_p)
             except Exception as e:
                 system_logger.log("ERROR", "ShadowTracker", self._redact_log(f"캔들 업데이트 중 에러: {e}"))
-            self.data_lake.sync_live_intraday_candles(config.ALL_SYMBOLS)
-
-        df_15m = self.data_lake.load_candles(config.BASE_ASSET_LONG, "15m")
+        df_15m = self._load_decision_candles(ny_dt, is_regular_market, effective_sync_intraday)
         snap_data = self._collect_cycle_market_snapshot(
             df_15m=df_15m,
             now_dt=now_dt_aware,
@@ -2720,11 +2759,11 @@ class KiwoomLiveRunner:
                 "all_gating_confidences": {"cross_asset": 0.0, "gbdt_pattern": 0.0},
                 "gbdt_probs": {"LONG": 0.0, "SHORT": 0.0, "NONE": 1.0},
                 "features": {},
-                "active_model_id": m_info.get("active_model_id", "B_Normalized_72"),
+                "active_model_id": m_info.get("active_model_id", "UNKNOWN"),
                 "active_model_sha256": m_info.get("model_sha256", ""),
                 "active_model_version": m_info.get("model_version", "NONE"),
-                "active_model_schema": m_info.get("feature_schema", "B_normalized"),
-                "active_model_num_features": m_info.get("num_features", 72),
+                "active_model_schema": m_info.get("feature_schema", "UNKNOWN"),
+                "active_model_num_features": m_info.get("num_features", 0),
                 "active_model_load_status": m_info.get("load_status", ""),
                 "active_model_fallback_status": m_info.get("fallback_status", ""),
                 "active_model_is_fallback": bool(m_info.get("is_fallback", False)),
@@ -2743,6 +2782,11 @@ class KiwoomLiveRunner:
             order_block_detail = stale_reason or "DATA_STALE"
             pre_order_decision = "SIGNAL_UNAVAILABLE_STALE_DATA"
             premarket_policy = "SIGNAL_UNAVAILABLE_STALE_DATA"
+            if stale_reason == "FIRST_15M_CANDLE_NOT_CLOSED":
+                order_block_reason = stale_reason
+                pre_order_decision = premarket_policy = "WAIT_FIRST_COMPLETED_15M"
+                moe_res["signal_status"] = pre_order_decision
+                moe_res["expert_desc"] = pre_order_decision
             conf = 0.0
             is_appr = False
             direction = "NONE"
@@ -2753,12 +2797,16 @@ class KiwoomLiveRunner:
                 df_candle_15m=df_15m,
                 live_prices=live_prices,
             )
+            try:
+                self.experience_logger.record_learning_decision(moe_res.get("learning_snapshot"))
+            except Exception:
+                logger.error("Learning decision enqueue failed; trading continues")
             moe_res["data_stale"] = False
             moe_res["stale_reason"] = ""
             self._last_moe_res = moe_res
 
             # Emit any model state transition alert (HOT_RELOADED / FALLBACK / BLOCKED)
-            self._emit_model_state_alerts_from_eval(moe_res)
+            # self._emit_model_state_alerts_from_eval(moe_res)
 
             conf = float(moe_res.get("gating_confidence", 0.0)) * 100.0
             is_appr = bool(moe_res.get("is_approved", False))
@@ -2779,6 +2827,7 @@ class KiwoomLiveRunner:
                         price=shadow_px,
                         current_time=ny_dt,
                         atr_pct=(shadow_atr / 100.0),
+                        **ShadowTracker.entry_signal_from_decision(moe_res, shadow_dir),
                     )
                 except Exception as e:
                     system_logger.log("ERROR", "ShadowTracker", self._redact_log(f"가상 진입 추가 중 에러: {e}"))
@@ -2860,14 +2909,14 @@ class KiwoomLiveRunner:
                         system_logger.log("WARNING", "Trade", f"[B-02 Pre-Buy Guard] 예수금 조회 실패로 {winner_sym} 진입 보류")
                     else:
                         usd_avail = float(conn_res.get("usd_order_available", 0.0))
-                        order_qty = int((usd_avail * config.MAX_ALLOCATION_RATIO) / (cur_px + config.QTY_CALC_BUFFER))
+                        order_qty = self._entry_quantity(usd_avail, cur_px)
                         if order_qty > 0:
                             order_allowed = True
                             order_block_reason = "NONE"
                             pre_order_decision = f"EXECUTE_BUY_{winner_sym}"
                             system_logger.log("TRADE", "AI", f"V3 AI 신호 발생! {winner_sym} {order_qty}주 매수")
                             atr_pct = self._get_5m_atr_pct(winner_sym, cur_px)
-                            sl_pct = max(config.SL_MIN_PCT * 100.0, min(config.SL_MAX_PCT * 100.0, atr_pct * config.SL_ATR_MULTIPLIER))
+                            sl_pct = config.SL_MIN_PCT * 100.0
                             tp_pct = config.MAX_TP_PCT * 100.0
                             targets = {
                                 "dynamic_tp_px": round(cur_px * (1.0 + tp_pct / 100.0), 2),
@@ -2887,11 +2936,20 @@ class KiwoomLiveRunner:
                                     targets=targets,
                                 )
                             )
+                            if not order_executed:
+                                order_allowed = False
+                                order_block_detail = getattr(self, '_buy_execution_outcome', None) or "BUY_EXECUTION_NOT_CONFIRMED"
+                                order_block_reason = "ORDER_UNFILLED" if order_block_detail == 'BUY_UNFILLED_CANCELLED' else "RISK_BLOCK"
+                                pre_order_decision = order_block_detail
+                                if order_block_detail == 'BUY_UNFILLED_CANCELLED':
+                                    moe_res['buy_order_attempts'] = self._buy_execution_attempts
                         else:
-                            pre_order_decision = "SKIP_INSUFFICIENT_FUNDS"
+                            size_block_detail = getattr(self, '_entry_block_detail', None) or "INSUFFICIENT_FUNDS"
+                            pre_order_decision = "SKIP_" + size_block_detail
                             order_allowed = False
                             order_block_reason = "RISK_BLOCK"
-                            order_block_detail = "INSUFFICIENT_FUNDS"
+                            order_block_detail = size_block_detail
+                            logger.info('Entry quantity blocked: %s', size_block_detail)
             else:
                 # 신호 미승인 상태: 크로스에셋 Veto / 60m 추세 필터 / 서킷브레이커에 의한 차단인지 일반 관망(NONE)인지 구분
                 gbdt_raw_dir = str(moe_res.get("dir_gbdt", "NONE")).upper()
@@ -2961,24 +3019,24 @@ class KiwoomLiveRunner:
             data_stale=data_stale,
             stale_reason=stale_reason,
         )
-        try:
-            self.dispatcher.send_telegram_message(briefing_msg)
-        except Exception as te:
-            logger.warning(self._redact_log(f"텔레그램 15분 브리핑 발송 에러(무시됨): {te}"))
+        # try:
+        #     self.dispatcher.send_telegram_message(briefing_msg)
+        # except Exception as te:
+        #     logger.warning(self._redact_log(f"텔레그램 15분 브리핑 발송 에러(무시됨): {te}"))
 
         # If Cross-Asset Veto blocked an otherwise high-confidence signal, send Veto alert with snapshot
-        if not data_stale and bool(moe_res.get("is_cross_veto", False)):
-            try:
-                raw_dir = "LONG" if p_long >= p_short else "SHORT"
-                veto_ticker = config.BASE_ASSET_LONG if raw_dir == "LONG" else config.BASE_ASSET_SHORT
-                self.notifier.send_veto_alert(
-                    ticker=veto_ticker,
-                    gbdt_prob=float(moe_res.get("gating_confidence", 0.0)),
-                    veto_reason=str(moe_res.get("veto_reason", "Cross-Asset Veto")),
-                    model_snapshot_info=moe_res,
-                )
-            except Exception as vte:
-                logger.warning(self._redact_log(f"텔레그램 Veto 알림 발송 에러(무시됨): {vte}"))
+        # if not data_stale and bool(moe_res.get("is_cross_veto", False)):
+        #     try:
+        #         raw_dir = "LONG" if p_long >= p_short else "SHORT"
+        #         veto_ticker = config.BASE_ASSET_LONG if raw_dir == "LONG" else config.BASE_ASSET_SHORT
+        #         self.notifier.send_veto_alert(
+        #             ticker=veto_ticker,
+        #             gbdt_prob=float(moe_res.get("gating_confidence", 0.0)),
+        #             veto_reason=str(moe_res.get("veto_reason", "Cross-Asset Veto")),
+        #             model_snapshot_info=moe_res,
+        #         )
+        #     except Exception as vte:
+        #         logger.warning(self._redact_log(f"텔레그램 Veto 알림 발송 에러(무시됨): {vte}"))
 
         system_logger.log(
             "INFO",
@@ -2987,6 +3045,26 @@ class KiwoomLiveRunner:
             f"시세시각: {quote_time_et} | 캔들시각: {candle_time_et} | 주문가능: {'ALLOWED' if order_allowed else 'BLOCKED'}({order_block_reason}) | "
             f"모델: {moe_res.get('active_model_id')}[{moe_res.get('active_model_version')}]]",
         )
+
+        try:
+            self.experience_logger.record_learning_cycle({
+                "snapshot_id": (moe_res.get("learning_snapshot") or {}).get("event_id"),
+                "model_sha256": moe_res.get("active_model_sha256"),
+                "direction": direction, "confidence": conf, "threshold": moe_res.get("threshold_applied"),
+                "order_attempted": order_attempted, "order_executed": order_executed,
+                "order_allowed": order_allowed, "order_block_reason": order_block_reason,
+                "data_stale": data_stale, "stale_reason": stale_reason,
+                "quote_time_et": quote_time_et, "candle_time_et": candle_time_et,
+                "cross_veto": moe_res.get("is_cross_veto"), "trend_ok": moe_res.get("is_60m_trend_ok"),
+                "dip_ok": moe_res.get("dip_ok"), "model_approved": moe_res.get("is_approved"),
+                "decision_time_ny": ny_dt.isoformat(), "winner_symbol": winner_sym,
+                "order_quantity": order_qty, "pre_order_decision": pre_order_decision,
+                "position_before_symbol": (active_pos or {}).get("symbol"),
+                "position_before_quantity": (active_pos or {}).get("quantity"),
+                "session": session_name, "snapshot_available": isinstance(moe_res.get("learning_snapshot"), dict),
+            })
+        except Exception:
+            logger.error("Learning cycle outcome enqueue failed")
 
         return {
             "moe_res": moe_res,
@@ -3009,11 +3087,14 @@ class KiwoomLiveRunner:
             "order_qty": order_qty,
         }
 
+    def _execution_should_stop(self):
+        return False
+
     def _market_execution_loop(self):
         logger.info("?? [?  ?????  ? ? (: 15?...")
         system_logger.log("INFO", "LiveRunner", "???  ??????")
         
-        while True:
+        while not self._execution_should_stop():
             try:
                 mkt = USMarketCalendar.get_market_status()
                 current_session = mkt["session_name"]
@@ -3063,10 +3144,19 @@ class KiwoomLiveRunner:
                                         msg = f"📊 **[오늘의 실제 매매 체결 내역 (증권사 원장)]**\n\n총 {exec_hist['execution_count']}건의 체결 내역이 확인되었습니다.\n"
                                         for ex in exec_hist["executions"]:
                                             sym = ex.get('pdno') or ex.get('stk_cd') or ex.get('symbol') or "알수없음"
-                                            od_type = ex.get('sll_buy_dvsn_cd_name') or ex.get('order_type') or ex.get('sll_buy_dvsn_cd') or "체결"
-                                            qty = ex.get('ccld_qty') or ex.get('quantity') or ex.get('ord_qty') or 0
-                                            px = ex.get('ft_ccld_unpr3') or ex.get('ccld_unpr') or ex.get('price') or 0
-                                            msg += f"• {sym} | {od_type} | {qty}주 @ \n"
+                                            od_type = ex.get('sll_buy_dvsn_cd_name') or ex.get('slby_tp_nm') or ex.get('order_type') or ex.get('sll_buy_dvsn_cd') or "체결"
+                                            raw_qty = ex.get('ccld_qty') or ex.get('cntr_qty') or ex.get('quantity') or ex.get('ord_qty') or 0
+                                            raw_px = ex.get('ft_ccld_unpr3') or ex.get('cntr_uv') or ex.get('ccld_unpr') or ex.get('price') or 0
+                                            try:
+                                                qty_int = int(float(str(raw_qty).replace(",", "").strip() or 0))
+                                            except Exception:
+                                                qty_int = raw_qty
+                                            try:
+                                                px_flt = float(str(raw_px).replace(",", "").strip() or 0.0)
+                                                px_str = f"${px_flt:.4f}"
+                                            except Exception:
+                                                px_str = f"${raw_px}"
+                                            msg += f"• {sym} | {od_type} | {qty_int}주 @ {px_str}\n"
                                         self.dispatcher.send_telegram_message(msg)
                                         system_logger.log("INFO", "ExecutionHistory", f"당일 체결 내역 브리핑 발송 완료 ({exec_hist['execution_count']}건)")
                                 except Exception as eh_err:
@@ -3256,17 +3346,39 @@ class KiwoomLiveRunner:
                 "conn_res": conn_res,
             }
 
-        # 4. ????WebSocket) ??? ??
-        self.ws_streamer.start()
-        logger.info(f"??[{self.broker.broker_name} ??WebSocket ? ???] 10ms ??????? ?")
+        # Start the optional shadow sidecar independently; never wait for model loading.
+        try:
+            from research.shadow_five_full15m_20261018.feed_bridge import autostart as _shadow_autostart
+            _shadow_autostart(self.broker.is_simulation)
+        except Exception:
+            logger.warning("Shadow auto-start unavailable; live startup continues")
 
-        # 5. ????   ?????
-        trd_thread = threading.Thread(target=self._market_execution_loop, daemon=True)
-        trd_thread.start()
+        try:
+            # 4. ????WebSocket) ??? ??
+            self.ws_streamer.start()
+            logger.info(f"??[{self.broker.broker_name} ??WebSocket ? ???] 10ms ??????? ?")
 
-        # 6. ??? ????? ? (Foreground Daemon)
-        self.controller.listen_loop(poll_interval=2)
-        return {"ok": True, "active_model_info": active_model_info}
+            # 5. ????   ?????
+            trd_thread = threading.Thread(target=self._market_execution_loop, daemon=True)
+            trd_thread.start()
+
+            # 6. ??? ????? ? (Foreground Daemon)
+            self.controller.listen_loop(poll_interval=2)
+            return {"ok": True, "active_model_info": active_model_info}
+        finally:
+            try:
+                from research.shadow_five_full15m_20261018.feed_bridge import autostop as _shadow_autostop
+                _shadow_autostop(self.broker.is_simulation)
+            except Exception:
+                logger.warning("Shadow stop request unavailable; worker also watches Runner exit")
+
+
+def create_live_runner(is_simulation=None):
+    """Production entry selection; legacy class remains available for QA/rollback."""
+    if config.LIVE_EXECUTION_STRATEGY == "OPPOSITE_RELAY_V1":
+        from core.relay_live_runner import RelayLiveRunner
+        return RelayLiveRunner(is_simulation=is_simulation)
+    raise RuntimeError("Unsupported live execution strategy")
 
 
 if __name__ == "__main__":
@@ -3282,6 +3394,6 @@ if __name__ == "__main__":
     elif args.sim:
         is_sim = True
 
-    runner = KiwoomLiveRunner(is_simulation=is_sim)
+    runner = create_live_runner(is_simulation=is_sim)
     runner.run_once_and_start_listener()
 

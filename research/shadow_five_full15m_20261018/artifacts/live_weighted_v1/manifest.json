@@ -1,0 +1,85 @@
+{
+  "status": "TRAINED_NOT_CONNECTED",
+  "runtime_enabled": false,
+  "cutoff": "2026-10-16 23:59:59",
+  "policy_sha256": "d28275bf5aa214824ce84904cdba309e6e05787c26a79111e3c6f068a241cf3a",
+  "models": {
+    "NET_GBDT": {
+      "path": "live_weighted_v1\\NET_GBDT.pkl",
+      "artifact_sha256": "1cbd639fcc1dc1ce13ce545fd343c4b23e5c1882eafd69d47700f035284da797",
+      "training_rows_per_side": [
+        13206,
+        24405
+      ],
+      "threshold": 0.0,
+      "live_rows_per_side": [
+        0,
+        17
+      ],
+      "live_experience_weight": 2.5
+    },
+    "NET_LAG_GBDT": {
+      "path": "live_weighted_v1\\NET_LAG_GBDT.pkl",
+      "artifact_sha256": "11d64b74e0f5bb3d7401a60243fb22cf8936acf2f05253c21b55f3e58ad16494",
+      "training_rows_per_side": [
+        13206,
+        24402
+      ],
+      "threshold": 0.0,
+      "live_rows_per_side": [
+        0,
+        17
+      ],
+      "live_experience_weight": 2.5
+    },
+    "NET_TCN": {
+      "path": "live_weighted_v1\\NET_TCN.pkl",
+      "artifact_sha256": "24315d3537487915e8ca6308fd46cbcfab44768db93513d6a3e5af72c0f34426",
+      "training_rows_per_side": [
+        13206,
+        24402
+      ],
+      "threshold": 0.0,
+      "live_rows_per_side": [
+        0,
+        17
+      ],
+      "live_experience_weight": 2.5
+    },
+    "FULL_COND_PAYOFF_F1.0": {
+      "path": "live_weighted_v1\\FULL_COND_PAYOFF_F1.0.pkl",
+      "artifact_sha256": "339cdf3a5e8f5a7c61d121cb2638a7e8004d21a652446b1ab1cbd919f439f2cb",
+      "training_rows_per_side": [
+        13206,
+        24405
+      ],
+      "threshold": 0.0,
+      "target_calibration_trades": 58,
+      "calibration_trades": 0,
+      "training_strategy_prefilter": false,
+      "live_rows_per_side": [
+        0,
+        17
+      ],
+      "live_experience_weight": 2.5
+    },
+    "FULL_HIST_PAYOFF_F1.0": {
+      "path": "live_weighted_v1\\FULL_HIST_PAYOFF_F1.0.pkl",
+      "artifact_sha256": "d3e88f41a5fb1045910b7411e9df9b1a0945b5c1596f8e0aac79b56cc81ef8c3",
+      "training_rows_per_side": [
+        13206,
+        24405
+      ],
+      "threshold": 0.0,
+      "target_calibration_trades": 58,
+      "calibration_trades": 2,
+      "training_strategy_prefilter": false,
+      "live_rows_per_side": [
+        0,
+        17
+      ],
+      "live_experience_weight": 2.5
+    }
+  },
+  "live_weighted_version": "live_weighted_v1"
+}

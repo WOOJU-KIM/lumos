@@ -1,0 +1,21 @@
+{
+  "enabled": true,
+  "status": "OBSERVER_INSTALLED_LISTENING_AWAITING_REAL_SESSION",
+  "feed_source": "WINDOWS_NAMED_PAGEFILE_RING",
+  "feed_path": null,
+  "production_hook_installed": true,
+  "producer_connected": false,
+  "actual_market_feed_observed": false,
+  "broker_subscription_created": false,
+  "worker_entry": "start_shadow.py",
+  "applies_to_already_running_old_runner": false,
+  "live_runner_restarted": false,
+  "live_runner_ready": false,
+  "actual_account_changes": false,
+  "training_policy_and_model_weights_changed": false,
+  "auto_start_with_real_live_runner": true,
+  "separate_manual_start_required": false,
+  "auto_start_waits_in_live_thread": false,
+  "simulation_and_dry_run_auto_start": false,
+  "auto_start_deduplicated": true
+}

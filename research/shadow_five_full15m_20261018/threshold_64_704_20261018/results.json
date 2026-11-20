@@ -1,0 +1,241 @@
+{
+  "status": "PASS",
+  "method": "WEEKLY_EXPANDING_WFA_UNCHANGED_PRE_LIVE_B72_TRAINING_RECIPE",
+  "distinction": "Historical weekly models, not the Oct16-trained frozen artifact replayed on its training data",
+  "start": "2026-07-27",
+  "end": "2026-10-16",
+  "source_model_family": "B_Normalized_72",
+  "thresholds": [
+    0.64,
+    0.704
+  ],
+  "raw_probability_equivalents": [
+    0.45473913043478265,
+    0.5103913043478261
+  ],
+  "fee_roundtrip": 0.002,
+  "allocation": 0.98,
+  "folds": [
+    {
+      "week": 313,
+      "cut": "2026-07-27 00:00:00",
+      "training_rows": 42356,
+      "training_start": "2020-07-29 09:30:00",
+      "training_last_label_origin": "2026-07-24 15:15:00",
+      "last_raw_bar": "2026-07-24 16:45:00",
+      "test_rows": 120,
+      "live_rows": 0
+    },
+    {
+      "week": 314,
+      "cut": "2026-08-03 00:00:00",
+      "training_rows": 42532,
+      "training_start": "2020-07-29 09:30:00",
+      "training_last_label_origin": "2026-07-31 15:15:00",
+      "last_raw_bar": "2026-07-31 16:45:00",
+      "test_rows": 120,
+      "live_rows": 0
+    },
+    {
+      "week": 315,
+      "cut": "2026-08-10 00:00:00",
+      "training_rows": 42705,
+      "training_start": "2020-07-29 09:30:00",
+      "training_last_label_origin": "2026-08-07 15:00:00",
+      "last_raw_bar": "2026-08-07 16:30:00",
+      "test_rows": 120,
+      "live_rows": 0
+    },
+    {
+      "week": 316,
+      "cut": "2026-08-17 00:00:00",
+      "training_rows": 42864,
+      "training_start": "2020-07-29 09:30:00",
+      "training_last_label_origin": "2026-08-14 14:30:00",
+      "last_raw_bar": "2026-08-14 16:30:00",
+      "test_rows": 120,
+      "live_rows": 0
+    },
+    {
+      "week": 317,
+      "cut": "2026-08-24 00:00:00",
+      "training_rows": 43023,
+      "training_start": "2020-07-29 09:30:00",
+      "training_last_label_origin": "2026-08-21 14:30:00",
+      "last_raw_bar": "2026-08-21 16:45:00",
+      "test_rows": 120,
+      "live_rows": 0
+    },
+    {
+      "week": 318,
+      "cut": "2026-08-31 00:00:00",
+      "training_rows": 43181,
+      "training_start": "2020-07-29 09:30:00",
+      "training_last_label_origin": "2026-08-28 14:45:00",
+      "last_raw_bar": "2026-08-28 16:15:00",
+      "test_rows": 120,
+      "live_rows": 0
+    },
+    {
+      "week": 319,
+      "cut": "2026-09-07 00:00:00",
+      "training_rows": 43343,
+      "training_start": "2020-07-29 09:30:00",
+      "training_last_label_origin": "2026-09-04 14:45:00",
+      "last_raw_bar": "2026-09-04 16:15:00",
+      "test_rows": 96,
+      "live_rows": 0
+    },
+    {
+      "week": 320,
+      "cut": "2026-09-14 00:00:00",
+      "training_rows": 43473,
+      "training_start": "2020-07-29 09:30:00",
+      "training_last_label_origin": "2026-09-11 14:45:00",
+      "last_raw_bar": "2026-09-11 16:15:00",
+      "test_rows": 120,
+      "live_rows": 0
+    },
+    {
+      "week": 321,
+      "cut": "2026-09-21 00:00:00",
+      "training_rows": 43637,
+      "training_start": "2020-07-29 09:30:00",
+      "training_last_label_origin": "2026-09-18 15:15:00",
+      "last_raw_bar": "2026-09-18 16:45:00",
+      "test_rows": 120,
+      "live_rows": 0
+    },
+    {
+      "week": 322,
+      "cut": "2026-09-28 00:00:00",
+      "training_rows": 43802,
+      "training_start": "2020-07-29 09:30:00",
+      "training_last_label_origin": "2026-09-25 14:30:00",
+      "last_raw_bar": "2026-09-25 16:00:00",
+      "test_rows": 120,
+      "live_rows": 0
+    },
+    {
+      "week": 323,
+      "cut": "2026-10-05 00:00:00",
+      "training_rows": 43964,
+      "training_start": "2020-07-29 09:30:00",
+      "training_last_label_origin": "2026-10-02 14:30:00",
+      "last_raw_bar": "2026-10-02 16:00:00",
+      "test_rows": 120,
+      "live_rows": 0
+    },
+    {
+      "week": 324,
+      "cut": "2026-10-12 00:00:00",
+      "training_rows": 44109,
+      "training_start": "2020-07-29 09:30:00",
+      "training_last_label_origin": "2026-10-09 14:30:00",
+      "last_raw_bar": "2026-10-09 16:30:00",
+      "test_rows": 120,
+      "live_rows": 0
+    }
+  ],
+  "total_sessions": 59,
+  "eligible_sessions": 55,
+  "excluded_sessions": [
+    "2026-08-14",
+    "2026-08-24",
+    "2026-09-10",
+    "2026-10-06"
+  ],
+  "evaluation_rows": 1416,
+  "eligible_rows": 1320,
+  "results": [
+    {
+      "period": "2026-07-27 ~ 2026-10-16",
+      "threshold": 0.64,
+      "trades": 56,
+      "weekly_trades": 4.666666666666667,
+      "return_pct": -12.580616442857062,
+      "CAGR_pct": -45.05790614452771,
+      "MDD_pct": -23.6877999385525,
+      "win_rate_pct": 53.57142857142857,
+      "profit_factor": 0.7944873109867707,
+      "avg_trade_net_pct": -0.22367647863891482,
+      "SOXL": 36,
+      "SOXS": 20,
+      "average_hold_minutes": 25.0,
+      "exits": {
+        "TRAIL": 31,
+        "SL": 22,
+        "TIME": 3
+      }
+    },
+    {
+      "period": "2026-07-27 ~ 2026-10-16",
+      "threshold": 0.704,
+      "trades": 7,
+      "weekly_trades": 0.5833333333333334,
+      "return_pct": 1.6687722000000127,
+      "CAGR_pct": 7.650339682629204,
+      "MDD_pct": -3.7641249862660597,
+      "win_rate_pct": 57.14285714285714,
+      "profit_factor": 1.2416185713953949,
+      "avg_trade_net_pct": 0.26637759954002893,
+      "SOXL": 6,
+      "SOXS": 1,
+      "average_hold_minutes": 30.714285714285715,
+      "exits": {
+        "TRAIL": 4,
+        "SL": 3
+      }
+    },
+    {
+      "period": "2026-10-12 ~ 2026-10-16",
+      "threshold": 0.64,
+      "trades": 17,
+      "weekly_trades": 17.0,
+      "return_pct": -9.052032572824043,
+      "CAGR_pct": -99.90231486689103,
+      "MDD_pct": -10.698878571917447,
+      "win_rate_pct": 47.05882352941176,
+      "profit_factor": 0.5699715729292915,
+      "avg_trade_net_pct": -0.5538639598231878,
+      "SOXL": 17,
+      "SOXS": 0,
+      "average_hold_minutes": 28.235294117647058,
+      "exits": {
+        "SL": 9,
+        "TRAIL": 7,
+        "TIME": 1
+      }
+    },
+    {
+      "period": "2026-10-12 ~ 2026-10-16",
+      "threshold": 0.704,
+      "trades": 3,
+      "weekly_trades": 3.0,
+      "return_pct": -2.4428922946007514,
+      "CAGR_pct": -83.58035248288847,
+      "MDD_pct": -3.7641249862660597,
+      "win_rate_pct": 33.33333333333333,
+      "profit_factor": 0.458377398591399,
+      "avg_trade_net_pct": -0.8200200917700647,
+      "SOXL": 3,
+      "SOXS": 0,
+      "average_hold_minutes": 53.333333333333336,
+      "exits": {
+        "SL": 2,
+        "TRAIL": 1
+      }
+    }
+  ],
+  "broker_api_calls": 0,
+  "real_orders": 0,
+  "protected_files": 196,
+  "protected_changes": [],
+  "MDD_definition": "5m close mark-to-market plus realized exit points",
+  "limitations": [
+    "5m OHLC execution proxy differs from live tick/quotes; no claim of live return parity",
+    "Four complete-session exclusions applied identically before threshold comparison",
+    "Annualized return from 12 weeks or one week is descriptive, not a forecast",
+    "Prices at first 5m open after completed15m decision; actual inference latency and spread approximated by cost reserve"
+  ]
+}

@@ -1,0 +1,147 @@
+{
+  "date_kst": "2026-10-18",
+  "B03_code_status": "CODE_FIXED_OFFLINE_VERIFIED",
+  "live_ready": false,
+  "B03_initial_tests": 39,
+  "B03_final_tests": 65,
+  "B03_final_pass": 65,
+  "core_integrity_tests": 9,
+  "core_integrity_repeat_pass": true,
+  "total_distinct_tests": 122,
+  "total_passed": 110,
+  "preexisting_failure_or_error_count": 12,
+  "new_unresolved_regressions": 0,
+  "suites": {
+    "test_b05_premarket_signal_and_transition.py": {
+      "tests": 11,
+      "success": false,
+      "failures": [
+        "test_01_scenario_1_premarket_none_signal (test_b05_premarket_signal_and_transition.TestB05PreMarketSignalAndTransition.test_01_scenario_1_premarket_none_signal)",
+        "test_02_scenario_2_premarket_long_signal_above_threshold_blocked (test_b05_premarket_signal_and_transition.TestB05PreMarketSignalAndTransition.test_02_scenario_2_premarket_long_signal_above_threshold_blocked)",
+        "test_03_scenario_3_premarket_short_signal_above_threshold_blocked (test_b05_premarket_signal_and_transition.TestB05PreMarketSignalAndTransition.test_03_scenario_3_premarket_short_signal_above_threshold_blocked)",
+        "test_06_scenario_6_regular_market_valid_long_signal_executes_order (test_b05_premarket_signal_and_transition.TestB05PreMarketSignalAndTransition.test_06_scenario_6_regular_market_valid_long_signal_executes_order)",
+        "test_07_scenario_7_regular_market_long_signal_plus_filter_veto_blocks_order (test_b05_premarket_signal_and_transition.TestB05PreMarketSignalAndTransition.test_07_scenario_7_regular_market_long_signal_plus_filter_veto_blocks_order)",
+        "test_08_scenario_8_regular_market_long_signal_plus_existing_position_blocks_order (test_b05_premarket_signal_and_transition.TestB05PreMarketSignalAndTransition.test_08_scenario_8_regular_market_long_signal_plus_existing_position_blocks_order)",
+        "test_09_scenario_9_regular_market_long_signal_plus_open_order_blocks_order (test_b05_premarket_signal_and_transition.TestB05PreMarketSignalAndTransition.test_09_scenario_9_regular_market_long_signal_plus_open_order_blocks_order)",
+        "test_10_scenario_10_regular_market_long_signal_plus_circuit_breaker_halt_blocks_order (test_b05_premarket_signal_and_transition.TestB05PreMarketSignalAndTransition.test_10_scenario_10_regular_market_long_signal_plus_circuit_breaker_halt_blocks_order)"
+      ],
+      "errors": [],
+      "guards": {
+        "network_blocked": 0,
+        "outside_write_blocked": 0
+      }
+    },
+    "test_learning_capture.py": {
+      "tests": 6,
+      "success": true,
+      "failures": [],
+      "errors": [],
+      "guards": {
+        "network_blocked": 0,
+        "outside_write_blocked": 0
+      }
+    },
+    "test_live_defense_and_briefing.py": {
+      "tests": 2,
+      "success": false,
+      "failures": [],
+      "errors": [
+        "test_defense_alert_dispatch (test_live_defense_and_briefing.TestLiveDefenseAndBriefing.test_defense_alert_dispatch)",
+        "test_notifier_briefing_format (test_live_defense_and_briefing.TestLiveDefenseAndBriefing.test_notifier_briefing_format)"
+      ],
+      "guards": {
+        "network_blocked": 0,
+        "outside_write_blocked": 0
+      }
+    },
+    "test_live_execution_safety.py": {
+      "tests": 4,
+      "success": false,
+      "failures": [
+        "test_3_alert_mode_title_transparency (test_live_execution_safety.TestLiveExecutionSafety.test_3_alert_mode_title_transparency)"
+      ],
+      "errors": [],
+      "guards": {
+        "network_blocked": 0,
+        "outside_write_blocked": 0
+      }
+    },
+    "test_live_experience_logger.py": {
+      "tests": 4,
+      "success": true,
+      "failures": [],
+      "errors": [],
+      "guards": {
+        "network_blocked": 0,
+        "outside_write_blocked": 0
+      }
+    },
+    "test_shadow_audit_verification.py": {
+      "tests": 6,
+      "success": false,
+      "failures": [
+        "test_item5_recreated_instance_duplicate_candle_blocked_persistence (test_shadow_audit_verification.TestShadowAuditVerification.test_item5_recreated_instance_duplicate_candle_blocked_persistence)"
+      ],
+      "errors": [],
+      "guards": {
+        "network_blocked": 0,
+        "outside_write_blocked": 0
+      }
+    },
+    "test_shadow_forced_entry.py": {
+      "tests": 15,
+      "success": true,
+      "failures": [],
+      "errors": [],
+      "guards": {
+        "network_blocked": 0,
+        "outside_write_blocked": 0
+      }
+    },
+    "test_system_integrity.py": {
+      "tests": 9,
+      "success": true,
+      "failures": [],
+      "errors": [],
+      "guards": {
+        "network_blocked": 0,
+        "outside_write_blocked": 0
+      }
+    }
+  },
+  "protected_baseline_files": 210,
+  "changed_existing_files": [
+    "core/kiwoom_broker.py",
+    "core/live_runner.py",
+    "tests/test_system_integrity.py"
+  ],
+  "source_hashes": {
+    "core/kiwoom_broker.py": "97f8ef981c784977e450ff2126761e1915ba935c74b9dc70ee75183a4bacf5ae",
+    "core/live_runner.py": "c97fbf5eed68a36344df35e9cfa9abebe1fe8d30977f6271fcbb243069e71211",
+    "core/order_ledger.py": "24410b44c8009b873148f8c17e4270f383518019785c2c43b6c3dbea7b956c26",
+    "core/pending_order.py": "79378f24d20ba8644c9d851b3a7049e77eb65829fdc4431bf0984344eb954bb5",
+    "docs/B03_ORDER_SAFETY_FIX_20261018.md": "2bfcc4fb87a8581b3991fe406ea7edd540cd097507cd256185cc1af2cbdfb8b7",
+    "docs/SHADOW_AND_MODEL_STATE_20261018.md": "0fca02b8baf7f435f2a57351bce0a59cebf5b0d3e333cbc97deb5bf6cb824d06",
+    "tests/test_b03_hardening.py": "7a1ced58a62d96e0ee586fe464b03224673adc4af8ec265dab1514dc3e3247fc",
+    "tests/test_system_integrity.py": "aa5bbf174f48f8d68c9752b8d2d1ecd25b6bf4052962cafa52d8f3c92ec8cdeb"
+  },
+  "active_model_sha256": "0deb9282eab7e1bf1a5b2d694878f13534ea0cc2632f9b57676d46d906b24932",
+  "models_config_backups_operational_data_unchanged": true,
+  "integrity_test_assertions_unchanged": true,
+  "real_orders": 0,
+  "broker_api_calls": 0,
+  "telegram_messages": 0,
+  "real_runner_started": false,
+  "git_mutations": false,
+  "remaining": [
+    "12 preexisting broad-suite failures/errors",
+    "Official operational order reconciliation and actual-server evidence not performed",
+    "Observed next-session shadow feed not yet verified"
+  ],
+  "journal_path_default": "data/active_position.pending_buy.json",
+  "shadow_model_input_cases": 600,
+  "shadow_model_repeats_identical": true,
+  "evidence_hashes": {
+    "research/shadow_five_full15m_20261018/qa/b03_model_regression.json": "1c0a2cff40fa4aed5f7581e92b1fc1525d19371c7c5cbcaf08894277a28232a9"
+  }
+}
